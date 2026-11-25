@@ -408,6 +408,7 @@ export class Sim {
       b.age++
       if (b.resting >= 8 || b.age > 600 || b.grid.pose!.z < -40) this.settle(b)
     }
+    if (!this.bodies.length) this.physics.reset()
   }
 
   /** Write a body back into the grid where it came to rest. */

@@ -28,13 +28,31 @@ export function supports(m: number): boolean {
 }
 
 export class Physics {
-  readonly world: InstanceType<typeof RAPIER.World>
+  world: InstanceType<typeof RAPIER.World>
   private readonly statics = new Map<number, { collider: InstanceType<typeof RAPIER.Collider>; version: number }>()
   private readonly bodies = new Map<Grid, InstanceType<typeof RAPIER.RigidBody>>()
 
   constructor() {
-    this.world = new RAPIER.World({ x: 0, y: 0, z: GRAVITY })
-    this.world.timestep = TICK_SECONDS
+    this.world = Physics.freshWorld()
+  }
+
+  private static freshWorld() {
+    const w = new RAPIER.World({ x: 0, y: 0, z: GRAVITY })
+    w.timestep = TICK_SECONDS
+    return w
+  }
+
+  /**
+   * Once nothing is moving, throw the physics world away. Every peer does
+   * this at the same tick, so Rapier never carries history the voxel grid
+   * doesn't show, its memory stays small, and a checkpoint taken while all
+   * is still needs no physics state at all.
+   */
+  reset() {
+    this.world.free()
+    this.world = Physics.freshWorld()
+    this.statics.clear()
+    this.bodies.clear()
   }
 
   /** Make a grid a dynamic body, optionally with a small push. */
