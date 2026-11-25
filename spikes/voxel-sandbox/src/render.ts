@@ -142,6 +142,13 @@ export class IsoRenderer {
     return [2 * (x - y) + 2 * this.world.sy + this.margin - 2, x + y - 2 * z + 2 * this.world.sz + this.margin]
   }
 
+  /**
+   * How a rotating body is drawn (view only; the simulation is unaffected):
+   * - 'snap': each cell at the world cell its centre falls in (tears and doubles up).
+   * - 'splat': each cell's sprite at its exact projected position, rounded to a pixel.
+   * - 'quarter': orientation snapped to the nearest quarter turn, position exact.
+   */
+  bodyStyle: 'snap' | 'splat' | 'quarter' = 'quarter'
   /** World seed, so flames can lean with the (pure-function) wind. */
   seed = 0
   private windBase: Wind = { x: 0, y: 0 }
@@ -173,9 +180,10 @@ export class IsoRenderer {
     // Bodies are small: draw every cell of each.
     for (let gi = 1; gi < grids.length; gi++) {
       const g = grids[gi]!
+      const place = this.bodyPlacer(g)
       for (let z = 0; z < g.sz; z++) for (let y = 0; y < g.sy; y++) for (let x = 0; x < g.sx; x++) {
         const m = g.get(x, y, z)
-        if (m !== M.Air) this.drawBodyCell(g, x, y, z, m)
+        if (m !== M.Air) this.drawBodyCell(g, x, y, z, m, place)
       }
     }
     for (const u of this.units.values()) {
@@ -360,19 +368,46 @@ export class IsoRenderer {
     this.px[i] = blend(this.px[i]!, color, alpha)
   }
 
-  private drawBodyCell(g: Grid, x: number, y: number, z: number, m: number) {
-    // A moving body is drawn by placing each of its cells at the world cell
-    // its centre currently falls in: voxels stay voxels while it tumbles.
-    let wx = x + g.ox, wy = y + g.oy, wz = z + g.oz
-    if (g.pose) {
-      const [cx, cy, cz] = cellCentre(g.pose, x, y, z)
-      wx = Math.floor(cx); wy = Math.floor(cy); wz = Math.floor(cz)
+  /** Where each cell of a body is drawn: world-space corner (x, y, z), fractional for splat/quarter. */
+  private bodyPlacer(g: Grid): (x: number, y: number, z: number) => [number, number, number] {
+    const pose = g.pose
+    if (!pose) return (x, y, z) => [x + g.ox, y + g.oy, z + g.oz]
+    if (this.bodyStyle === 'snap') return (x, y, z) => { const c = cellCentre(pose, x, y, z); return [Math.floor(c[0]), Math.floor(c[1]), Math.floor(c[2])] }
+    if (this.bodyStyle === 'splat') return (x, y, z) => { const c = cellCentre(pose, x, y, z); return [c[0] - 0.5, c[1] - 0.5, c[2] - 0.5] }
+    // Quarter turns: snap each rotated axis to the nearest world axis, rotate
+    // about the body's true centre so the snap doesn't make it jump.
+    const hx = g.sx / 2, hy = g.sy / 2, hz = g.sz / 2
+    const centre = cellCentre(pose, hx - 0.5, hy - 0.5, hz - 0.5)
+    const o = cellCentre(pose, -0.5, -0.5, -0.5)
+    const axis = (v: [number, number, number]): [number, number, number] => {
+      const d: [number, number, number] = [v[0] - o[0], v[1] - o[1], v[2] - o[2]]
+      const i = Math.abs(d[0]) >= Math.abs(d[1]) && Math.abs(d[0]) >= Math.abs(d[2]) ? 0 : Math.abs(d[1]) >= Math.abs(d[2]) ? 1 : 2
+      const r: [number, number, number] = [0, 0, 0]; r[i] = Math.sign(d[i]!); return r
     }
-    const [ax, ay] = this.anchor(wx, wy, wz)
-    const d = wx + wy + wz
+    const ax = axis(cellCentre(pose, 0.5, -0.5, -0.5)), ay = axis(cellCentre(pose, -0.5, 0.5, -0.5))
+    // z axis = x × y keeps it a proper rotation even if the snap was ambiguous.
+    const az: [number, number, number] = [ax[1] * ay[2] - ax[2] * ay[1], ax[2] * ay[0] - ax[0] * ay[2], ax[0] * ay[1] - ax[1] * ay[0]]
+    const cx = Math.round(centre[0] * 2) / 2, cy = Math.round(centre[1] * 2) / 2, cz = Math.round(centre[2] * 2) / 2
+    return (x, y, z) => {
+      const lx = x + 0.5 - hx, ly = y + 0.5 - hy, lz = z + 0.5 - hz
+      return [
+        cx + ax[0] * lx + ay[0] * ly + az[0] * lz - 0.5,
+        cy + ax[1] * lx + ay[1] * ly + az[1] * lz - 0.5,
+        cz + ax[2] * lx + ay[2] * ly + az[2] * lz - 0.5,
+      ]
+    }
+  }
+
+  private drawBodyCell(g: Grid, x: number, y: number, z: number, m: number, place: (x: number, y: number, z: number) => [number, number, number]) {
+    const [fx, fy, fz] = place(x, y, z)
+    const wx = Math.floor(fx + 0.5), wy = Math.floor(fy + 0.5), wz = Math.floor(fz + 0.5)
+    // Screen position from the (possibly fractional) corner, rounded to a pixel.
+    const [bx, by] = this.anchor(0, 0, 0)
+    const ax = Math.round(bx + 2 * (fx - fy)), ay = Math.round(by + fx + fy - 2 * fz)
+    const d = Math.round(fx + fy + fz)
     const pick = this.pickOf(m, wx, wy, wz)
     const burning = mat(m).flammable !== undefined && g.getState(x, y, z) > 0
-    const h = hash32(wx, wy, wz)
+    const h = hash32(x, y, z, g.sx * 7 + g.sy)
     const charred = (c: number, k: number) => (burning ? ((h >>> k) % 100 < 25 ? EMBER_PX[(h >>> k) % 3]! : blend(c, CHAR_PX, 170)) : c)
     const top = charred(lut(m, pick, g.get(x, y, z + 1) === M.Air ? TOP_EDGE : TOP), 0)
     const left = charred(lut(m, pick, LEFT), 3), right = charred(lut(m, pick, RIGHT), 5)
@@ -384,6 +419,7 @@ export class IsoRenderer {
       this.put(ax + 2, ay + r, d, right, id); this.put(ax + 3, ay + r, d, right, id)
     }
   }
+
 
   /**
    * Colour choice per cell. Stone is coloured per carved block (8×8×6 cells)
