@@ -16,6 +16,7 @@ const world = generate(spec)
 const genMs = performance.now() - t0
 const sim = new Sim(world, spec.seed)
 const renderer = new IsoRenderer(world)
+renderer.seed = spec.seed
 
 // ?net=broadcast (default: other tabs of this browser) | trystero (real P2P) | solo
 const room = params.get('room') ?? 'valley'

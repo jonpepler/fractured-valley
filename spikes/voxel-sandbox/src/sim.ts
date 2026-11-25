@@ -6,6 +6,7 @@
 // - Integer maths only. Every collection is walked in sorted order.
 // - Commands are applied in (tick, peer, seq) order on every peer.
 
+import { prevailing, windAt } from './wind'
 import { Grid, hashGrids } from './grid'
 import { M, mat } from './materials'
 import { cellCentre, Physics, poseBits, supports } from './physics'
@@ -178,18 +179,33 @@ export class Sim {
   private stepFire(stats: StepStats) {
     const w = this.world
     const cells = [...this.burning].sort((a, b) => a - b)
+    const base = prevailing(this.seed, this.tick)
     for (const p of cells) {
       const [x, y, z] = unpack(p)
       const m = mat(w.get(x, y, z))
       const f = m.flammable
       const s = w.getState(x, y, z)
       if (!f || s === 0) { this.burning.delete(p); continue }
+      const wind = windAt(this.seed, this.tick, x, y, base)
       for (let k = 0; k < SPREAD.length; k++) {
         const [dx, dy, dz] = SPREAD[k]!
         const nx = x + dx, ny = y + dy, nz = z + dz
         const nf = mat(w.get(nx, ny, nz)).flammable
-        if (nf && w.getState(nx, ny, nz) === 0 && chance(hash32(this.seed, this.tick, pack(nx, ny, nz), k), nf.catchPerMille, 1000))
-          this.ignite(nx, ny, nz)
+        if (!nf || w.getState(nx, ny, nz) !== 0) continue
+        // Downwind neighbours catch more easily, upwind ones less (never below a quarter).
+        const down = dx * wind.x + dy * wind.y // ±256
+        const num = Math.max(nf.catchPerMille >> 2, (nf.catchPerMille * (256 + 2 * down)) >> 8)
+        if (chance(hash32(this.seed, this.tick, pack(nx, ny, nz), k), num, 1000)) this.ignite(nx, ny, nz)
+      }
+      // Embers: light, fast-burning material throws sparks downwind in a breeze,
+      // so fire can jump gaps between leaf clumps, trees and tufts.
+      const strength = Math.abs(wind.x) + Math.abs(wind.y)
+      if (f.burnTicks < 40 && strength > 96) {
+        const h = hash32(this.seed, this.tick, p, 0xe3be)
+        if (chance(h, strength >> 6, 1000)) {
+          const d = 2 + ((h >>> 10) % 5)
+          this.ignite(x + ((wind.x * d) >> 8), y + ((wind.y * d) >> 8), z + ((h >>> 14) % 3) - 1)
+        }
       }
       if (s + 1 >= f.burnTicks) {
         this.burning.delete(p)

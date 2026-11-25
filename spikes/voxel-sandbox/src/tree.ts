@@ -128,6 +128,22 @@ export function growTree(g: Grid, seed: number, bx: number, by: number, bz: numb
       }
     }
   }
+  // Every segment also gets a face-connected path of cells, so thin diagonal
+  // twigs are solidly joined to their parent (the structure check treats
+  // edge- or corner-touching cells as separate pieces).
+  for (let i = 1; i < nodes.length; i++) {
+    const n = nodes[i]!, p = nodes[n.parent]!
+    let cx = p.x >> 4, cy = p.y >> 4, cz = p.z >> 4
+    const tx = n.x >> 4, ty = n.y >> 4, tz = n.z >> 4
+    put(cx, cy, cz, M.Wood)
+    while (cx !== tx || cy !== ty || cz !== tz) {
+      const ex = Math.abs(tx - cx), ey = Math.abs(ty - cy), ez = Math.abs(tz - cz)
+      if (ex >= ey && ex >= ez) cx += Math.sign(tx - cx)
+      else if (ey >= ez) cy += Math.sign(ty - cy)
+      else cz += Math.sign(tz - cz)
+      put(cx, cy, cz, M.Wood)
+    }
+  }
   // A few roots flaring at the base, lying on the ground.
   const rr = Math.ceil(trunkR / FP)
   for (let k = 0; k < 4; k++) {

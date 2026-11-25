@@ -21,6 +21,7 @@ import type { Grid } from './grid'
 import { M, MATERIALS, mat } from './materials'
 import { cellCentre } from './physics'
 import { hash32, valueNoise2 } from './rng'
+import { prevailing, windAt, type Wind } from './wind'
 
 /**
  * The colour grade: one place to tune the overall look.
@@ -79,6 +80,17 @@ const lut = (material: number, pick: number, s: number) => LUT[(material * PICKS
 const packed = (c: readonly number[]) => rgb(c[0]!, c[1]!, c[2]!)
 const SECTION_PX = SECTION.map(c => packed(grade(c)))
 const FIRE_PX = FIRE.map(packed)
+// Flames, hot base → cool tip. Burning material chars toward CHAR and
+// shows glowing EMBERs; smoke is blended over whatever is behind it.
+const FLAME_PX = [[0xff, 0xf6, 0xc8], [0xff, 0xdc, 0x60], [0xff, 0xb0, 0x34], [0xf4, 0x7a, 0x22], [0xd2, 0x48, 0x1a], [0x8a, 0x2c, 0x16]].map(packed)
+const CHAR_PX = rgb(0x26, 0x1d, 0x1a)
+const EMBER_PX = [[0xff, 0x8a, 0x24], [0xe8, 0x52, 0x18], [0xff, 0xc0, 0x50]].map(packed)
+const SMOKE = rgb(0x4e, 0x4a, 0x48)
+// The 14 pixels of a cube sprite: [dx, dy, face] with face 0 top, 1 left, 2 right.
+const SPRITE: readonly (readonly [number, number, number])[] = [
+  [1, 0, 0], [2, 0, 0], [0, 1, 0], [1, 1, 0], [2, 1, 0], [3, 1, 0],
+  [0, 2, 1], [1, 2, 1], [2, 2, 2], [3, 2, 2], [0, 3, 1], [1, 3, 1], [2, 3, 2], [3, 3, 2],
+]
 
 const U = 4 // unit edge in cells
 const unitKey = (ux: number, uy: number, uz: number) => ux | uy << 9 | uz << 18
@@ -130,8 +142,13 @@ export class IsoRenderer {
     return [2 * (x - y) + 2 * this.world.sy + this.margin - 2, x + y - 2 * z + 2 * this.world.sz + this.margin]
   }
 
+  /** World seed, so flames can lean with the (pure-function) wind. */
+  seed = 0
+  private windBase: Wind = { x: 0, y: 0 }
+
   render(grids: readonly Grid[], tick: number): { surfaceCells: number } {
     const world = grids[0]!
+    this.windBase = prevailing(this.seed, tick)
     this.applyChanges(world)
     const { px, depth, pick } = this
     px.fill(BG)
@@ -261,6 +278,7 @@ export class IsoRenderer {
       this.put(ax + ox, ay + 1, d, c, id)
       if (m !== M.Moss && (h & 6) !== 0) this.put(ax + ox + ((h >> 4) & 1 ? 1 : -1), ay + ((h >> 5) & 1), d, c, id)
       if (m === M.Flower) this.put(ax + ox, ay, d, lut(m, n - 1, TOP_EDGE), id)
+      if (burning) this.flames(x, y, z, ax, ay + 1, d, g.getState(x, y, z), material.flammable!.burnTicks, tick, id, true)
       return
     }
 
@@ -269,25 +287,77 @@ export class IsoRenderer {
     const ao = topClear && (isSolidish(g, x - 1, y, z + 1) || isSolidish(g, x, y - 1, z + 1))
     // A ledge catches light: brighten the top where the cell in front is lower.
     const edge = topClear && (isClear(g, x + 1, y, z) || isClear(g, x, y + 1, z))
-    const top = burning ? fire(hash32(x, y, z, tick >> 1)) : lut(m, pick, ao ? TOP_AO : edge ? TOP_EDGE : TOP)
+    const top = lut(m, pick, ao ? TOP_AO : edge ? TOP_EDGE : TOP)
     const secX = x + 1 >= g.sx, secY = y + 1 >= g.sy
-    const left = burning ? fire(hash32(x, y, z, (tick >> 1) + 9)) : secY ? section(x, z) : lut(m, pick, LEFT)
-    const right = burning ? fire(hash32(x, y, z, (tick >> 1) + 5)) : secX ? section(y, z) : lut(m, pick, RIGHT)
+    const left = secY ? section(x, z) : lut(m, pick, LEFT)
+    const right = secX ? section(y, z) : lut(m, pick, RIGHT)
 
-    this.put(ax + 1, ay, d, top, id); this.put(ax + 2, ay, d, top, id)
-    this.put(ax, ay + 1, d, top, id); this.put(ax + 1, ay + 1, d, top, id)
-    this.put(ax + 2, ay + 1, d, top, id); this.put(ax + 3, ay + 1, d, top, id)
-    this.put(ax, ay + 2, d, left, id); this.put(ax + 1, ay + 2, d, left, id)
-    this.put(ax + 2, ay + 2, d, right, id); this.put(ax + 3, ay + 2, d, right, id)
-    this.put(ax, ay + 3, d, left, id); this.put(ax + 1, ay + 3, d, left, id)
-    this.put(ax + 2, ay + 3, d, right, id); this.put(ax + 3, ay + 3, d, right, id)
-
-    if (burning && topClear) {
-      // Flames are a view of the burning state, not simulation cells.
-      const h = hash32(x, y, z, tick)
-      const flameH = 1 + (h % 5)
-      for (let k = 0; k < flameH; k++) this.put(ax + 1 + ((h >> (k + 3)) & 1), ay - k, d + 2, fire(h >> k), id)
+    if (!burning) {
+      this.put(ax + 1, ay, d, top, id); this.put(ax + 2, ay, d, top, id)
+      this.put(ax, ay + 1, d, top, id); this.put(ax + 1, ay + 1, d, top, id)
+      this.put(ax + 2, ay + 1, d, top, id); this.put(ax + 3, ay + 1, d, top, id)
+      this.put(ax, ay + 2, d, left, id); this.put(ax + 1, ay + 2, d, left, id)
+      this.put(ax + 2, ay + 2, d, right, id); this.put(ax + 3, ay + 2, d, right, id)
+      this.put(ax, ay + 3, d, left, id); this.put(ax + 1, ay + 3, d, left, id)
+      this.put(ax + 2, ay + 3, d, right, id); this.put(ax + 3, ay + 3, d, right, id)
+      return
     }
+    // Burning: the material chars as it burns, with embers glowing in it.
+    // The flames themselves rise *above* it (flames()).
+    const s = g.getState(x, y, z), burnTicks = material.flammable!.burnTicks
+    const progress = Math.min(255, Math.floor((s * 256) / burnTicks))
+    const charA = Math.min(235, 70 + ((progress * 180) >> 8))
+    const faces = [blend(top, CHAR_PX, charA), blend(left, CHAR_PX, charA), blend(right, CHAR_PX, charA)]
+    // Quick-burning stuff (leaves, grass) is mostly glowing; wood glows more as it burns through.
+    const emberPct = burnTicks < 40 ? 45 : 6 + (progress >> 4)
+    for (let i = 0; i < SPRITE.length; i++) {
+      const [dx, dy, face] = SPRITE[i]!
+      const e = hash32(x * 31 + i, y, z, tick >> 2)
+      this.put(ax + dx, ay + dy, d, e % 100 < emberPct ? EMBER_PX[(e >>> 8) % 3]! : faces[face]!, id)
+    }
+    const sideClear = isClear(g, x + 1, y, z) || isClear(g, x, y + 1, z)
+    if (topClear || sideClear) this.flames(x, y, z, ax, ay, d, s, burnTicks, tick, id, topClear)
+  }
+
+  /**
+   * Flame tongues rising from a burning cell: taller for quick, bright fuel,
+   * growing as it catches and dying as it burns out, leaning with the wind,
+   * flickering every tick. Smoke drifts off some of them. View-only.
+   */
+  private flames(x: number, y: number, z: number, ax: number, ay: number, d: number, s: number, burnTicks: number, tick: number, id: number, fromTop: boolean) {
+    const h = hash32(x, y, z, tick)
+    const progress = Math.min(255, Math.floor((s * 256) / burnTicks))
+    // Envelope: catch (first 15%), full, dying (last 25%).
+    const env = progress < 38 ? 96 + progress * 4 : progress > 192 ? Math.max(32, (255 - progress) * 4) : 256
+    const tall = burnTicks < 40 ? 4 + (h % 6) : 3 + (h % 4)
+    const H = Math.max(1, ((fromTop ? tall : 2 + (h & 1)) * env) >> 8)
+    const wind = windAt(this.seed, tick, x, y, this.windBase)
+    const leanX = wind.x - wind.y // screen-horizontal component: +x drifts right, +y left
+    const x0 = ax + 1 + (h & 1), y0 = fromTop ? ay : ay + 2
+    for (let k = 0; k < H; k++) {
+      const wobble = k > 1 ? (hash32(x, y, z, tick * 8 + k) % 3) - 1 : 0
+      const sx = x0 + ((leanX * k) >> 8) + wobble
+      const c = FLAME_PX[Math.min(5, Math.floor((k * 6) / (H + 1)) + ((h >>> (k + 4)) & 1))]!
+      const dk = d + 1 + (k >> 1)
+      this.put(sx, y0 - k, dk, c, id)
+      if (k < H >> 1) this.put(sx + 1, y0 - k, dk, c, id)
+    }
+    // Smoke: a puff every so often, rising and drifting downwind, fading out.
+    if (fromTop && hash32(x, y, z, 0x5e0c) % 3 === 0) {
+      const phase = (tick + (hash32(x, y, z, 1) % 48)) % 48
+      const rise = H + phase
+      const alpha = 150 - phase * 3
+      const sx = x0 + ((leanX * rise) >> 8) + ((hash32(x, y, z, phase >> 3) % 3) - 1)
+      this.putBlend(sx, y0 - rise, d + 2 + (rise >> 1), SMOKE, alpha)
+      if (phase > 8) this.putBlend(sx + 1, y0 - rise, d + 2 + (rise >> 1), SMOKE, alpha >> 1)
+    }
+  }
+
+  private putBlend(sx: number, sy: number, d: number, color: number, alpha: number) {
+    if (sx < 0 || sy < 0 || sx >= this.width || sy >= this.height || alpha <= 0) return
+    const i = sy * this.width + sx
+    if (d < this.depth[i]!) return
+    this.px[i] = blend(this.px[i]!, color, alpha)
   }
 
   private drawBodyCell(g: Grid, x: number, y: number, z: number, m: number) {
@@ -303,8 +373,9 @@ export class IsoRenderer {
     const pick = this.pickOf(m, wx, wy, wz)
     const burning = mat(m).flammable !== undefined && g.getState(x, y, z) > 0
     const h = hash32(wx, wy, wz)
-    const top = burning ? fire(h) : lut(m, pick, g.get(x, y, z + 1) === M.Air ? TOP_EDGE : TOP)
-    const left = burning ? fire(h >> 3) : lut(m, pick, LEFT), right = burning ? fire(h >> 5) : lut(m, pick, RIGHT)
+    const charred = (c: number, k: number) => (burning ? ((h >>> k) % 100 < 25 ? EMBER_PX[(h >>> k) % 3]! : blend(c, CHAR_PX, 170)) : c)
+    const top = charred(lut(m, pick, g.get(x, y, z + 1) === M.Air ? TOP_EDGE : TOP), 0)
+    const left = charred(lut(m, pick, LEFT), 3), right = charred(lut(m, pick, RIGHT), 5)
     const id = -2
     this.put(ax + 1, ay, d, top, id); this.put(ax + 2, ay, d, top, id)
     for (let k = 0; k < 4; k++) this.put(ax + k, ay + 1, d, top, id)

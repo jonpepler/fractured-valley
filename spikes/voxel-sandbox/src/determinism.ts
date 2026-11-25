@@ -7,6 +7,7 @@ import { runScenario } from './scenario'
 await initPhysics()
 const { sim, result } = runScenario()
 const renderer = new IsoRenderer(sim.world)
+renderer.seed = sim.seed
 renderer.render(sim.grids, sim.tick)
 let h = 0x811c9dc5
 for (const v of new Uint32Array(renderer.image.data.buffer)) h = Math.imul(h ^ v, 0x01000193) >>> 0
