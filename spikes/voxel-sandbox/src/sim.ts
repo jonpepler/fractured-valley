@@ -15,6 +15,9 @@ export type Command =
   | { readonly kind: 'ignite'; readonly x: number; readonly y: number; readonly z: number }
   | { readonly kind: 'drop'; readonly x: number; readonly y: number; readonly z: number }
 
+/** Broken-off pieces smaller than this fall as debris rather than as rigid bodies. */
+export const SMALL_PIECE = 8
+
 export interface Scheduled {
   readonly tick: number
   readonly peer: number
@@ -42,7 +45,7 @@ const N6: readonly [number, number, number][] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0
 /** Notable moments, kept for inspection and tests (pillar 6). */
 export interface SimEvent {
   readonly tick: number
-  readonly kind: 'gave-way' | 'detached' | 'landed'
+  readonly kind: 'gave-way' | 'detached' | 'crumbled' | 'landed'
   readonly cells: number
   readonly at: readonly [number, number, number]
 }
@@ -60,6 +63,8 @@ export class Sim {
   readonly bodies: Body[] = []
   private burning = new Set<number>()
   private loose = new Set<number>()
+  /** Cells of small broken-off pieces, falling straight down whatever their material. */
+  private debris = new Set<number>()
   private queue: Scheduled[] = []
   /** Cells whose removal may have left something unsupported. */
   private touched: number[] = []
@@ -213,11 +218,13 @@ export class Sim {
     for (const p of cells) {
       const [x, y, z] = unpack(p)
       const m = w.get(x, y, z)
-      if (!mat(m).loose) { this.loose.delete(p); continue }
+      const isDebris = this.debris.has(p)
+      if (!mat(m).loose && !isDebris) { this.loose.delete(p); continue }
       const canEnter = (nx: number, ny: number, nz: number) => w.inBounds(nx, ny, nz) && !mat(w.get(nx, ny, nz)).solid && w.get(nx, ny, nz) !== M.Water
       let to: number | undefined
       if (z > 0 && canEnter(x, y, z - 1)) to = pack(x, y, z - 1)
-      else if (z > 0) {
+      else if (z > 0 && !isDebris) {
+        // Loose material (ash) also slides off slopes; debris just stops.
         const start = hash32(this.seed, this.tick, p) % 4
         for (let k = 0; k < 4 && to === undefined; k++) {
           const [dx, dy] = ([[1, 0], [-1, 0], [0, 1], [0, -1]] as const)[(start + k) % 4]!
@@ -225,13 +232,20 @@ export class Sim {
         }
       }
       this.loose.delete(p)
+      this.debris.delete(p)
       if (to === undefined) continue
       const [tx, ty, tz] = unpack(to)
+      const st = w.getState(x, y, z)
       w.set(x, y, z, M.Air)
-      w.set(tx, ty, tz, m)
+      w.set(tx, ty, tz, m, st)
       this.loose.add(to)
+      if (isDebris) this.debris.add(to)
+      // A burning ember keeps burning as it falls.
+      if (this.burning.delete(p)) this.burning.add(to)
       // Whatever rested on this cell may now fall too.
-      if (mat(w.get(x, y, z + 1)).loose) this.loose.add(pack(x, y, z + 1))
+      const above = w.get(x, y, z + 1)
+      if (mat(above).loose) this.loose.add(pack(x, y, z + 1))
+      else if (this.isStructure(above)) this.touched.push(p)
     }
   }
 
@@ -329,7 +343,11 @@ export class Sim {
         const nx = x + dx, ny = y + dy, nz = z + dz
         if (!w.inBounds(nx, ny, nz)) continue
         const m = w.get(nx, ny, nz)
-        if (mat(m).terrain) { anchored = true; continue }
+        const md = mat(m)
+        if (md.terrain) { anchored = true; continue }
+        // Lying on a pile of loose material (ash, say) is supported too;
+        // if the pile moves, stepLoose re-checks whatever was on it.
+        if (dz === -1 && md.loose && md.solid) { anchored = true; continue }
         if (!this.isStructure(m)) continue
         const q = pack(nx, ny, nz)
         if (seen.has(q)) continue
@@ -360,6 +378,13 @@ export class Sim {
       const comp = this.flood(s, 60000)
       for (const c of comp.cells) done.add(c)
       if (comp.anchored) continue
+      if (comp.cells.length < SMALL_PIECE) {
+        // A crumb (a burnt-off twig or clump of leaves) isn't worth a rigid
+        // body: it drops as debris, cell by cell, still burning if it was.
+        for (const c of comp.cells) { this.loose.add(c); this.debris.add(c) }
+        this.note('crumbled', comp.cells.length, comp.cells[0]!)
+        continue
+      }
       this.detach(comp.cells)
       this.note('detached', comp.cells.length, comp.cells[0]!)
       stats.detached++
@@ -431,8 +456,9 @@ export class Sim {
     let first = -1
     for (const c of cells) {
       let tz = c.z - drop
-      // Rotation can map two cells to one; stack the extra on top.
-      for (let k = 0; k < 6 && w.inBounds(c.x, c.y, tz) && supports(w.get(c.x, c.y, tz)); k++) tz++
+      // Rotation can map two cells to one; stack the extra on top, however
+      // high that takes. Never overwrite: a body must not destroy material.
+      while (w.inBounds(c.x, c.y, tz) && supports(w.get(c.x, c.y, tz))) tz++
       if (!w.inBounds(c.x, c.y, tz)) continue
       w.set(c.x, c.y, tz, c.m, c.s)
       if (c.s > 0 && mat(c.m).flammable) this.burning.add(pack(c.x, c.y, tz))

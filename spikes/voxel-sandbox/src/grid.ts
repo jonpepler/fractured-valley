@@ -32,6 +32,9 @@ export class Grid {
   readonly uniform: Uint8Array
   /** Bumped whenever a brick changes, so views can cache per brick. */
   readonly version: Uint32Array
+  /** Cached content hash per brick, valid while hashedAt[b] === version[b] + 1. */
+  readonly brickHash: Uint32Array
+  readonly hashedAt: Uint32Array
   /** When set, every changed cell is appended here (packed), for views. */
   changeLog: number[] | undefined
   /** Set while this grid is a moving rigid body. */
@@ -49,6 +52,8 @@ export class Grid {
     this.bricks = new Array<Brick | null>(n).fill(null)
     this.uniform = new Uint8Array(n)
     this.version = new Uint32Array(n)
+    this.brickHash = new Uint32Array(n)
+    this.hashedAt = new Uint32Array(n)
   }
 
   inBounds(x: number, y: number, z: number): boolean {
@@ -140,21 +145,49 @@ export class Grid {
   }
 }
 
-/** FNV-1a over every grid's cells in a fixed order: the desync check. */
+const FNV = 0x811c9dc5
+const mix = (h: number, v: number) => Math.imul(h ^ v, 0x01000193) >>> 0
+
+// Hash of a brick filled with one material, exactly as if it were detailed,
+// so the hash describes the world, not how compactly a peer happens to store it.
+const uniformHash = new Map<number, number>()
+function hashUniform(u: number): number {
+  let h = uniformHash.get(u)
+  if (h === undefined) {
+    h = FNV
+    for (let i = 0; i < BRICK_CELLS; i++) h = mix(h, u)
+    uniformHash.set(u, h)
+  }
+  return h
+}
+
+function hashBrick(g: Grid, b: number): number {
+  // Valid until the brick's version moves. compact() keeps the version but
+  // not the content's meaning, so it can't make a cached hash stale.
+  if (g.hashedAt[b] === g.version[b]! + 1) return g.brickHash[b]!
+  const brick = g.bricks[b]
+  let h: number
+  if (!brick) h = hashUniform(g.uniform[b]!)
+  else {
+    h = FNV
+    const m = brick.material, s = brick.state
+    for (let i = 0; i < BRICK_CELLS; i++) h = mix(h, m[i]! | (s[i]! << 8))
+  }
+  g.brickHash[b] = h
+  g.hashedAt[b] = g.version[b]! + 1
+  return h
+}
+
+/**
+ * The desync check: a hash of every grid's cells in a fixed order.
+ * Each brick's hash is cached until that brick changes, so the cost follows
+ * what changed since the last check, not the size of the world.
+ */
 export function hashGrids(grids: readonly Grid[]): number {
-  let h = 0x811c9dc5
-  const mix = (v: number) => { h = Math.imul(h ^ v, 0x01000193) >>> 0 }
+  let h = FNV
   for (const g of grids) {
-    mix(g.ox); mix(g.oy); mix(g.oz); mix(g.sx); mix(g.sy); mix(g.sz)
-    for (let b = 0; b < g.bricks.length; b++) {
-      const brick = g.bricks[b]
-      // Hash a uniform brick exactly as if it were detailed, so the hash
-      // describes the world, not how compactly a peer happens to store it.
-      if (!brick) { const u = g.uniform[b]!; for (let i = 0; i < BRICK_CELLS; i++) mix(u); continue }
-      const m = brick.material
-      const s = brick.state
-      for (let i = 0; i < BRICK_CELLS; i++) mix(m[i]! | (s[i]! << 8))
-    }
+    h = mix(h, g.ox); h = mix(h, g.oy); h = mix(h, g.oz); h = mix(h, g.sx); h = mix(h, g.sy); h = mix(h, g.sz)
+    for (let b = 0; b < g.bricks.length; b++) h = mix(h, hashBrick(g, b))
   }
   return h
 }

@@ -49,6 +49,19 @@ describe('determinism', () => {
     expect(before).not.toBe(hashGrids([empty]))
   })
 
+  test('cached brick hashes never go stale', () => {
+    const sim = new Sim(generate(SPEC), SPEC.seed)
+    const gx = POST.x - 4, gy = POST.y - 4
+    sim.schedule({ tick: 1, peer: 0, seq: 0, command: { kind: 'ignite', x: gx, y: gy, z: groundAt(sim, gx, gy) } })
+    for (let i = 0; i < 300; i++) {
+      sim.step()
+      if (i % 20 === 0) sim.hash() // warm the cache mid-fire, as the network check does
+    }
+    const cached = sim.hash()
+    for (const g of sim.grids) g.hashedAt.fill(0)
+    expect(sim.hash()).toBe(cached)
+  })
+
   test('commands for a tick already simulated are refused', () => {
     const sim = new Sim(generate(SPEC), SPEC.seed)
     sim.step()
