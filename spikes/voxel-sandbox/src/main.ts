@@ -1,10 +1,10 @@
 import { DEFAULT_SPEC, generate } from './gen'
 import { mat } from './materials'
 import { IsoRenderer } from './render'
+import { BroadcastTransport, Lockstep, SoloTransport, type Transport, TrysteroTransport } from './net'
 import { type Command, Sim } from './sim'
 
 const TICK_MS = 50 // 20 Hz simulation
-const INPUT_DELAY = 2 // ticks: commands are scheduled ahead, as lockstep will need
 
 const params = new URLSearchParams(location.search)
 const spec = { ...DEFAULT_SPEC, seed: Number(params.get('seed') ?? DEFAULT_SPEC.seed) }
@@ -14,6 +14,14 @@ const world = generate(spec)
 const genMs = performance.now() - t0
 const sim = new Sim(world, spec.seed)
 const renderer = new IsoRenderer(world)
+
+// ?net=broadcast (default: other tabs of this browser) | trystero (real P2P) | solo
+const room = params.get('room') ?? 'valley'
+const netKind = params.get('net') ?? 'broadcast'
+const transport: Transport =
+  netKind === 'trystero' ? new TrysteroTransport(room) : netKind === 'solo' ? new SoloTransport() : new BroadcastTransport(room)
+const net = new Lockstep(transport, sim, spec.seed)
+net.start(netKind === 'solo' ? 0 : netKind === 'trystero' ? 4000 : 600)
 
 const canvas = document.querySelector<HTMLCanvasElement>('#view')!
 const ctx = canvas.getContext('2d')!
@@ -44,9 +52,8 @@ function applyCamera() {
 }
 
 // ── input ───────────────────────────────────────────────────────────────────
-let seq = 0
 function issue(command: Command) {
-  sim.schedule({ tick: sim.tick + INPUT_DELAY, peer: 0, seq: seq++, command })
+  net.issue(command)
 }
 
 function cellAt(ev: MouseEvent): [number, number, number] | undefined {
@@ -109,20 +116,46 @@ let surfaceCells = 0
 let acc = 0
 let last = performance.now()
 
-function stepOnce() {
+function stepOnce(): boolean {
   const s = performance.now()
-  sim.step()
+  if (!net.advance()) return false
   simMs = simMs * 0.9 + (performance.now() - s) * 0.1
   if (sim.tick % 20 === 0) lastHash = sim.hash()
   dirty = true
+  const capture = captures.get(sim.tick)
+  if (capture) { captures.delete(sim.tick); capture(captureNow()) }
+  return true
+}
+
+// Acceptance check 0.4: peers with the same camera render the same image.
+// captureAt(tick) renders the world exactly at that tick and hashes the pixels.
+const captures = new Map<number, (c: { tick: number; pixelHash: string; png: string }) => void>()
+function captureNow() {
+  renderer.render(sim.grids, sim.tick)
+  let h = 0x811c9dc5
+  for (const v of new Uint32Array(renderer.image.data.buffer)) h = Math.imul(h ^ v, 0x01000193) >>> 0
+  const c = document.createElement('canvas')
+  c.width = renderer.width; c.height = renderer.height
+  c.getContext('2d')!.putImageData(renderer.image, 0, 0)
+  return { tick: sim.tick, pixelHash: h.toString(16), png: c.toDataURL('image/png') }
+}
+function captureAt(tick: number) {
+  return new Promise(resolve => captures.set(tick, resolve))
 }
 
 let dirty = true
 function frame(now: number) {
   acc += Math.min(250, now - last)
   last = now
-  if (!paused) while (acc >= TICK_MS) { stepOnce(); acc -= TICK_MS }
-  else acc = 0
+  if (!paused) {
+    while (acc >= TICK_MS) {
+      if (!stepOnce()) { acc = 0; break }
+      acc -= TICK_MS
+    }
+    // Joining, or fallen behind: replay quickly, within a frame budget.
+    const until = performance.now() + 12
+    while (net.behind > 0 && performance.now() < until && stepOnce()) { /* catch up */ }
+  } else acc = 0
   if (dirty) {
     const s = performance.now()
     surfaceCells = renderer.render(sim.grids, sim.tick).surfaceCells
@@ -143,6 +176,9 @@ function drawHud() {
     `burning ${l.burning}   loose ${l.loose}   bodies ${l.bodies}   surface ${surfaceCells}`,
     `bricks ${st.detailed}/${st.bricks} detailed   ${(st.bytes / 1048576).toFixed(1)} MB for ${(st.cells / 1e6).toFixed(1)}M cells`,
   ]
+  const others = [...net.roster.keys()].filter(p => p !== net.self && net.roster.get(p)!.until === Infinity)
+  const sync = net.desyncAt !== undefined ? `DESYNC at tick ${net.desyncAt}` : `in sync (${net.checks} checks)`
+  lines.push(`net ${transport.kind}  me ${net.self}${net.host === net.self ? ' (host)' : ''}  peers ${others.length}  ${net.state}${net.waitingFor ? `  waiting for ${net.waitingFor}` : ''}  ${sync}`)
   if (hover) {
     const [x, y, z] = hover
     lines.push(`cell ${x},${y},${z}  ${mat(world.get(x, y, z)).name}  state ${world.getState(x, y, z)}`)
@@ -151,7 +187,7 @@ function drawHud() {
 }
 
 // Inspectable from the console (pillar 6).
-Object.assign(window, { fv: { sim, world, renderer, spec, issue, step: stepOnce } })
+Object.assign(window, { fv: { sim, world, renderer, spec, net, issue, step: stepOnce, captureAt } })
 
 fit()
 requestAnimationFrame(frame)
