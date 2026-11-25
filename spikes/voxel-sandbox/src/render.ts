@@ -152,6 +152,8 @@ export class IsoRenderer {
   /** World seed, so flames can lean with the (pure-function) wind. */
   seed = 0
   private windBase: Wind = { x: 0, y: 0 }
+  /** Smoke puffs queued during the frame: x, y, depth, alpha. */
+  private smoke: number[] = []
 
   render(grids: readonly Grid[], tick: number): { surfaceCells: number } {
     const world = grids[0]!
@@ -193,6 +195,8 @@ export class IsoRenderer {
       }
     }
     this.outline()
+    for (let i = 0; i < this.smoke.length; i += 4) this.putBlend(this.smoke[i]!, this.smoke[i + 1]!, this.smoke[i + 2]!, SMOKE, this.smoke[i + 3]!)
+    this.smoke.length = 0
     return { surfaceCells }
   }
 
@@ -356,8 +360,9 @@ export class IsoRenderer {
       const rise = H + phase
       const alpha = 150 - phase * 3
       const sx = x0 + ((leanX * rise) >> 8) + ((hash32(x, y, z, phase >> 3) % 3) - 1)
-      this.putBlend(sx, y0 - rise, d + 2 + (rise >> 1), SMOKE, alpha)
-      if (phase > 8) this.putBlend(sx + 1, y0 - rise, d + 2 + (rise >> 1), SMOKE, alpha >> 1)
+      // Deferred until after the outline pass, which would ring each puff in black.
+      this.smoke.push(sx, y0 - rise, d + 2 + (rise >> 1), alpha)
+      if (phase > 8) this.smoke.push(sx + 1, y0 - rise, d + 2 + (rise >> 1), alpha >> 1)
     }
   }
 
