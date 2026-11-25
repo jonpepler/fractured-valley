@@ -2,7 +2,7 @@
   "name": "fractured-valley",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10",
+  "packageManager": "pnpm@10.28.0",
   "scripts": {
     "dev": "pnpm --filter voxel-sandbox dev",
     "test": "pnpm -r test",

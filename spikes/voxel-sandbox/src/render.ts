@@ -294,8 +294,10 @@ export class IsoRenderer {
     const [ax, ay] = this.anchor(wx, wy, wz)
     const d = wx + wy + wz
     const pick = this.pickOf(m, wx, wy, wz)
-    const top = lut(m, pick, g.get(x, y, z + 1) === M.Air ? TOP_EDGE : TOP)
-    const left = lut(m, pick, LEFT), right = lut(m, pick, RIGHT)
+    const burning = mat(m).flammable !== undefined && g.getState(x, y, z) > 0
+    const h = hash32(wx, wy, wz)
+    const top = burning ? fire(h) : lut(m, pick, g.get(x, y, z + 1) === M.Air ? TOP_EDGE : TOP)
+    const left = burning ? fire(h >> 3) : lut(m, pick, LEFT), right = burning ? fire(h >> 5) : lut(m, pick, RIGHT)
     const id = -2
     this.put(ax + 1, ay, d, top, id); this.put(ax + 2, ay, d, top, id)
     for (let k = 0; k < 4; k++) this.put(ax + k, ay + 1, d, top, id)

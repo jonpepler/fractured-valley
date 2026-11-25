@@ -38,6 +38,14 @@ const SPREAD: readonly [number, number, number][] = [
 ]
 const N6: readonly [number, number, number][] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
 
+/** Notable moments, kept for inspection and tests (pillar 6). */
+export interface SimEvent {
+  readonly tick: number
+  readonly kind: 'gave-way' | 'detached' | 'landed'
+  readonly cells: number
+  readonly at: readonly [number, number, number]
+}
+
 export interface StepStats {
   burning: number
   loose: number
@@ -55,6 +63,12 @@ export class Sim {
   /** Cells whose removal may have left something unsupported. */
   private touched: number[] = []
   last: StepStats = { burning: 0, loose: 0, bodies: 0, detached: 0, failed: 0 }
+  readonly events: SimEvent[] = []
+
+  private note(kind: SimEvent['kind'], cells: number, at: number) {
+    this.events.push({ tick: this.tick, kind, cells, at: unpack(at) })
+    if (this.events.length > 500) this.events.shift()
+  }
 
   constructor(readonly world: Grid, readonly seed: number) {}
 
@@ -143,7 +157,6 @@ export class Sim {
         w.set(x, y, z, f.becomes, 0)
         if (mat(f.becomes).loose) this.loose.add(p)
         this.touched.push(p)
-        stats.failed += 0
       } else {
         w.setState(x, y, z, s + 1)
       }
@@ -255,6 +268,7 @@ export class Sim {
       }
       const layers = [...byLayer.keys()].sort((a, b) => b - a)
       let massAbove = 0
+      let gaveWay = false
       for (const z of layers) {
         const cells = byLayer.get(z)!
         let layerMass = 0
@@ -273,9 +287,25 @@ export class Sim {
             this.loose.add(c)
             this.touched.push(c)
             stats.failed++
+            this.note('gave-way', 1, c)
+            gaveWay = true
           }
         }
         massAbove += layerMass
+      }
+      // Once it gives way, charred parts of the same structure shatter
+      // rather than riding down on what's left (no toppling yet: 1.5).
+      if (gaveWay) {
+        for (const c of comp.cells) {
+          const [x, y, z] = unpack(c)
+          const m = mat(w.get(x, y, z))
+          const s = w.getState(x, y, z)
+          if (!m.structural || !m.flammable || s === 0 || s * 2 < m.flammable.burnTicks) continue
+          w.set(x, y, z, M.Ash, 0)
+          this.burning.delete(c)
+          this.loose.add(c)
+          this.touched.push(c)
+        }
       }
     }
   }
@@ -329,6 +359,7 @@ export class Sim {
       for (const c of comp.cells) done.add(c)
       if (comp.anchored) continue
       this.detach(comp.cells)
+      this.note('detached', comp.cells.length, comp.cells[0]!)
       stats.detached++
     }
   }
@@ -346,7 +377,7 @@ export class Sim {
     g.ox = x0; g.oy = y0; g.oz = z0
     for (const c of cells) {
       const [x, y, z] = unpack(c)
-      g.set(x - x0, y - y0, z - z0, w.get(x, y, z))
+      g.set(x - x0, y - y0, z - z0, w.get(x, y, z), w.getState(x, y, z))
       w.set(x, y, z, M.Air)
       this.burning.delete(c)
     }
@@ -371,9 +402,14 @@ export class Sim {
       const g = b.grid
       for (let z = 0; z < g.sz; z++) for (let y = 0; y < g.sy; y++) for (let x = 0; x < g.sx; x++) {
         const m = g.get(x, y, z)
-        if (m !== M.Air) w.set(x + g.ox, y + g.oy, z + g.oz, m)
+        if (m === M.Air) continue
+        const s = g.getState(x, y, z)
+        w.set(x + g.ox, y + g.oy, z + g.oz, m, s)
+        // Still burning when it lands: keeps burning in the world.
+        if (s > 0 && mat(m).flammable) this.burning.add(pack(x + g.ox, y + g.oy, z + g.oz))
       }
       this.bodies.splice(this.bodies.indexOf(b), 1)
+      this.note('landed', g.sx * g.sy * g.sz, pack(g.ox, g.oy, g.oz))
     }
   }
 

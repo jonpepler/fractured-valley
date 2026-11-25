@@ -27,8 +27,16 @@ let zoom = Number(params.get('zoom') ?? 2)
 let panX = 0
 let panY = 0
 function fit() {
-  panX = Math.round((viewport.clientWidth - renderer.width * zoom) / 2)
-  panY = Math.round((viewport.clientHeight - renderer.height * zoom) / 2)
+  const focus = params.get('focus')?.split(',').map(Number)
+  if (focus && focus.length === 3) {
+    // Centre the camera on a world cell, e.g. ?focus=99,107,50
+    const [ax, ay] = renderer.anchor(focus[0]!, focus[1]!, focus[2]!)
+    panX = Math.round(viewport.clientWidth / 2 - ax * zoom)
+    panY = Math.round(viewport.clientHeight / 2 - ay * zoom)
+  } else {
+    panX = Math.round((viewport.clientWidth - renderer.width * zoom) / 2)
+    panY = Math.round((viewport.clientHeight - renderer.height * zoom) / 2)
+  }
   applyCamera()
 }
 function applyCamera() {
