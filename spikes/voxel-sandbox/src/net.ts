@@ -24,6 +24,7 @@ export type NetMsg =
   | { readonly t: 'frame'; readonly from: string; readonly frame: Frame }
   | { readonly t: 'hash'; readonly from: string; readonly tick: number; readonly hash: number }
   | { readonly t: 'bye'; readonly from: string }
+  | { readonly t: 'leaving'; readonly from: string; readonly peer: string; readonly frames: readonly Frame[] }
   | { readonly t: 'drop'; readonly from: string; readonly peer: string; readonly after: number; readonly frames: readonly Frame[] }
 
 export interface Transport {
@@ -75,7 +76,7 @@ export class TrysteroTransport implements Transport {
 
   constructor(room: string) {
     void import('trystero').then(({ joinRoom }) => {
-      const r = joinRoom({ appId: 'fractured-valley-spike' }, room)
+      const r = joinRoom({ appId: 'fractured-valley/voxel-sandbox' }, room)
       this.room = r
       const action = r.makeAction<string>('m')
       this.sendRaw = data => action.send(data)
@@ -127,6 +128,8 @@ export class Lockstep {
   desyncAt: number | undefined
   /** Highest tick any frame has arrived for: how far ahead peers are. */
   newestFrame = 0
+  /** Leave barrier: for each departing peer, the frames of theirs each remaining peer holds. */
+  private readonly leaving = new Map<string, Map<string, readonly Frame[]>>()
 
   constructor(readonly net: Transport, readonly sim: Sim, readonly seed: number, readonly delay = 3) {
     net.onMessage(m => this.receive(m))
@@ -139,7 +142,7 @@ export class Lockstep {
   get host(): string | undefined {
     let best: [string, number] | undefined
     for (const [p, r] of this.roster) {
-      if (r.until !== Infinity) continue
+      if (r.until !== Infinity || this.leaving.has(p)) continue
       if (!best || r.from < best[1] || (r.from === best[1] && p < best[0])) best = [p, r.from]
     }
     return best?.[0]
@@ -238,10 +241,17 @@ export class Lockstep {
         this.compare(m.tick)
         return
       }
+      case 'leaving': {
+        this.peerLeft(m.peer) // we may not have noticed yet
+        this.leaving.get(m.peer)?.set(m.from, m.frames)
+        this.decideLeave(m.peer)
+        return
+      }
       case 'drop': {
         for (const f of m.frames) this.addFrame(f)
         const r = this.roster.get(m.peer)
         if (r) r.until = m.after
+        this.leaving.delete(m.peer)
         return
       }
       case 'bye':
@@ -255,21 +265,38 @@ export class Lockstep {
   }
 
   /**
-   * A peer left. The host settles the last tick that counts their input and
-   * relays the frames it holds, so every peer drops them at the same tick.
-   * (Spike-level: a frame only some peers received can still desync; the
-   * hash check will say so. See brief 2+3.)
+   * A peer left. Leave barrier: every remaining peer reports the leaver's
+   * frames it holds. The host waits for all reports (or a timeout), then
+   * drops the leaver after the newest frame *anyone* holds and relays those
+   * frames. A peer that already stepped a tick with the leaver's input has
+   * reported that input, so nobody has to undo anything. Meanwhile every
+   * peer simply stalls at the first tick it lacks the leaver's frame for.
    */
   private peerLeft(peer: string) {
     const r = this.roster.get(peer)
-    if (!r || r.until !== Infinity) return
-    r.until = -1 // provisional, so the host is recomputed without them
-    if (this.host !== this.self) { r.until = Infinity; return }
+    if (!r || r.until !== Infinity || this.leaving.has(peer) || peer === this.self) return
+    this.leaving.set(peer, new Map())
+    const frames = [...this.frames.values()].filter(f => f.peer === peer && f.tick >= this.sim.tick - 200) // peers never drift further apart than the input delay
+    this.leaving.get(peer)!.set(this.self, frames)
+    this.net.send({ t: 'leaving', from: this.self, peer, frames })
+    this.decideLeave(peer)
+    setTimeout(() => this.decideLeave(peer, true), 2000)
+  }
+
+  private decideLeave(peer: string, timedOut = false) {
+    const reports = this.leaving.get(peer)
+    if (!reports || this.host !== this.self) return
+    const needed = [...this.roster].filter(([p, r]) => r.until === Infinity && !this.leaving.has(p)).map(([p]) => p)
+    if (!timedOut && !needed.every(p => reports.has(p))) return
+    const frames = new Map<number, Frame>()
+    for (const fs of reports.values()) for (const f of fs) frames.set(f.tick, f)
+    for (const f of this.frames.values()) if (f.peer === peer) frames.set(f.tick, f)
+    const r = this.roster.get(peer)!
     let after = r.from - 1
-    const frames: Frame[] = []
-    for (const f of this.frames.values()) if (f.peer === peer) { frames.push(f); after = Math.max(after, f.tick) }
-    r.until = after
-    this.net.send({ t: 'drop', from: this.self, peer, after, frames })
+    for (const t of frames.keys()) after = Math.max(after, t)
+    const msg = { t: 'drop', from: this.self, peer, after, frames: [...frames.values()] } as const
+    this.net.send(msg)
+    this.receive(msg)
   }
 
   private compare(tick: number) {

@@ -11,10 +11,12 @@ const SPEC = { ...DEFAULT_SPEC, sx: 96, sy: 96 }
 /** An in-memory broadcast bus: every message reaches every other peer. */
 class Bus {
   readonly peers: MemTransport[] = []
+  /** Test hook: return false to stop a message reaching a peer. */
+  filter: (from: string, to: string, msg: NetMsg) => boolean = () => true
   deliver(from: MemTransport, msg: NetMsg) {
     // Round-trip through JSON, as a real wire would.
     const copy = JSON.parse(JSON.stringify(msg)) as NetMsg
-    for (const p of this.peers) if (p !== from) queueMicrotask(() => p.handlers.forEach(h => h(copy)))
+    for (const p of this.peers) if (p !== from && this.filter(from.self, p.self, copy)) queueMicrotask(() => p.handlers.forEach(h => h(copy)))
   }
 }
 class MemTransport implements Transport {
@@ -79,4 +81,26 @@ test('a peer that leaves is dropped at the same tick everywhere', async () => {
   expect(b.desyncAt).toBeUndefined()
   expect(c.desyncAt).toBeUndefined()
   expect(b.sim.tick).toBeGreaterThan(250)
+})
+
+test('a leaver whose last input reached only one peer does not cause a desync', async () => {
+  const bus = new Bus()
+  const a = peer('a', bus), b = peer('b', bus), c = peer('c', bus)
+  a.start(0)
+  await tick()
+  b.start(1000); c.start(1000)
+  await run([a, b, c], 150)
+  expect([b.state, c.state]).toEqual(['running', 'running'])
+  // c clicks, and its last frames (carrying the click) reach b but not the host a.
+  c.issue({ kind: 'drop', x: 30, y: 30, z: 40 })
+  bus.filter = (from, to, msg) => !(from === 'c' && to === 'a' && msg.t === 'frame')
+  await run([a, b, c], 6)
+  bus.filter = () => true
+  c.net.close()
+  await run([a, b], 300)
+  expect(a.roster.get('c')!.until).toBe(b.roster.get('c')!.until)
+  expect(a.desyncAt).toBeUndefined()
+  expect(b.desyncAt).toBeUndefined()
+  expect(a.checks + b.checks).toBeGreaterThan(5)
+  expect(Math.min(a.sim.tick, b.sim.tick)).toBeGreaterThan(250)
 })
