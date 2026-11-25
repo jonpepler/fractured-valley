@@ -1,0 +1,17 @@
+{
+  "name": "cell-step-bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "bench": "node scripts/build-wasm.mjs && node src/bench.ts",
+    "phases": "node scripts/build-wasm.mjs && node src/phases.ts",
+    "test": "node scripts/build-wasm.mjs && vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.7",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.2"
+  }
+}
