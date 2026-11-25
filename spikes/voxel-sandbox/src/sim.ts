@@ -58,6 +58,15 @@ export interface StepStats {
   failed: number
 }
 
+export interface SimState {
+  tick: number
+  burning: number[]
+  loose: number[]
+  debris: number[]
+  touched: number[]
+  queue: Scheduled[]
+}
+
 export class Sim {
   tick = 0
   readonly bodies: Body[] = []
@@ -78,6 +87,29 @@ export class Sim {
   }
 
   constructor(readonly world: Grid, readonly seed: number) {}
+
+  /** Everything besides the world grid that carries from one tick to the next. */
+  exportState(): SimState {
+    if (this.bodies.length) throw new Error('checkpoint only while nothing is moving')
+    const sorted = (set: Set<number>) => [...set].sort((a, b) => a - b)
+    return {
+      tick: this.tick,
+      burning: sorted(this.burning),
+      loose: sorted(this.loose),
+      debris: sorted(this.debris),
+      touched: [...this.touched],
+      queue: [...this.queue].sort((a, b) => a.tick - b.tick || a.peer - b.peer || a.seq - b.seq),
+    }
+  }
+
+  importState(s: SimState): void {
+    this.tick = s.tick
+    this.burning = new Set(s.burning)
+    this.loose = new Set(s.loose)
+    this.debris = new Set(s.debris)
+    this.touched = [...s.touched]
+    this.queue = [...s.queue]
+  }
 
   get grids(): Grid[] {
     return [this.world, ...this.bodies.map(b => b.grid)]
