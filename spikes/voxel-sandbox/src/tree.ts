@@ -108,10 +108,11 @@ export function growTree(g: Grid, seed: number, bx: number, by: number, bz: numb
   }
   const maxTips = nodes[0]!.tips
   const trunkR = Math.max(FP, Math.floor((shape.radius * FP) / 6)) // radius at the base, fixed-point
-  let written = 0
+  const mine = new Set<number>()
+  const key = (x: number, y: number, z: number) => x | y << 10 | z << 20
   const put = (x: number, y: number, z: number, m: number) => {
     const cur = g.get(x, y, z)
-    if (cur === M.Air || cur === M.TallGrass || cur === M.Flower || (m === M.Wood && cur === M.Leaves)) { g.set(x, y, z, m); written++ }
+    if (cur === M.Air || cur === M.TallGrass || cur === M.Flower || (m === M.Wood && cur === M.Leaves)) { g.set(x, y, z, m); mine.add(key(x, y, z)) }
   }
   // ── wood: each segment as a run of discs, radius from the pipe model ──
   for (let i = 1; i < nodes.length; i++) {
@@ -163,5 +164,19 @@ export function growTree(g: Grid, seed: number, bx: number, by: number, bz: numb
       put(lx + dx, ly + dy, lz + dz, M.Leaves)
     }
   }
-  return written
+  // Remove anything not joined face-to-face back to the trunk base: a stray
+  // leaf touching only at a corner would float forever, and lock the crown
+  // in place if the tree is ever cut down.
+  const reached = new Set<number>([key(bx, by, bz)])
+  const stack = [key(bx, by, bz)]
+  while (stack.length) {
+    const p = stack.pop()!
+    const x = p & 1023, y = (p >> 10) & 1023, z = p >>> 20
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as const) {
+      const q = key(x + dx, y + dy, z + dz)
+      if (mine.has(q) && !reached.has(q)) { reached.add(q); stack.push(q) }
+    }
+  }
+  for (const p of [...mine].sort((a, b) => a - b)) if (!reached.has(p)) g.set(p & 1023, (p >> 10) & 1023, p >>> 20, M.Air)
+  return reached.size
 }

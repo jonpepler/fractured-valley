@@ -15,9 +15,15 @@ import { chance, hash32 } from './rng'
 export type Command =
   | { readonly kind: 'ignite'; readonly x: number; readonly y: number; readonly z: number }
   | { readonly kind: 'drop'; readonly x: number; readonly y: number; readonly z: number }
+  /** A metal cube thrown from (x, y, z) at (vx, vy, vz) cells per second. */
+  | { readonly kind: 'launch'; readonly x: number; readonly y: number; readonly z: number; readonly vx: number; readonly vy: number; readonly vz: number }
 
 /** Broken-off pieces smaller than this fall as debris rather than as rigid bodies. */
 export const SMALL_PIECE = 8
+/** Velocity change in one tick (1/16 cells/s) that counts as an impact: 24 cells/s. */
+const IMPACT_DV = 24 * 16
+/** How much harder a cell is to smash than to crush slowly (× load capacity). */
+const IMPACT_TOUGHNESS = 1
 
 export interface Scheduled {
   readonly tick: number
@@ -46,7 +52,7 @@ const N6: readonly [number, number, number][] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0
 /** Notable moments, kept for inspection and tests (pillar 6). */
 export interface SimEvent {
   readonly tick: number
-  readonly kind: 'gave-way' | 'detached' | 'crumbled' | 'landed'
+  readonly kind: 'gave-way' | 'detached' | 'crumbled' | 'landed' | 'smashed'
   readonly cells: number
   readonly at: readonly [number, number, number]
 }
@@ -78,6 +84,9 @@ export class Sim {
   private queue: Scheduled[] = []
   /** Cells whose removal may have left something unsupported. */
   private touched: number[] = []
+  /** Velocity given to pieces that break off during an impact this tick. */
+  private push: { x: number; y: number; z: number } | undefined
+  private pushAt = -1
   last: StepStats = { burning: 0, loose: 0, bodies: 0, detached: 0, failed: 0 }
   readonly events: SimEvent[] = []
   readonly physics = new Physics()
@@ -91,7 +100,7 @@ export class Sim {
 
   /** Everything besides the world grid that carries from one tick to the next. */
   exportState(): SimState {
-    if (this.bodies.length) throw new Error('checkpoint only while nothing is moving')
+    if (this.bodies.length || this.tick - this.pushAt <= 1) throw new Error('checkpoint only while nothing is moving')
     const sorted = (set: Set<number>) => [...set].sort((a, b) => a - b)
     return {
       tick: this.tick,
@@ -159,8 +168,8 @@ export class Sim {
       } else {
         const g = new Grid(6, 6, 6)
         for (let z = 0; z < 6; z++) for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++) g.set(x, y, z, M.Metal)
-        g.ox = c.x - 3; g.oy = c.y - 3; g.oz = c.z + 40
-        this.addBody(g)
+        g.ox = c.x - 3; g.oy = c.y - 3; g.oz = c.kind === 'drop' ? c.z + 40 : c.z
+        this.addBody(g, c.kind === 'launch' ? { x: c.vx, y: c.vy, z: c.vz } : undefined)
       }
     }
   }
@@ -463,11 +472,11 @@ export class Sim {
    * Nothing breaks perfectly evenly: give each new body a small, seeded
    * twist so tall things can tip. Deterministic, so every peer agrees.
    */
-  private addBody(g: Grid) {
+  private addBody(g: Grid, velocity?: { x: number; y: number; z: number }) {
     const h = hash32(this.seed, this.tick, g.ox, g.oy ^ (g.oz << 10))
     const s = (k: number) => (((h >>> k) & 255) - 128) / 128
     const scale = g.sx * g.sy * g.sz * 0.15
-    this.physics.add(g, { x: s(0) * scale, y: s(8) * scale, z: s(16) * scale * 0.2 })
+    this.physics.add(g, { x: s(0) * scale, y: s(8) * scale, z: s(16) * scale * 0.2 }, velocity ?? (this.tick - this.pushAt <= 1 ? this.push : undefined))
     this.bodies.push({ grid: g, resting: 0, age: 0 })
   }
 
@@ -475,13 +484,85 @@ export class Sim {
 
   private stepBodies() {
     if (!this.bodies.length) return
+    const before = new Map(this.bodies.map(b => [b, this.physics.velocity(b.grid)] as const))
     this.physics.step(this.world, this.bodies.map(b => b.grid))
+    for (const b of [...this.bodies]) {
+      // A sudden change of velocity means it hit something hard.
+      const [bx, by, bz] = before.get(b)!, [ax, ay, az] = this.physics.velocity(b.grid)
+      const dv2 = (ax - bx) ** 2 + (ay - by) ** 2 + (az - bz) ** 2
+      if (dv2 > IMPACT_DV * IMPACT_DV) this.impact(b, [bx, by, bz], Math.floor(Math.sqrt(dv2)))
+    }
     for (const b of [...this.bodies]) {
       b.resting = this.physics.isResting(b.grid) ? b.resting + 1 : 0
       b.age++
       if (b.resting >= 8 || b.age > 600 || b.grid.pose!.z < -40) this.settle(b)
     }
     if (!this.bodies.length) this.physics.reset()
+  }
+
+  /**
+   * Impact: the body's momentum change (mass × Δv) is shared among the
+   * structure cells just ahead of it along its old velocity. A cell whose
+   * share exceeds its strength breaks into falling splinters; the structure
+   * check then decides what falls (a cut trunk takes its tree with it).
+   * Terrain and stone are far too strong to break this way.
+   */
+  private impact(b: Body, v: [number, number, number], dv: number) {
+    const w = this.world, g = b.grid, pose = g.pose!
+    const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) || 1
+    const ux = v[0] / len, uy = v[1] / len, uz = v[2] / len
+    let mass = 0
+    const hit = new Set<number>()
+    for (let z = 0; z < g.sz; z++) for (let y = 0; y < g.sy; y++) for (let x = 0; x < g.sx; x++) {
+      const m = g.get(x, y, z)
+      if (m === M.Air) continue
+      mass += mat(m).density
+      const [cx, cy, cz] = cellCentre(pose, x, y, z)
+      // The first structure cell within 3 cells ahead (round things curve away).
+      for (const reach of [0.6, 1.2, 1.8, 2.4, 3.0]) {
+        const hx = Math.floor(cx + ux * reach), hy = Math.floor(cy + uy * reach), hz = Math.floor(cz + uz * reach)
+        const m = w.get(hx, hy, hz)
+        if (this.isStructure(m)) { hit.add(pack(hx, hy, hz)); break }
+        if (m !== M.Air && mat(m).solid) break
+      }
+    }
+    if (!hit.size) return
+    const momentum = Math.floor((mass * dv) / 16) // mass units × cells/s
+    const share = Math.floor(momentum / hit.size)
+    let broke = 0
+    // Each contact's share of the momentum punches on along the direction of
+    // travel, breaking cells until it is spent: hard enough, and it cuts through.
+    const strengthAt = (x: number, y: number, z: number) => {
+      const m = mat(w.get(x, y, z))
+      if (!m.structural || !this.isStructure(w.get(x, y, z))) return Infinity
+      const s = w.getState(x, y, z) // burnt wood is weaker, as in the load check
+      const f = m.flammable
+      return Math.floor((m.structural.capacity * IMPACT_TOUGHNESS * (f && s > 0 ? f.burnTicks - s : 1)) / (f && s > 0 ? f.burnTicks : 1))
+    }
+    const first = [...hit].sort((a, b) => a - b)
+    for (const c of first) {
+      let [x, y, z] = unpack(c)
+      let budget = share
+      for (let depth = 0; depth < 12; depth++) {
+        const st = strengthAt(x, y, z)
+        if (st === Infinity) break
+        if (budget <= st) break
+        budget -= st
+        // Smashed: the cell is gone (there's no splinter material yet).
+        w.set(x, y, z, M.Air)
+        this.burning.delete(pack(x, y, z))
+        this.touched.push(pack(x, y, z))
+        broke++
+        x = Math.floor(x + 0.5 + ux); y = Math.floor(y + 0.5 + uy); z = Math.floor(z + 0.5 + uz)
+      }
+    }
+    if (broke) {
+      this.note('smashed', broke, [...hit][0]!)
+      // Whatever breaks off this tick is shoved the way the body was going.
+      const k = Math.min(1, dv / len) * 0.35
+      this.push = { x: (v[0] / 16) * k, y: (v[1] / 16) * k, z: 0 }
+      this.pushAt = this.tick
+    }
   }
 
   /** Write a body back into the grid where it came to rest. */

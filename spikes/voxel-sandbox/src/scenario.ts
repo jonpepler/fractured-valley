@@ -31,6 +31,9 @@ export function runScenario(onTick?: (sim: Sim) => void): { sim: Sim; result: Sc
   at(120, 'drop', px + 8, py + 10)
   at(140, 'drop', px + 10, py + 12)
   at(300, 'ignite', 110, 30)
+  // Throw a cube at the north tree's trunk: impacts, substeps, a falling tree.
+  const tx = Math.floor(spec.sx * 0.55), ty = Math.floor(spec.sy * 0.18)
+  sim.schedule({ tick: 200, peer: 0, seq: seq++, command: { kind: 'launch', x: tx, y: ty - 20, z: ground(tx, ty - 20) + 6, vx: 0, vy: 120, vz: 10 } })
   const hashes: string[] = []
   const start = performance.now()
   for (let t = 0; t < SCENARIO_TICKS; t++) {

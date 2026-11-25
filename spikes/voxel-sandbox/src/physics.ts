@@ -56,7 +56,7 @@ export class Physics {
   }
 
   /** Make a grid a dynamic body, optionally with a small push. */
-  add(g: Grid, impulse?: { x: number; y: number; z: number }) {
+  add(g: Grid, impulse?: { x: number; y: number; z: number }, velocity?: { x: number; y: number; z: number }) {
     const coords: number[] = []
     let mass = 0
     for (let z = 0; z < g.sz; z++) for (let y = 0; y < g.sy; y++) for (let x = 0; x < g.sx; x++) {
@@ -72,6 +72,7 @@ export class Physics {
       rb,
     )
     if (impulse) rb.applyTorqueImpulse(impulse, true)
+    if (velocity) rb.setLinvel(velocity, true)
     this.bodies.set(g, rb)
     g.pose = { x: g.ox, y: g.oy, z: g.oz, qx: 0, qy: 0, qz: 0, qw: 1 }
   }
@@ -90,7 +91,8 @@ export class Physics {
     const wanted = new Set<number>()
     for (const g of moving) {
       const p = g.pose!
-      const r = Math.ceil(Math.hypot(g.sx, g.sy, g.sz)) + 4
+      // Math.hypot may differ between engines; sqrt is exact everywhere.
+      const r = Math.ceil(Math.sqrt(g.sx * g.sx + g.sy * g.sy + g.sz * g.sz)) + 4
       const lo = (v: number) => Math.max(0, Math.floor((v - r) / BRICK))
       const hi = (v: number, n: number) => Math.min(n - 1, Math.floor((v + r) / BRICK))
       for (let bz = lo(p.z); bz <= hi(p.z, world.bz); bz++)
@@ -98,12 +100,30 @@ export class Physics {
           for (let bx = lo(p.x); bx <= hi(p.x, world.bx); bx++) wanted.add((bz * world.by + by) * world.bx + bx)
     }
     for (const b of [...wanted].sort((a, c) => a - c)) this.ensureStatic(world, b)
-    this.world.step()
+    // Substeps: nothing may move more than 2 cells per step, or a fast body
+    // tunnels through thin things (a trunk is ~4 cells). The count comes from
+    // integer speeds, so every peer picks the same number.
+    let fastest = 0 // (1/16 cells/s)²
+    for (const g of moving) {
+      const [vx, vy, vz] = this.velocity(g)
+      fastest = Math.max(fastest, vx * vx + vy * vy + vz * vz)
+    }
+    const perStep = 2 * 16 / TICK_SECONDS // 2 cells per step, in 1/16 cells/s
+    const sub = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(fastest) / perStep)))
+    this.world.timestep = TICK_SECONDS / sub
+    for (let i = 0; i < sub; i++) this.world.step()
+    this.world.timestep = TICK_SECONDS
     for (const g of moving) {
       const rb = this.bodies.get(g)!
       const t = rb.translation(), q = rb.rotation()
       g.pose = { x: t.x, y: t.y, z: t.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w }
     }
+  }
+
+  /** Linear velocity in 1/16 cells per second, rounded to integers for the simulation. */
+  velocity(g: Grid): [number, number, number] {
+    const v = this.bodies.get(g)?.linvel()
+    return v ? [Math.round(v.x * 16), Math.round(v.y * 16), Math.round(v.z * 16)] : [0, 0, 0]
   }
 
   /** Linear and angular speed, for inspection. */
@@ -119,7 +139,7 @@ export class Physics {
     if (!rb) return true
     if (rb.isSleeping()) return true
     const v = rb.linvel(), w = rb.angvel()
-    return Math.hypot(v.x, v.y, v.z) < 1 && Math.hypot(w.x, w.y, w.z) < 0.25
+    return v.x * v.x + v.y * v.y + v.z * v.z < 1 && w.x * w.x + w.y * w.y + w.z * w.z < 0.0625
   }
 
   private ensureStatic(world: Grid, b: number) {

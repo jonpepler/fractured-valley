@@ -94,3 +94,28 @@ describe('storage', () => {
     expect(s.detailed).toBeLessThan(s.bricks / 2)
   })
 })
+
+describe('impacts', () => {
+  function throwAtTree(speed: number) {
+    const spec = DEFAULT_SPEC
+    const sim = new Sim(generate(spec), spec.seed)
+    const tx = Math.floor(spec.sx * 0.86), ty = Math.floor(spec.sy * 0.42)
+    sim.schedule({ tick: 2, peer: 0, seq: 0, command: { kind: 'launch', x: tx + 22, y: ty, z: groundAt(sim, tx + 22, ty) + 6, vx: -speed, vy: 0, vz: 10 } })
+    for (let i = 0; i < 300; i++) sim.step()
+    return sim.events
+  }
+
+  test('a fast metal cube cuts through a trunk and the tree falls', () => {
+    const ev = throwAtTree(120)
+    expect(ev.some(e => e.kind === 'smashed')).toBe(true)
+    const fell = ev.find(e => e.kind === 'detached' && e.cells > 1000)
+    expect(fell).toBeDefined()
+    expect(ev.some(e => e.kind === 'landed' && e.cells === fell!.cells)).toBe(true)
+  })
+
+  test('a slow one only dents it', () => {
+    const ev = throwAtTree(60)
+    expect(ev.some(e => e.kind === 'smashed')).toBe(true)
+    expect(ev.some(e => e.kind === 'detached' && e.cells > 1000)).toBe(false)
+  })
+})
