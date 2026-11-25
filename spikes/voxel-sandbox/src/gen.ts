@@ -3,6 +3,7 @@
 // identical world from the seed alone, and an unedited region never needs
 // to be stored or sent: it can be regenerated.
 
+import { growTree, type TreeShape } from './tree'
 import { Grid } from './grid'
 import { M } from './materials'
 import { fbm2, hash32, valueNoise2 } from './rng'
@@ -102,9 +103,21 @@ export function generate(spec: WorldSpec = DEFAULT_SPEC): Grid {
   }
 
   placeRuin(g, spec, col, Math.floor(spec.sx * 0.3), Math.floor(spec.sy * 0.22))
-  placeTree(g, spec, col, Math.floor(spec.sx * 0.12), Math.floor(spec.sy * 0.62), 26)
-  placeTree(g, spec, col, Math.floor(spec.sx * 0.55), Math.floor(spec.sy * 0.18), 30)
-  placeTree(g, spec, col, Math.floor(spec.sx * 0.86), Math.floor(spec.sy * 0.42), 22)
+  // Grown trees (src/tree.ts): three big ones where the old ones stood, and a
+  // few saplings. Each is shaped by its own position and the seed.
+  const trees: [number, number, TreeShape][] = [
+    [0.12, 0.62, { trunk: 16, radius: 13, crownHeight: 26, points: 120 }],
+    [0.55, 0.18, { trunk: 20, radius: 14, crownHeight: 30, points: 140 }],
+    [0.86, 0.42, { trunk: 12, radius: 11, crownHeight: 22, points: 100 }],
+    [0.20, 0.80, { trunk: 8, radius: 6, crownHeight: 12, points: 40 }],
+    [0.70, 0.78, { trunk: 10, radius: 7, crownHeight: 14, points: 30 }],
+    [0.08, 0.40, { trunk: 7, radius: 5, crownHeight: 10, points: 30 }],
+  ]
+  for (const [fx, fy, shape] of trees) {
+    const x = Math.floor(spec.sx * fx), y = Math.floor(spec.sy * fy)
+    if (col(x, y).top + 1 < spec.waterLevel) continue // not in the pond
+    growTree(g, spec.seed, x, y, col(x, y).top + 1, shape)
+  }
   placePostAndBlock(g, col, Math.floor(spec.sx * 0.52), Math.floor(spec.sy * 0.56))
   g.compact()
   return g
@@ -132,20 +145,6 @@ function placeRuin(g: Grid, spec: WorldSpec, col: ColFn, cx: number, cy: number)
   for (let y = cy + 4; y < cy + 14; y++) for (let x = cx + w; x < cx + w + 34; x++) {
     const h = base + 14 - Math.floor((x - cx - w) / 5) + (hash32(spec.seed, x >> 2, y, 31) % 3)
     for (let z = col(x, y).top; z <= h; z++) g.set(x, y, z, h - z < 2 ? M.MossStone : M.Stone)
-  }
-}
-
-function placeTree(g: Grid, spec: WorldSpec, col: ColFn, cx: number, cy: number, height: number) {
-  const base = col(cx, cy).top
-  for (let z = base + 1; z <= base + height; z++)
-    for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) g.set(cx + dx, cy + dy, z, M.Wood)
-  const r = 9
-  const lz = base + height
-  for (let dz = -r; dz <= r; dz++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-    const d = dx * dx + dy * dy + dz * dz * 2
-    if (d > r * r) continue
-    if (hash32(spec.seed, cx + dx, cy + dy, lz + dz) % 100 < 12) continue
-    if (g.get(cx + 1 + dx, cy + 1 + dy, lz + dz) === M.Air) g.set(cx + 1 + dx, cy + 1 + dy, lz + dz, M.Leaves)
   }
 }
 
