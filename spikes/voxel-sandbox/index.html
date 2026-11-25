@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voxel sandbox</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #587e89; overflow: hidden; }
+      #viewport { position: fixed; inset: 0; cursor: crosshair; touch-action: none; }
+      #view { position: absolute; left: 0; top: 0; transform-origin: 0 0; image-rendering: pixelated; }
+      #hud {
+        position: fixed; left: 8px; top: 8px; margin: 0; padding: 6px 8px;
+        font: 12px/1.4 ui-monospace, Menlo, monospace; color: #e8f0e8;
+        background: rgba(20, 16, 28, 0.72); border-radius: 4px; pointer-events: none;
+      }
+      #help {
+        position: fixed; right: 8px; bottom: 8px; margin: 0; padding: 6px 8px;
+        font: 12px/1.4 ui-monospace, Menlo, monospace; color: #e8f0e8;
+        background: rgba(20, 16, 28, 0.6); border-radius: 4px; pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="viewport"><canvas id="view"></canvas></div>
+    <pre id="hud"></pre>
+    <pre id="help">click: fire · right-click: drop metal cube · drag: pan · wheel: zoom
+space: pause · .: step · f: fit</pre>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
