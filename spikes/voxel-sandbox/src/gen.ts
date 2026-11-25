@@ -153,7 +153,7 @@ function placePostAndBlock(g: Grid, col: ColFn, cx: number, cy: number) {
   const base = col(cx, cy).top
   const postH = 16
   for (let z = base + 1; z <= base + postH; z++)
-    for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) g.set(cx + dx, cy + dy, z, M.Wood)
+    for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) g.set(cx + dx, cy + dy, z, M.Timber)
   for (let dz = 1; dz <= 6; dz++) for (let dy = -2; dy < 4; dy++) for (let dx = -2; dx < 4; dx++)
     g.set(cx + dx, cy + dy, base + postH + dz, M.Metal)
   // Dry grass around its foot, so a fire there takes hold.

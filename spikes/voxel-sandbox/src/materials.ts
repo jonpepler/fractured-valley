@@ -53,6 +53,7 @@ export const M = {
   Metal: 11,
   Scorched: 12,
   Moss: 13,
+  Timber: 14,
 } as const
 export type MaterialId = (typeof M)[keyof typeof M]
 
@@ -90,14 +91,15 @@ const list: Material[] = [
     palette: ['#d9788a', '#e39aa5', '#c95f75'].map(hex),
   },
   {
+    // Living wood: full of sap, slow to catch, smoulders for minutes.
     id: M.Wood, name: 'wood', solid: true, opaque: true, density: 7,
-    flammable: { catchPerMille: 25, burnTicks: 240, becomes: M.Ash },
+    flammable: { catchPerMille: 6, burnTicks: 3000, becomes: M.Ash },
     structural: { capacity: 12000 },
     palette: ['#7a5232', '#6a4529', '#86603a'].map(hex),
   },
   {
     id: M.Leaves, name: 'leaves', solid: true, opaque: true, density: 1,
-    flammable: { catchPerMille: 140, burnTicks: 25, becomes: M.Air },
+    flammable: { catchPerMille: 40, burnTicks: 200, becomes: M.Air },
     palette: ['#3d7a2c', '#2f6a27', '#4b8a33', '#58993b'].map(hex),
   },
   {
@@ -121,6 +123,13 @@ const list: Material[] = [
     id: M.Moss, name: 'moss', solid: false, opaque: true, density: 1,
     flammable: { catchPerMille: 90, burnTicks: 15, becomes: M.Air },
     palette: ['#6e9a35', '#82ab3f', '#5c8a2e'].map(hex),
+  },
+  {
+    // Dead, seasoned wood (posts, beams): dry, so it catches and burns fast.
+    id: M.Timber, name: 'timber', solid: true, opaque: true, density: 6,
+    flammable: { catchPerMille: 25, burnTicks: 240, becomes: M.Ash },
+    structural: { capacity: 12000 },
+    palette: ['#7d6046', '#6c523b', '#8a6c50'].map(hex),
   },
 ]
 
