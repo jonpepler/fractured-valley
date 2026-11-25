@@ -19,6 +19,7 @@
 
 import type { Grid } from './grid'
 import { M, MATERIALS, mat } from './materials'
+import { cellCentre } from './physics'
 import { hash32, valueNoise2 } from './rng'
 
 /**
@@ -290,7 +291,13 @@ export class IsoRenderer {
   }
 
   private drawBodyCell(g: Grid, x: number, y: number, z: number, m: number) {
-    const wx = x + g.ox, wy = y + g.oy, wz = z + g.oz
+    // A moving body is drawn by placing each of its cells at the world cell
+    // its centre currently falls in: voxels stay voxels while it tumbles.
+    let wx = x + g.ox, wy = y + g.oy, wz = z + g.oz
+    if (g.pose) {
+      const [cx, cy, cz] = cellCentre(g.pose, x, y, z)
+      wx = Math.floor(cx); wy = Math.floor(cy); wz = Math.floor(cz)
+    }
     const [ax, ay] = this.anchor(wx, wy, wz)
     const d = wx + wy + wz
     const pick = this.pickOf(m, wx, wy, wz)

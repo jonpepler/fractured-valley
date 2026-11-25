@@ -1,7 +1,10 @@
-import { describe, expect, test } from 'vitest'
+import { beforeAll, describe, expect, test } from 'vitest'
 import { DEFAULT_SPEC, generate } from '../src/gen'
 import { M } from '../src/materials'
 import { Sim } from '../src/sim'
+import { initPhysics } from '../src/physics'
+
+beforeAll(() => initPhysics())
 import { Grid, hashGrids } from '../src/grid'
 
 // A smaller world keeps the suite fast; the rules are the same.
@@ -54,17 +57,18 @@ describe('determinism', () => {
 })
 
 describe('the burning post', () => {
-  test('the post gives way under the metal block, which falls and lands', () => {
+  test('the post gives way under the metal block, which topples and lands', () => {
     const sim = burnThePost()
     const kinds = sim.events.map(e => e.kind)
     expect(kinds).toContain('gave-way')
     expect(kinds).toContain('detached')
     expect(kinds).toContain('landed')
-    // The block ends lower than it started, still in one piece.
+    expect(sim.bodies).toHaveLength(0) // everything has come to rest
+    // The block is still in one piece, and lower than it started.
     let metal = 0, top = 0
-    for (let z = 0; z < SPEC.sz; z++) for (let y = POST.y - 6; y < POST.y + 8; y++) for (let x = POST.x - 6; x < POST.x + 8; x++)
+    for (let z = 0; z < SPEC.sz; z++) for (let y = 0; y < SPEC.sy; y++) for (let x = 0; x < SPEC.sx; x++)
       if (sim.world.get(x, y, z) === M.Metal) { metal++; top = Math.max(top, z) }
-    expect(metal).toBe(216)
+    expect(metal).toBe(216 + 216) // this block and the one peer 1 dropped
     const ground = groundAt(sim, POST.x - 5, POST.y - 5)
     expect(top).toBeLessThan(ground + 16 + 6)
   })

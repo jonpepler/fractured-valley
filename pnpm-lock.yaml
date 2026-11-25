@@ -22,6 +22,9 @@ importers:
 
   spikes/voxel-sandbox:
     dependencies:
+      '@dimforge/rapier3d-deterministic-compat':
+        specifier: ^0.21.0
+        version: 0.21.0
       trystero:
         specifier: ^0.27.0
         version: 0.27.0
@@ -40,6 +43,9 @@ importers:
         version: 5.1.2(@types/node@22.20.7)(vite@8.3.8(@types/node@22.20.7)(esbuild@0.28.2)(tsx@4.23.15))
 
 packages:
+
+  '@dimforge/rapier3d-deterministic-compat@0.21.0':
+    resolution: {integrity: sha512-n7JuU62Obljlgq+OeH2DHhTmRSjRzwuJPl54tS9pFIzVQyvXsO5CH+a5KkIRBtnFWDbg1Zicv9BulG0jfBAopA==}
 
   '@emnapi/core@2.0.0-beta.2':
     resolution: {integrity: sha512-MzCVoWtcg4Pm2B3je5mMvYMvj3MmBKw+fU7vbsJc9/iT8ip6/eYIHo/Dsm/mr+wsHB6SEyJDuxB09Yy6r/8+4A==}
@@ -752,6 +758,8 @@ packages:
     hasBin: true
 
 snapshots:
+
+  '@dimforge/rapier3d-deterministic-compat@0.21.0': {}
 
   '@emnapi/core@2.0.0-beta.2':
     dependencies:

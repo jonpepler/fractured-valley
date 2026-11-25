@@ -16,6 +16,12 @@ export class Brick {
   readonly state = new Uint8Array(BRICK_CELLS)
 }
 
+/** Position and orientation of a moving body (world cells; quaternion). */
+export interface Pose {
+  x: number; y: number; z: number
+  qx: number; qy: number; qz: number; qw: number
+}
+
 export class Grid {
   readonly bx: number
   readonly by: number
@@ -28,6 +34,8 @@ export class Grid {
   readonly version: Uint32Array
   /** When set, every changed cell is appended here (packed), for views. */
   changeLog: number[] | undefined
+  /** Set while this grid is a moving rigid body. */
+  pose: Pose | undefined
   /** Integer position of this grid in world cells (non-zero for bodies). */
   ox = 0
   oy = 0

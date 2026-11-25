@@ -8,6 +8,7 @@
 
 import { Grid, hashGrids } from './grid'
 import { M, mat } from './materials'
+import { cellCentre, Physics, poseBits, supports } from './physics'
 import { chance, hash32 } from './rng'
 
 export type Command =
@@ -23,10 +24,10 @@ export interface Scheduled {
 
 export interface Body {
   readonly grid: Grid
-  /** Downward speed in 1/16 cell per tick. */
-  vz: number
-  /** Sub-cell progress in 1/16 cell. */
-  acc: number
+  /** Consecutive ticks it has been at rest; it settles into the world after a few. */
+  resting: number
+  /** Ticks since it started moving: anything still rocking after 30 s settles anyway. */
+  age: number
 }
 
 export const pack = (x: number, y: number, z: number) => x | y << 10 | z << 20
@@ -64,6 +65,7 @@ export class Sim {
   private touched: number[] = []
   last: StepStats = { burning: 0, loose: 0, bodies: 0, detached: 0, failed: 0 }
   readonly events: SimEvent[] = []
+  readonly physics = new Physics()
 
   private note(kind: SimEvent['kind'], cells: number, at: number) {
     this.events.push({ tick: this.tick, kind, cells, at: unpack(at) })
@@ -101,7 +103,7 @@ export class Sim {
   hash(): number {
     let h = hashGrids(this.grids)
     h = hash32(h, this.tick)
-    for (const b of this.bodies) h = hash32(h, b.vz, b.acc)
+    for (const b of this.bodies) for (const v of poseBits(b.grid.pose!)) h = hash32(h, v, b.resting)
     return h
   }
 
@@ -120,7 +122,7 @@ export class Sim {
         const g = new Grid(6, 6, 6)
         for (let z = 0; z < 6; z++) for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++) g.set(x, y, z, M.Metal)
         g.ox = c.x - 3; g.oy = c.y - 3; g.oz = c.z + 40
-        this.bodies.push({ grid: g, vz: 0, acc: 0 })
+        this.addBody(g)
       }
     }
   }
@@ -381,49 +383,63 @@ export class Sim {
       w.set(x, y, z, M.Air)
       this.burning.delete(c)
     }
-    this.bodies.push({ grid: g, vz: 0, acc: 0 })
+    this.addBody(g)
+  }
+
+  /**
+   * Nothing breaks perfectly evenly: give each new body a small, seeded
+   * twist so tall things can tip. Deterministic, so every peer agrees.
+   */
+  private addBody(g: Grid) {
+    const h = hash32(this.seed, this.tick, g.ox, g.oy ^ (g.oz << 10))
+    const s = (k: number) => (((h >>> k) & 255) - 128) / 128
+    const scale = g.sx * g.sy * g.sz * 0.15
+    this.physics.add(g, { x: s(0) * scale, y: s(8) * scale, z: s(16) * scale * 0.2 })
+    this.bodies.push({ grid: g, resting: 0, age: 0 })
   }
 
   // ── rigid bodies ────────────────────────────────────────────────────────
 
   private stepBodies() {
-    const w = this.world
-    const landed: Body[] = []
-    for (const b of this.bodies) {
-      b.vz = Math.min(64, b.vz + 3)
-      b.acc += b.vz
-      while (b.acc >= 16) {
-        b.acc -= 16
-        if (this.blocked(b.grid)) { landed.push(b); break }
-        b.grid.oz--
-      }
-    }
-    for (const b of landed) {
-      const g = b.grid
-      for (let z = 0; z < g.sz; z++) for (let y = 0; y < g.sy; y++) for (let x = 0; x < g.sx; x++) {
-        const m = g.get(x, y, z)
-        if (m === M.Air) continue
-        const s = g.getState(x, y, z)
-        w.set(x + g.ox, y + g.oy, z + g.oz, m, s)
-        // Still burning when it lands: keeps burning in the world.
-        if (s > 0 && mat(m).flammable) this.burning.add(pack(x + g.ox, y + g.oy, z + g.oz))
-      }
-      this.bodies.splice(this.bodies.indexOf(b), 1)
-      this.note('landed', g.sx * g.sy * g.sz, pack(g.ox, g.oy, g.oz))
+    if (!this.bodies.length) return
+    this.physics.step(this.world, this.bodies.map(b => b.grid))
+    for (const b of [...this.bodies]) {
+      b.resting = this.physics.isResting(b.grid) ? b.resting + 1 : 0
+      b.age++
+      if (b.resting >= 8 || b.age > 600 || b.grid.pose!.z < -40) this.settle(b)
     }
   }
 
-  /** Would moving this body down one cell hit something solid? */
-  private blocked(g: Grid): boolean {
+  /** Write a body back into the grid where it came to rest. */
+  private settle(b: Body) {
     const w = this.world
+    const g = b.grid
+    const pose = g.pose!
+    const cells: { m: number; s: number; x: number; y: number; z: number }[] = []
     for (let z = 0; z < g.sz; z++) for (let y = 0; y < g.sy; y++) for (let x = 0; x < g.sx; x++) {
-      if (g.get(x, y, z) === M.Air) continue
-      if (z > 0 && g.get(x, y, z - 1) !== M.Air) continue
-      const wz = z + g.oz - 1
-      if (wz < 0) return true
-      const below = mat(w.get(x + g.ox, y + g.oy, wz))
-      if (below.solid && !below.loose) return true
+      const m = g.get(x, y, z)
+      if (m === M.Air) continue
+      const [cx, cy, cz] = cellCentre(pose, x, y, z)
+      cells.push({ m, s: g.getState(x, y, z), x: Math.floor(cx), y: Math.floor(cy), z: Math.floor(cz) })
     }
-    return false
+    // Snapping a rotated body to the grid can leave it hovering a cell up:
+    // lower the whole shape until something it rests on is directly below.
+    const blocked = (dz: number) => cells.some(c => c.z - dz < 0 || supports(w.get(c.x, c.y, c.z - dz)))
+    let drop = 0
+    while (drop < 8 && !blocked(drop + 1)) drop++
+    let first = -1
+    for (const c of cells) {
+      let tz = c.z - drop
+      // Rotation can map two cells to one; stack the extra on top.
+      for (let k = 0; k < 6 && w.inBounds(c.x, c.y, tz) && supports(w.get(c.x, c.y, tz)); k++) tz++
+      if (!w.inBounds(c.x, c.y, tz)) continue
+      w.set(c.x, c.y, tz, c.m, c.s)
+      if (c.s > 0 && mat(c.m).flammable) this.burning.add(pack(c.x, c.y, tz))
+      if (first < 0) first = pack(c.x, c.y, tz)
+    }
+    this.physics.remove(g)
+    this.bodies.splice(this.bodies.indexOf(b), 1)
+    this.note('landed', cells.length, first < 0 ? 0 : first)
   }
+
 }

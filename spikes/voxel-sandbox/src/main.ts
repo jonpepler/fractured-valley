@@ -1,4 +1,5 @@
 import { DEFAULT_SPEC, generate } from './gen'
+import { initPhysics } from './physics'
 import { mat } from './materials'
 import { IsoRenderer } from './render'
 import { BroadcastTransport, Lockstep, SoloTransport, type Transport, TrysteroTransport } from './net'
@@ -9,6 +10,7 @@ const TICK_MS = 50 // 20 Hz simulation
 const params = new URLSearchParams(location.search)
 const spec = { ...DEFAULT_SPEC, seed: Number(params.get('seed') ?? DEFAULT_SPEC.seed) }
 
+await initPhysics()
 const t0 = performance.now()
 const world = generate(spec)
 const genMs = performance.now() - t0

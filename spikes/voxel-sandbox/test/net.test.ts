@@ -1,7 +1,10 @@
-import { expect, test } from 'vitest'
+import { beforeAll, expect, test } from 'vitest'
 import { DEFAULT_SPEC, generate } from '../src/gen'
 import { Lockstep, type NetMsg, type Transport } from '../src/net'
 import { Sim } from '../src/sim'
+import { initPhysics } from '../src/physics'
+
+beforeAll(() => initPhysics())
 
 const SPEC = { ...DEFAULT_SPEC, sx: 96, sy: 96 }
 
