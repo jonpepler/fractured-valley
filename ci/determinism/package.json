@@ -1,0 +1,7 @@
+{
+  "name": "determinism-ci",
+  "private": true,
+  "type": "module",
+  "description": "Runs the voxel-sandbox determinism scenario in real browsers. Kept outside the pnpm workspace so it can pin its own Playwright.",
+  "dependencies": { "playwright": "1.63.0" }
+}

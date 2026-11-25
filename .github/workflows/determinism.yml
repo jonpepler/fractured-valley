@@ -1,0 +1,64 @@
+# Does every browser and CPU compute exactly the same world?
+# Runs one scenario (fire, toppling post, falling tree, rigid bodies) in
+# Chromium, Firefox, WebKit and Node on x86 Linux, ARM macOS and Windows,
+# then compares the state hashes. Lockstep play depends on this.
+name: determinism
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['spikes/voxel-sandbox/src/**', 'ci/determinism/**', '.github/workflows/determinism.yml', 'pnpm-lock.yaml']
+
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the sandbox
+        run: pnpm --filter voxel-sandbox build
+      - name: Node
+        run: |
+          mkdir -p results
+          cd spikes/voxel-sandbox
+          npx tsx scripts/determinism.ts > ../../results/node-${{ matrix.os }}.json
+      - name: Install browsers
+        working-directory: ci/determinism
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Browsers
+        run: |
+          (cd spikes/voxel-sandbox && npx vite preview --port 4173 --strictPort --host 127.0.0.1 &)
+          npx --yes wait-on@8 http://127.0.0.1:4173/determinism.html
+          cd ci/determinism && node run.mjs http://127.0.0.1:4173/determinism.html ../../results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.os }}
+          path: results
+
+  compare:
+    needs: run
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: results
+      - name: Compare
+        run: node ci/determinism/compare.mjs results | tee -a "$GITHUB_STEP_SUMMARY"
