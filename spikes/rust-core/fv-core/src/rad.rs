@@ -40,10 +40,12 @@ pub const GREEN: usize = 2;
 pub const BLUE: usize = 3;
 pub const IONISING: usize = 4;
 
-/// Smallest infrared packet, µJ (1.5 J). Hot cells send many; warm cells send one now and then.
-const QUANTUM: i64 = 1_500_000;
-/// Smallest visible-light packet, µJ (0.5 mJ).
-const VISIBLE_QUANTUM: i64 = 500;
+/// Smallest infrared packet, µJ (1.5 J in a 10 cm cell; scaled with the
+/// cell's volume, so it stays the same share of what a cell holds). Hot
+/// cells send many; warm cells send one now and then.
+const QUANTUM: i64 = 1_500 * CELL_VOLUME_ML;
+/// Smallest visible-light packet, µJ (0.5 mJ in a 10 cm cell).
+const VISIBLE_QUANTUM: i64 = CELL_VOLUME_ML / 2;
 /// Most packets one cell sends per tick (larger packets beyond this).
 const MAX_PER_CELL: i64 = 48;
 const MAX_STEPS: usize = 200;
@@ -287,7 +289,8 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
     }
     // A flame's own light, set from the heat it released (see chem).
     if c.flame.0 > 0 {
-        let flame = c.flame.0.min((c.energy - c.latent()).0.max(0));
+        // At most the gas's heat, less what its soot and drops already sent.
+        let flame = c.flame.0.min(((c.energy - c.latent()).0 - from_gas).max(0));
         from_gas += send(w, x, y, z, false, flame, (c.energy - c.latent()).0.max(0) / 2, soot_shares(crate::chem::FLAME_GLOW), [0; 4], &mut stream, &mut glow, out);
     }
     (from_solid, from_gas, glow, local_decay)

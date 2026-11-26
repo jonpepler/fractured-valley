@@ -69,8 +69,43 @@ fn main() {
     let mut track: Vec<(f64, f64)> = Vec::new();
     let started = std::time::Instant::now();
     eprintln!("{fuel}: {n}×{n}×{nz} cells of {CELL_MM} mm, wind {wind} mm/s");
+    let trace_at: Option<i64> = std::env::var("TRACE_AT").ok().and_then(|v| v.parse().ok());
+    let trace_cell: Vec<usize> = std::env::var("TRACE_CELL").ok().map(|v| v.split(',').map(|n| n.parse().unwrap()).collect()).unwrap_or_default();
     for tick in 0..ticks {
+        if trace_at.map_or(false, |t| tick + 20 >= t && tick < t) {
+            // Run this tick's phases on a copy, showing the traced cell after each.
+            let (x, y, z) = (trace_cell[0], trace_cell[1], trace_cell[2]);
+            let mut w = sim.world.clone();
+            let mut flow = sim.flow.clone();
+            let show = |w: &World, what: &str| {
+                let c = w.get(x, y, z);
+                eprintln!("tick {} {what:>8}: gas energy {} latent {} T {:.0} °C ml {} gas {:?}", tick + 1, c.energy.0, c.latent().0, c.gas_temperature().celsius_f64(), c.gas_volume_ml(&w.subs), c.gas);
+            };
+            show(&w, "start");
+            fv_core::transport::diffuse(&mut w, &flow);
+            show(&w, "diffuse");
+            flow.step(&w);
+            fv_core::transport::advect(&mut w, &flow, sim.advect_steps);
+            show(&w, "advect");
+            fv_core::chem::react(&mut w);
+            show(&w, "react");
+            let mut light = fv_core::rad::Light::new(w.cells.len());
+            fv_core::rad::radiate_by(sim.radiation, &mut w, &sim.sky, &mut light);
+            show(&w, "radiate");
+            let vel: Vec<_> = (0..3).map(|a| { use fv_core::transport::FaceVelocity; (flow.face(x as i64, y as i64, z as i64, a), flow.face(x as i64 - [1,0,0][a], y as i64 - [0,1,0][a], z as i64 - [0,0,1][a], a)) }).collect();
+            eprintln!("      faces (+,−) per axis {vel:?}");
+        }
         sim.step();
+        if let Some((x, y, z)) = sim.world.first_impossible() {
+            let w = &sim.world;
+            eprintln!("tick {}: a store went negative at ({x}, {y}, {z})", tick + 1);
+            for (dx, dy, dz) in [(0i64, 0i64, 0i64), (0, 0, 1), (0, 0, -1), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)] {
+                let (a, b, c) = ((x as i64 + dx) as usize, (y as i64 + dy) as usize, (z as i64 + dz) as usize);
+                let cell = w.get(a, b, c);
+                eprintln!("  ({a},{b},{c}) {} skin {:.0} °C core {:.0} °C gas {:.0} °C: {:?}", w.subs[cell.substance as usize].name, cell.surface_temperature(&w.subs).celsius_f64(), cell.solid_temperature(&w.subs).celsius_f64(), cell.gas_temperature().celsius_f64(), cell);
+            }
+            panic!("a store went negative");
+        }
         if debug && (tick + 1) % (1_000 / TICK.0) == 0 && tick < 40 * 1_000 / TICK.0 {
             let w = &sim.world;
             let x = (lo + hi) / 2;

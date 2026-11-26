@@ -492,7 +492,8 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize) -> Option<Emission> {
         for b in 0..4 { bands[b] += sent[b] }
     }
     if c.flame.0 > 0 {
-        let flame = c.flame.0.min((c.energy - c.latent()).0.max(0));
+        // At most the gas's heat, less what its soot and drops already sent.
+        let flame = c.flame.0.min(((c.energy - c.latent()).0 - out.from_gas).max(0));
         let sent = bands_of(flame, crate::rad::soot_shares(crate::chem::FLAME_GLOW), [0; 4]);
         out.from_gas += sent.iter().sum::<i64>();
         for b in 0..4 { bands[b] += sent[b] }
