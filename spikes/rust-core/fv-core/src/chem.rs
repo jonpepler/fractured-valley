@@ -351,7 +351,10 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     // can't hold and only slow oxidation goes on (the extinction model of
     // FDS; McGrattan et al., FDS Technical Reference Guide).
     let fuel = Gas::Fuel as usize;
-    if c.gas[fuel].0 > 0 && c.gas[o2].0 > 0 {
+    // Not inside a dense solid: gas given off in wood's pores escapes through
+    // its char and burns outside it, as flame, in the open air around it
+    // (the pore gas is pushed out by its own pressure).
+    if c.gas[fuel].0 > 0 && c.gas[o2].0 > 0 && c.permeable(subs) {
         let tg = c.gas_temperature();
         let could = c.gas[fuel].0.min(c.gas[o2].0 * 1_000 / O2_PER_FUEL);
         // The flame sheet holds fuel and just the air it needs to burn, with
