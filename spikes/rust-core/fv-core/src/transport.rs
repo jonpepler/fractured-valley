@@ -306,6 +306,76 @@ pub fn sides(world: &World) -> Vec<Side> {
     out
 }
 
+/// One per million: a face's gas flows at full strength.
+const FULL: i64 = 1_000_000;
+
+/// Scales a face's gas flow (and the heat it carries) by `ppm` per million.
+fn scale_gas(f: &mut Flux, ppm: i64) {
+    if ppm >= FULL { return }
+    for k in 0..GASES { f.gas[k] = Mass((f.gas[k].0 as i128 * ppm as i128 / FULL as i128) as i64) }
+    f.carried = Energy((f.carried.0 as i128 * ppm as i128 / FULL as i128) as i64);
+}
+
+/// The raw flux across one face of cell (x, y, z), as `diffuse_brick` sees it.
+fn face_flux(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVelocity, i: usize, x: usize, y: usize, z: usize, axis: usize, dir: i64) -> Option<(Flux, usize)> {
+    let me = &w.cells[i];
+    let my = &sides[i];
+    let speed = face_speed(w, vel, x, y, z, axis, dir);
+    match w.neighbour(x, y, z, axis, dir) {
+        Neighbour::Inside(n) => {
+            let ni = neighbour_index(w, x, y, z, axis, dir);
+            let ns = &sides[ni];
+            Some((if dir > 0 { diffuse_face(me, my, n, ns, speed, axis) } else { diffuse_face(n, ns, me, my, speed, axis) }, ni))
+        }
+        Neighbour::Outside(o) => Some((if dir > 0 { diffuse_face(me, my, o, outside, speed, axis) } else { diffuse_face(o, outside, me, my, speed, axis) }, usize::MAX)),
+        Neighbour::Mirror => None,
+    }
+}
+
+/// How far each cell's outgoing gas must be scaled so that, summed over all
+/// its faces, it never sends more of any gas than it holds (a flux limiter,
+/// as in Zalesak's flux-corrected transport). Each face's own limits (mixing,
+/// pressure) can't see the other faces, so together they could overdraw a
+/// cell, e.g. in a windy plume. Worked out from the previous state only, so
+/// every thread and peer gets the same numbers; a face then flows at the
+/// smaller of its two cells' factors, so both sides still agree exactly.
+/// Almost every cell gets the full factor and is untouched.
+pub fn gas_limits(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVelocity) -> Vec<i64> {
+    let one = |b: usize, out: &mut [i64]| {
+        let (ox, oy, oz) = w.brick_origin(b);
+        for l in 0..BRICK_CELLS {
+            let (lx, ly, lz) = World::local_xyz(l);
+            let (x, y, z) = (ox + lx, oy + ly, oz + lz);
+            let i = b * BRICK_CELLS + l;
+            let mut leaving = [0i64; GASES];
+            for axis in 0..3 { for dir in [-1i64, 1] {
+                if let Some((f, _)) = face_flux(w, sides, outside, vel, i, x, y, z, axis, dir) {
+                    for k in 0..GASES { let change = f.gas[k].0 * -dir; if change < 0 { leaving[k] -= change } }
+                }
+            }}
+            let c = &w.cells[i];
+            let mut ppm = FULL;
+            for k in 0..GASES {
+                // Keep an eighth back: never empty a cell in one step.
+                let can = c.gas[k].0.max(0) * 7 / 8;
+                if leaving[k] > can { ppm = ppm.min((can as i128 * FULL as i128 / leaving[k] as i128) as i64) }
+            }
+            out[l] = ppm;
+        }
+    };
+    let mut out = vec![FULL; w.cells.len()];
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
+            out.par_chunks_mut(BRICK_CELLS).enumerate().for_each(|(b, o)| one(b, o));
+            return out;
+        }
+    }
+    for (b, o) in out.chunks_mut(BRICK_CELLS).enumerate() { one(b, o) }
+    out
+}
+
 /// Air speed across faces, supplied by the flow (see `flow`): the velocity
 /// across the + face of cell (x, y, z) along `axis`, in mm/s.
 pub trait FaceVelocity: Sync {
@@ -326,12 +396,13 @@ impl FaceVelocity for Uniform { fn face(&self, _: i64, _: i64, _: i64, axis: usi
 pub fn diffuse(world: &mut World, vel: &dyn FaceVelocity) {
     let sides = sides(world);
     let outside = side(&world.outside_air, &world.subs, world.ambient);
-    world.run_phase(|w, b, out, tally| diffuse_brick(w, &sides, &outside, vel, b, out, tally));
+    let limits = gas_limits(world, &sides, &outside, vel);
+    world.run_phase(|w, b, out, tally| diffuse_brick(w, &sides, &limits, &outside, vel, b, out, tally));
 }
 
 /// One brick of the diffusion phase, from the previous state only. Any peer
 /// or thread computing brick `b` gets exactly these cells and this tally.
-pub fn diffuse_brick(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVelocity, b: usize, out: &mut [Cell], tally: &mut Tally) {
+pub fn diffuse_brick(w: &World, sides: &[Side], limits: &[i64], outside: &Side, vel: &dyn FaceVelocity, b: usize, out: &mut [Cell], tally: &mut Tally) {
     let (ox, oy, oz) = w.brick_origin(b);
     let base = b * BRICK_CELLS;
     for l in 0..BRICK_CELLS {
@@ -347,11 +418,13 @@ pub fn diffuse_brick(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVe
                     Neighbour::Inside(n) => {
                         let ni = neighbour_index(w, x, y, z, axis, dir);
                         let ns = &sides[ni];
-                        let flux = if dir > 0 { diffuse_face(me, my, n, ns, speed, axis) } else { diffuse_face(n, ns, me, my, speed, axis) };
+                        let mut flux = if dir > 0 { diffuse_face(me, my, n, ns, speed, axis) } else { diffuse_face(n, ns, me, my, speed, axis) };
+                        scale_gas(&mut flux, limits[base + l].min(limits[ni]));
                         apply(&mut next, my, &flux, -dir);
                     }
                     Neighbour::Outside(o) => {
-                        let flux = if dir > 0 { diffuse_face(me, my, o, outside, speed, axis) } else { diffuse_face(o, outside, me, my, speed, axis) };
+                        let mut flux = if dir > 0 { diffuse_face(me, my, o, outside, speed, axis) } else { diffuse_face(o, outside, me, my, speed, axis) };
+                        scale_gas(&mut flux, limits[base + l]);
                         apply(&mut next, my, &flux, -dir);
                         tally_edge(tally, &flux, -dir);
                     }
@@ -390,10 +463,11 @@ pub struct BrickResult { pub brick: usize, pub cells: Vec<Cell>, pub tally: Tall
 pub fn diffuse_part(w: &World, vel: &dyn FaceVelocity, bricks: &[usize]) -> Vec<BrickResult> {
     let sides = sides(w);
     let outside = side(&w.outside_air, &w.subs, w.ambient);
+    let limits = gas_limits(w, &sides, &outside, vel);
     bricks.iter().map(|&b| {
         let mut cells = vec![Cell::default(); BRICK_CELLS];
         let mut tally = Tally::default();
-        diffuse_brick(w, &sides, &outside, vel, b, &mut cells, &mut tally);
+        diffuse_brick(w, &sides, &limits, &outside, vel, b, &mut cells, &mut tally);
         BrickResult { brick: b, cells, tally }
     }).collect()
 }

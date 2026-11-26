@@ -20,6 +20,7 @@ fn main() {
     for t in 0..100 { for x in 2..30u16 { sim.schedule(Scheduled { tick: t, peer: 0, seq: x as u32, command: Command::Heat { x, y: 2, z: 4, energy: joules(400) } }) } }
     for tick in 0..2400 {
         sim.step();
+        if let Some(at) = sim.world.first_impossible() { println!("tick {tick}: impossible store at {at:?}: {:?}", sim.world.get(at.0, at.1, at.2)); return }
         if tick % 4000 == 19 { let w = &sim.world; for y in [3usize, 4] { let c = w.get(16, y, 4); print!("  y{y}: skin {:.0} gas {:.0} vol {} fuel {} O2 {} |", c.surface_temperature(&w.subs).celsius_f64(), c.gas_temperature().celsius_f64(), c.solid[VOLATILE].0 / 1000, c.gas[Gas::Fuel as usize].0, c.gas[Gas::Oxygen as usize].0) } println!(" t={}s", (tick + 1) / 20) }
         if tick % 100 != 99 { continue }
         let w = &sim.world;
