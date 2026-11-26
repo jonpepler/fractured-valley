@@ -6,13 +6,13 @@
 //!
 //! | type             | base unit      | why this size                              |
 //! |------------------|----------------|--------------------------------------------|
-//! | [`Energy`]       | millijoule     | a 10 cm cube of stone holds ~6×10⁸ mJ      |
-//! | [`Mass`]         | milligram      | the air in a cell is ~1.2×10⁶ mg           |
+//! | [`Energy`]       | microjoule     | a 10 cm cube of stone holds ~6×10¹¹ µJ     |
+//! | [`Mass`]         | microgram      | the air in a cell is ~1.2×10⁶ µg           |
 //! | [`Temperature`]  | millikelvin    | absolute: a point, not a difference        |
 //! | [`TempDelta`]    | millikelvin    | a difference between two temperatures      |
-//! | [`HeatCapacity`] | microjoule / K | mg × J/(kg·K) lands here exactly           |
-//! | [`SpecificHeat`] | J / (kg·K)     | = µJ/(mg·K), the textbook number           |
-//! | [`SpecificEnergy`] | kJ / kg      | = mJ/mg, heats of combustion and latent heats |
+//! | [`HeatCapacity`] | nanojoule / K  | µg × J/(kg·K) lands here exactly           |
+//! | [`SpecificHeat`] | J / (kg·K)     | the textbook number                        |
+//! | [`SpecificEnergy`] | kJ / kg      | = µJ/µg: burning or boiling a mass multiplies exactly |
 //! | [`Conductance`]  | microwatt / K  | heat flow per kelvin across a face         |
 //! | [`Power`]        | microwatt      |                                            |
 //! | [`Duration`]     | millisecond    | one tick is 50 ms                          |
@@ -50,12 +50,12 @@ macro_rules! additive {
 }
 
 quantity!(
-    /// Energy, in millijoules.
-    Energy, "mJ");
+    /// Energy, in microjoules.
+    Energy, "µJ");
 additive!(Energy);
 quantity!(
-    /// Mass, in milligrams.
-    Mass, "mg");
+    /// Mass, in micrograms.
+    Mass, "µg");
 additive!(Mass);
 quantity!(
     /// An absolute temperature, in millikelvin. A point: two temperatures
@@ -66,14 +66,14 @@ quantity!(
     TempDelta, "mK");
 additive!(TempDelta);
 quantity!(
-    /// Heat capacity of a body, in microjoules per kelvin.
-    HeatCapacity, "µJ/K");
+    /// Heat capacity of a body, in nanojoules per kelvin.
+    HeatCapacity, "nJ/K");
 additive!(HeatCapacity);
 quantity!(
-    /// Specific heat of a substance, in J/(kg·K) (= µJ/(mg·K)).
+    /// Specific heat of a substance, in J/(kg·K).
     SpecificHeat, "J/(kg·K)");
 quantity!(
-    /// Energy per mass (heat of combustion, latent heat), in kJ/kg (= mJ/mg).
+    /// Energy per mass (heat of combustion, latent heat), in kJ/kg (= µJ/µg).
     SpecificEnergy, "kJ/kg");
 quantity!(
     /// Heat flow per kelvin of difference, in microwatts per kelvin.
@@ -97,11 +97,13 @@ additive!(Speed);
 
 // ── constructors in everyday units ─────────────────────────────────────────
 
-pub const fn millijoules(v: i64) -> Energy { Energy(v) }
-pub const fn joules(v: i64) -> Energy { Energy(v * 1_000) }
-pub const fn kilojoules(v: i64) -> Energy { Energy(v * 1_000_000) }
-pub const fn milligrams(v: i64) -> Mass { Mass(v) }
-pub const fn grams(v: i64) -> Mass { Mass(v * 1_000) }
+pub const fn microjoules(v: i64) -> Energy { Energy(v) }
+pub const fn millijoules(v: i64) -> Energy { Energy(v * 1_000) }
+pub const fn joules(v: i64) -> Energy { Energy(v * 1_000_000) }
+pub const fn kilojoules(v: i64) -> Energy { Energy(v * 1_000_000_000) }
+pub const fn micrograms(v: i64) -> Mass { Mass(v) }
+pub const fn milligrams(v: i64) -> Mass { Mass(v * 1_000) }
+pub const fn grams(v: i64) -> Mass { Mass(v * 1_000_000) }
 pub const fn kelvin(v: i64) -> Temperature { Temperature(v * 1_000) }
 /// Celsius to the absolute scale (0 °C = 273.15 K).
 pub const fn celsius(v: i64) -> Temperature { Temperature(v * 1_000 + 273_150) }
@@ -133,20 +135,20 @@ impl Temperature {
 
 // ── the products that mean something ────────────────────────────────────────
 
-/// mass × specific heat = heat capacity (mg × J/(kg·K) = µJ/K, exactly).
+/// mass × specific heat = heat capacity (µg × J/(kg·K) = nJ/K, exactly).
 impl Mul<SpecificHeat> for Mass {
     type Output = HeatCapacity;
     fn mul(self, c: SpecificHeat) -> HeatCapacity { HeatCapacity(self.0.checked_mul(c.0).expect("heat capacity overflow")) }
 }
 
-/// mass × specific energy = energy (mg × mJ/mg).
+/// mass × specific energy = energy (µg × kJ/kg = µJ, exactly).
 impl Mul<SpecificEnergy> for Mass {
     type Output = Energy;
     fn mul(self, e: SpecificEnergy) -> Energy { Energy(self.0.checked_mul(e.0).expect("energy overflow")) }
 }
 
 /// heat capacity × absolute temperature = the thermal energy above absolute zero.
-/// (µJ/K × mK = 10⁻⁹ J = 10⁻⁶ mJ.) Rounds toward zero.
+/// (nJ/K × mK = 10⁻¹² J = 10⁻⁶ µJ.) Rounds toward zero.
 impl Mul<Temperature> for HeatCapacity {
     type Output = Energy;
     fn mul(self, t: Temperature) -> Energy { Energy(i64::try_from(self.0 as i128 * t.0 as i128 / 1_000_000).expect("energy overflow")) }
@@ -174,10 +176,10 @@ impl Mul<TempDelta> for Conductance {
     fn mul(self, d: TempDelta) -> Power { Power(i64::try_from(self.0 as i128 * d.0 as i128 / 1_000).expect("power overflow")) }
 }
 
-/// power × duration = energy (µW × ms = 10⁻⁹ J = 10⁻⁶ mJ). Rounds toward zero.
+/// power × duration = energy (µW × ms = 10⁻⁹ J = 10⁻³ µJ). Rounds toward zero.
 impl Mul<Duration> for Power {
     type Output = Energy;
-    fn mul(self, t: Duration) -> Energy { Energy(i64::try_from(self.0 as i128 * t.0 as i128 / 1_000_000).expect("energy overflow")) }
+    fn mul(self, t: Duration) -> Energy { Energy(i64::try_from(self.0 as i128 * t.0 as i128 / 1_000).expect("energy overflow")) }
 }
 
 /// speed × duration = length (mm/s × ms = µm; kept in mm, rounding toward zero).

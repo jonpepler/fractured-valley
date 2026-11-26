@@ -26,13 +26,19 @@ use crate::world::{Neighbour, Tally, World, BRICK_CELLS, TICK};
 /// Everything a face needs to know about one side, worked out once per cell.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Side {
+    /// The gas's temperature: what gas leaving this cell carries.
     pub t: Temperature,
+    /// The temperature heat is conducted from: the solid of an opaque cell,
+    /// the gas of an airy one.
+    pub t_cond: Temperature,
     pub gas_ml: i64,
     pub permeable: bool,
     /// Conductance of half the cell (centre to face).
     pub half: Conductance,
     /// Gas beyond what fits at this temperature (pushed out).
     pub excess: Mass,
+    /// The surroundings' temperature (the same for every cell).
+    pub ambient: Temperature,
 }
 
 /// Thermal conductivity of still air, mW/(m·K).
@@ -51,23 +57,43 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
     let s = &subs[c.substance as usize];
     let share = c.solid_share(subs);
     let k = share.of(s.conductivity) + AIR_CONDUCTIVITY - share.of(AIR_CONDUCTIVITY);
-    let t = c.temperature(subs);
+    let t = c.gas_temperature();
+    let t_cond = c.temperature(subs);
     let gas_ml = c.gas_volume_ml(subs);
     let fresh: i64 = FRESH_AIR.iter().map(|m| m.0).sum();
     // What fits at this temperature (ideal gas at constant pressure).
     let fits = if t.0 > 0 { (fresh as i128 * gas_ml as i128 * ambient.0 as i128 / (CELL_VOLUME_ML as i128 * t.0 as i128)) as i64 } else { i64::MAX };
     Side {
-        t, gas_ml, permeable: c.permeable(subs),
+        t, t_cond, gas_ml, permeable: c.permeable(subs),
         // k [mW/(m·K)] × 0.01 m² / 0.05 m = 0.2·k mW/K = 200·k µW/K
         half: Conductance(k * 200),
         excess: Mass((c.gas_mass().0 - fits).max(0)),
+        ambient,
     }
+}
+
+/// The surroundings' temperature, which every side carries.
+#[inline]
+fn ambient_of(a: &Side, _b: &Side) -> Temperature { a.ambient }
+
+/// Speed of the eddies hot gas makes, mm/s: √(g·l·ΔT/T) with l = 0.1 m.
+#[inline]
+pub fn buoyant_churn(t: Temperature, ambient: Temperature) -> i64 {
+    let dt = (t.0 - ambient.0).max(0) as i128;
+    if dt == 0 { return 0 }
+    // g·l = 9.807 m/s² × 0.1 m = 0.9807 m²/s² = 980_700 mm²/s² ... ×ΔT/T
+    let v2 = 980_700i128 * dt / ambient.0.max(1) as i128;
+    (v2 as f64).sqrt() as i64
 }
 
 /// What flows from the lower cell to the upper across one face.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Flux {
+    /// Conducted heat: leaves the lower cell's conducting store (solid if
+    /// opaque, else gas) and enters the upper cell's.
     pub energy: Energy,
+    /// Heat carried by the moving gas itself (gas store on both sides).
+    pub carried: Energy,
     pub gas: [Mass; GASES],
 }
 
@@ -89,19 +115,22 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64) -> Flu
         let solid = if a.permeable { gb } else { ga };
         g = solid * FILM.0 as i128 / (solid + FILM.0 as i128);
     }
-    f.energy = (Conductance(g as i64) * (a.t - b.t)) * TICK;
+    f.energy = (Conductance(g as i64) * (a.t_cond - b.t_cond)) * TICK;
 
-    // Mixing: each side sends a share of its gas, by concentration.
+    // Mixing: each side sends a share of its gas, by concentration. Eddies
+    // come from the wind and from heat itself: hot gas churns at about
+    // √(g·l·ΔT/T) (buoyant turbulence, l = 10 cm), metres a second in a flame.
     let both_gas = a.gas_ml > 0 && b.gas_ml > 0;
     if both_gas {
-        let mut ml = STILL_MIX_ML + speed * TURBULENT_MIX_UL_PER_MM_S / 1_000;
+        let churn = buoyant_churn(a.t.max(b.t), ambient_of(a, b));
+        let mut ml = STILL_MIX_ML + (speed + churn) * TURBULENT_MIX_UL_PER_MM_S / 1_000;
         if !(a.permeable && b.permeable) { ml /= SEEP_DIVISOR }
-        let ml = ml.min(a.gas_ml.min(b.gas_ml) / 16);
+        let ml = ml.min(a.gas_ml.min(b.gas_ml) / 8);
         for k in 0..GASES {
             let out_a = Mass(lo.gas[k].0 * ml / a.gas_ml);
             let out_b = Mass(hi.gas[k].0 * ml / b.gas_ml);
             f.gas[k] += out_a - out_b;
-            f.energy += carried(k, out_a, a.t) - carried(k, out_b, b.t);
+            f.carried += carried(k, out_a, a.t) - carried(k, out_b, b.t);
         }
     }
 
@@ -121,7 +150,7 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64) -> Flu
             for k in 0..GASES {
                 let m = Mass((push as i128 * from.gas[k].0 as i128 / total as i128) as i64);
                 f.gas[k] += Mass(m.0 * sign);
-                f.energy += Energy(carried(k, m, from_side.t).0 * sign);
+                f.carried += Energy(carried(k, m, from_side.t).0 * sign);
             }
         }
     }
@@ -129,17 +158,19 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64) -> Flu
 }
 
 /// Applies a face's flux to the cell on one side: `sign` is −1 for the lower
-/// cell (it gives) and +1 for the upper (it receives).
+/// cell (it gives) and +1 for the upper (it receives). Conducted heat goes
+/// to the solid of an opaque cell, the gas of an airy one.
 #[inline]
-pub fn apply(out: &mut Cell, f: &Flux, sign: i64) {
-    out.energy += Energy(f.energy.0 * sign);
+pub fn apply(out: &mut Cell, me: &Side, f: &Flux, sign: i64) {
+    if me.permeable { out.energy += Energy(f.energy.0 * sign) } else { out.solid_energy += Energy(f.energy.0 * sign) }
+    out.energy += Energy(f.carried.0 * sign);
     for k in 0..GASES { out.gas[k] += Mass(f.gas[k].0 * sign) }
 }
 
 /// Records a flux that crossed the box's edge, from the box's point of view.
 #[inline]
 pub fn tally_edge(t: &mut Tally, f: &Flux, sign: i64) {
-    t.energy_in += f.energy.0 * sign;
+    t.energy_in += (f.energy.0 + f.carried.0) * sign;
     for k in 0..GASES { t.gas_in[k] += f.gas[k].0 * sign }
 }
 
@@ -200,11 +231,11 @@ pub fn diffuse(world: &mut World, vel: &dyn FaceVelocity) {
                             let ni = neighbour_index(w, x, y, z, axis, dir);
                             let ns = &sides[ni];
                             let flux = if dir > 0 { diffuse_face(me, my, n, ns, speed) } else { diffuse_face(n, ns, me, my, speed) };
-                            apply(&mut next, &flux, -dir);
+                            apply(&mut next, my, &flux, -dir);
                         }
                         Neighbour::Outside(o) => {
                             let flux = if dir > 0 { diffuse_face(me, my, o, &outside, speed) } else { diffuse_face(o, &outside, me, my, speed) };
-                            apply(&mut next, &flux, -dir);
+                            apply(&mut next, my, &flux, -dir);
                             tally_edge(tally, &flux, -dir);
                         }
                         Neighbour::Mirror => {}
@@ -241,11 +272,11 @@ pub fn advect(world: &mut World, vel: &dyn FaceVelocity, steps: i64) {
                                 let ni = neighbour_index(w, x, y, z, axis, dir);
                                 let (nx, ny, nz) = step_xyz(x, y, z, axis, dir);
                                 let flux = carry_face(w, vel, steps, (me, my, x, y, z), (n, &sides[ni], nx, ny, nz), axis, dir, u);
-                                apply(&mut next, &flux, -dir);
+                                apply(&mut next, my, &flux, -dir);
                             }
                             Neighbour::Outside(o) => {
                                 let flux = carry_face_outside(w, vel, steps, (me, my, x, y, z), o, &outside, axis, dir, u);
-                                apply(&mut next, &flux, -dir);
+                                apply(&mut next, my, &flux, -dir);
                                 tally_edge(tally, &flux, -dir);
                             }
                             Neighbour::Mirror => {}
@@ -319,7 +350,7 @@ fn carry_from(donor: &Cell, ds: &Side, share: Fraction, sign: i64) -> Flux {
     for k in 0..GASES {
         let m = share.of_mass(donor.gas[k]);
         f.gas[k] = Mass(m.0 * sign);
-        f.energy += Energy(carried(k, m, ds.t).0 * sign);
+        f.carried += Energy(carried(k, m, ds.t).0 * sign);
     }
     f
 }

@@ -18,14 +18,14 @@ pub fn hash(a: u64, b: u64, c: u64, d: u64) -> u64 {
 }
 
 /// A tiny stream of numbers from one seed, for a packet's journey.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Stream(pub u64);
 impl Stream {
     #[inline]
     pub fn next(&mut self) -> u64 { self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15); mix(self.0) }
     /// A whole number in 0..n.
     #[inline]
-    pub fn below(&mut self, n: u64) -> u64 { ((self.next() >> 32) * n) >> 32 }
+    pub fn below(&mut self, n: u64) -> u64 { ((self.next() as u128 * n as u128) >> 64) as u64 }
     /// True with probability p / 2³².
     #[inline]
     pub fn chance(&mut self, p: u64) -> bool { (self.next() >> 32) < p }
@@ -42,6 +42,7 @@ impl Hasher {
         self.u64(c.water.0 as u64);
         for m in c.gas { self.u64(m.0 as u64) }
         self.u64(c.energy.0 as u64);
+        self.u64(c.solid_energy.0 as u64);
         self.u64(c.nuclear.0 as u64);
     }
     pub fn finish(&self) -> u64 { mix(self.0) }

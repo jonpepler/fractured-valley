@@ -57,7 +57,7 @@ pub const CHAR_CHEMICAL: SpecificEnergy = kj_per_kg(32_800);
 
 /// A cell is a 10 cm cube.
 pub const CELL_VOLUME_ML: i64 = 1_000;
-/// Fresh air at sea level, by mass in one litre at 20 °C (1.204 g/L).
+/// Fresh air at sea level, by mass in one litre at 20 °C (1.204 g/L), in µg.
 pub const FRESH_AIR: [Mass; GASES] = [
     Mass(279_300), // O₂, 23.2 %
     Mass(909_000), // N₂, 75.5 % (with argon folded in)
@@ -101,7 +101,8 @@ pub struct Substance {
     /// Whether air can blow through it (grass, leaves) or only seep (wood, stone).
     pub permeable: bool,
     /// Surface area per volume of the solid's pieces, in 1/m (Rothermel's σ):
-    /// grass blades ~3500, leaves ~4000, a log seen at 10 cm ~60, stone ~60.
+    /// fine grass ~11 500 (3500 ft⁻¹), broad leaves ~6000, a log seen at 10 cm
+    /// ~60, stone ~60.
     pub surface_per_volume: i64,
     /// Composition by mass, in parts per thousand: [volatile, char-forming, mineral].
     pub composition: [i64; 3],
@@ -169,7 +170,7 @@ pub fn table() -> Vec<Substance> {
         },
         Substance {
             // Grass blades: ~0.5 kg/m² of fuel over 10 cm of height.
-            name: "grass", full_mass: grams(5), porosity: f(996), permeable: true, surface_per_volume: 3_500,
+            name: "grass", full_mass: grams(5), porosity: f(996), permeable: true, surface_per_volume: 11_500,
             composition: [760, 200, 40], typical_moisture: 1_200, specific_heat: j_per_kg_k(1_700), conductivity: 150,
             volatile_chemical: kj_per_kg(15_600),
             optics: Optics { albedo: [f(500), f(180), f(330), f(90)], emissivity: f(950), ionising_cm2_per_g: 60 },
@@ -177,7 +178,7 @@ pub fn table() -> Vec<Substance> {
         },
         Substance {
             // Leaves in a crown: ~3 kg/m³ of foliage.
-            name: "leaves", full_mass: grams(3), porosity: f(997), permeable: true, surface_per_volume: 4_000,
+            name: "leaves", full_mass: grams(3), porosity: f(997), permeable: true, surface_per_volume: 6_000,
             composition: [760, 200, 40], typical_moisture: 1_400, specific_heat: j_per_kg_k(1_700), conductivity: 150,
             volatile_chemical: kj_per_kg(15_600),
             optics: Optics { albedo: [f(450), f(120), f(300), f(70)], emissivity: f(950), ionising_cm2_per_g: 60 },

@@ -4,8 +4,12 @@
 //! another, and [`ledger::Books`] checks that nothing is made or lost.
 
 pub mod cell;
+pub mod chem;
+pub mod flow;
 pub mod ledger;
+pub mod rad;
 pub mod rng;
+pub mod sim;
 pub mod substance;
 pub mod tables;
 pub mod transport;

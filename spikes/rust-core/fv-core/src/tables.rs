@@ -28,9 +28,9 @@ pub struct Tables {
     pub gas_burn: Vec<Fraction>,
     /// Share of soot burnt per tick in fresh air (A = 1×10⁸ /s, E = 150 kJ/mol).
     pub soot_burn: Vec<Fraction>,
-    /// Water vapour a litre of gas holds when saturated, in mg
+    /// Water vapour a litre of gas holds when saturated, in µg
     /// (Magnus formula; above boiling, effectively unlimited).
-    pub saturated_mg_per_l: Vec<i64>,
+    pub saturated_ug_per_l: Vec<i64>,
     /// σ·T⁴ in µW per m², per kelvin.
     pub sigma_t4: Vec<i64>,
     /// Planck shares of emission in [infrared, red, green, blue] (blue
@@ -71,8 +71,8 @@ fn build() -> Tables {
         if c >= 100.0 { return i64::MAX / 4 }
         let c = c.max(-60.0);
         let p = 610.94 * libm::exp(17.625 * c / (c + 243.04)); // Pa
-        // ideal gas: ρ = p·M/(R·T), M = 18.015 g/mol → mg/L = g/m³
-        (p * 18.015 / (R_GAS * (c + 273.15))).round() as i64
+        // ideal gas: ρ = p·M/(R·T), M = 18.015 g/mol → g/m³ = mg/L; ×1000 for µg/L
+        (p * 18.015 / (R_GAS * (c + 273.15)) * 1000.0).round() as i64
     }).collect();
     let sigma_t4 = (0..=MAX_K).map(|k| (SIGMA * libm::pow(k as f64, 4.0) * 1e6).round() as i64).collect();
     let bands = (0..=MAX_K).map(|k| {
@@ -91,7 +91,7 @@ fn build() -> Tables {
         char_burn: arrhenius(2.0e5, 100_000.0),
         gas_burn: arrhenius(1.0e9, 110_000.0),
         soot_burn: arrhenius(1.0e8, 150_000.0),
-        saturated_mg_per_l: saturated,
+        saturated_ug_per_l: saturated,
         sigma_t4,
         bands,
     }

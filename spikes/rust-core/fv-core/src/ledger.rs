@@ -15,7 +15,7 @@
 //! motion of bodies. There are no others: a rule that makes or loses energy
 //! anywhere shows up as a gap.
 
-use crate::substance::GASES;
+use crate::substance::{GASES, GAS_CHEMICAL};
 use crate::world::{Tally, World};
 
 /// Totals of every store, at one moment.
@@ -38,7 +38,7 @@ impl Totals {
     pub fn of(world: &World) -> Totals {
         let mut t = Totals::default();
         for c in &world.cells {
-            t.thermal += c.energy.0 as i128;
+            t.thermal += c.thermal().0 as i128;
             t.chemical += c.chemical(&world.subs).0 as i128;
             t.nuclear += c.nuclear.0 as i128;
             t.solid_mass += c.solid_mass().0 as i128;
@@ -79,9 +79,14 @@ impl Books {
         self.radiation_out += t.radiation_out as i128;
     }
 
+    /// Chemical energy carried across the edge by burnable gas and soot.
+    pub fn edge_chemical(&self) -> i128 {
+        (0..GASES).map(|k| self.edge_gas[k] * GAS_CHEMICAL[k].0 as i128).sum()
+    }
+
     /// What the energy should be now.
     pub fn expected_energy(&self) -> i128 {
-        self.start.energy() + self.edge_energy + self.radiation_in - self.radiation_out + self.commands + self.gravity_work
+        self.start.energy() + self.edge_energy + self.edge_chemical() + self.radiation_in - self.radiation_out + self.commands + self.gravity_work
     }
     pub fn expected_mass(&self) -> i128 { self.start.mass() + self.edge_gas.iter().sum::<i128>() + self.commands_mass }
 
