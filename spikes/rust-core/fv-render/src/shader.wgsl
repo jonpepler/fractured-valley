@@ -51,6 +51,7 @@ struct Inst {
     @location(1) albedo: vec4<f32>,
     @location(2) light: vec4<f32>,
     @location(3) glow: vec4<f32>,
+    @location(4) mirror: vec4<f32>,
 };
 
 struct VOut {
@@ -60,6 +61,7 @@ struct VOut {
     @location(2) @interpolate(flat) albedo: vec4<f32>,
     @location(3) @interpolate(flat) light: vec4<f32>,
     @location(4) @interpolate(flat) glow: vec4<f32>,
+    @location(5) @interpolate(flat) mirror: vec4<f32>,
 };
 
 // Flag bits (keep in step with lib.rs).
@@ -70,6 +72,7 @@ const TOP_AO: i32 = 8;      // something stands just behind-above the top face
 const LEDGE: i32 = 16;      // the top face is on a front edge (catches light)
 const SECTION_X: i32 = 32;  // the +x face is the box edge: a cut through the ground
 const SECTION_Y: i32 = 64;
+const WET: i32 = 128;       // open water lies on the top face (see `mirror`)
 
 // Which face each pixel of the 4×4 sprite belongs to: -1 none, 0 top, 1 left, 2 right.
 const FACE = array<i32, 16>(
@@ -141,6 +144,7 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, inst: Inst) -> VOut {
     out.albedo = inst.albedo;
     out.light = inst.light;
     out.glow = inst.glow;
+    out.mirror = inst.mirror;
     return out;
 }
 
@@ -217,6 +221,17 @@ fn fs_block(v: VOut) -> @location(0) vec4<f32> {
     if face == 0 && flag(v, TOP_AO) { shade *= 0.88; }
     if face == 0 && !flag(v, TOP_AO) && flag(v, LEDGE) && p.y == 0 { shade *= 1.08; }
     var col = v.albedo.rgb * shown(v.light.rgb) * shade;
+    if face == 0 && flag(v, WET) {
+        // Under water the bed's texture is softened, and the surface mirrors
+        // what lies in the mirror direction (sky or a lit wall), at its
+        // reflectance (both from lib.rs). Ripples gather that reflection into
+        // glints: one pixel in six, moving about once a second, holding the
+        // same average.
+        col = v.albedo.rgb * shown(v.light.rgb) * mix(1.0, shade, 0.5);
+        let ripple = unit(hash4(v.cell.x * 16 + p.x + p.y * 4, v.cell.y, v.cell.z, i32(g.tick / 20u)));
+        let glint = select(0.7, 2.5, ripple < 1.0 / 6.0);
+        col += v.mirror.w * glint * shown(v.mirror.rgb);
+    }
     // Glowing embers: brighter in the cracks (a fixed pattern, averaging 1).
     // How bright they are, and how it flickers, is the simulation's: the
     // glow is what this cell emitted this tick.

@@ -227,8 +227,11 @@ impl Cell {
 
     /// A cell of open water `depth_mm` deep (a puddle; `CELL_MM` fills it),
     /// with fresh air above it, all at `t`.
-    pub fn puddle(depth_mm: i64, t: Temperature, subs: &[Substance]) -> Cell {
-        let mut c = Cell { water: Mass(WATER_PER_CELL.0 * depth_mm.clamp(0, CELL_MM) / CELL_MM), ..Cell::default() };
+    pub fn puddle(depth_mm: i64, t: Temperature, subs: &[Substance]) -> Cell { Cell::puddle_um(depth_mm * 1_000, t, subs) }
+
+    /// The same, `depth_um` micrometres deep (a thin film of water).
+    pub fn puddle_um(depth_um: i64, t: Temperature, subs: &[Substance]) -> Cell {
+        let mut c = Cell { water: Mass((WATER_PER_CELL.0 as i128 * depth_um.clamp(0, CELL_MM * 1_000) as i128 / (CELL_MM * 1_000) as i128) as i64), ..Cell::default() };
         let vol = c.gas_volume_ml(subs);
         for k in 0..GASES { c.gas[k] = Mass(FRESH_AIR[k].0 * vol / CELL_VOLUME_ML) }
         c.set_temperature(t, subs);

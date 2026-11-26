@@ -141,6 +141,16 @@ const TOP_AO: i32 = 8;
 const LEDGE: i32 = 16;
 const SECTION_X: i32 = 32;
 const SECTION_Y: i32 = 64;
+/// Open water lies on this top face (light.w = its surface reflectance).
+const WET: i32 = 128;
+
+/// Water's refractive index for visible light.
+const WATER_N: f32 = 1.333;
+/// The camera looks down on top faces at atan(½) above the horizon (2:1
+/// pixel dimetric), so at this angle from their normal, in radians.
+const VIEW_INCIDENCE: f32 = 1.107; // 63.4°
+/// A film this thin (mm) or thicker shows fully wet; thinner fades out.
+const WET_FILM_MM: f32 = 0.02;
 
 /// One sprite as the GPU sees it.
 #[repr(C)]
@@ -155,6 +165,10 @@ struct Sprite {
     light: [f32; 4],
     /// Light given off as W/m² of surface per band; w = total glow in W.
     glow: [f32; 4],
+    /// Open water on the top face: the light its surface mirrors toward the
+    /// camera (W/m² per band, as if it were light arriving); w = the
+    /// surface's reflectance.
+    mirror: [f32; 4],
 }
 
 #[repr(C)]
@@ -231,6 +245,9 @@ pub struct Renderer {
     /// 1 is linear; lower lifts shadows and tames highlights, by day and by
     /// night (where the eye has adapted to the firelight).
     pub light_curve: f32,
+    /// Diffuse skylight (W/m², all bands), for what water surfaces mirror.
+    /// Unset: the scene's average light stands in.
+    pub sky_light_w_m2: Option<f32>,
     pub stats: Stats,
 }
 
@@ -282,7 +299,7 @@ impl Renderer {
         let sprite_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&sprite_layout)], immediate_size: 0 });
         let composite_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&composite_layout)], immediate_size: 0 });
 
-        let attrs = wgpu::vertex_attr_array![0 => Sint32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+        let attrs = wgpu::vertex_attr_array![0 => Sint32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
         let instance_layout = wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Sprite>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &attrs };
         // The three ways a sprite pass treats colour and depth.
         let opaque = (None, true);
@@ -343,7 +360,7 @@ impl Renderer {
             device, queue, width, height, out_format, globals, sprite_group, composite_layout,
             block_pipe, tuft_pipe, smoke_pipe, flame_pipe, composite_pipe,
             native: None, instances: None, target: None, current_exposure: None, current_day: 1.0, last_tick: 0,
-            exposure: Exposure::default(), grade: Grade::default(), light_curve: 0.6, stats: Stats::default(),
+            exposure: Exposure::default(), grade: Grade::default(), light_curve: 0.6, sky_light_w_m2: None, stats: Stats::default(),
         }
     }
 
@@ -636,6 +653,10 @@ impl Renderer {
         let share = smooth(view, &gases, gases.iter().map(|&i| [1.0 - (-gas_tau_sim(&view.cells[i])).exp(); 3]).collect(), GAS_SMOOTH_PASSES);
         let gas_light: Vec<[f32; 3]> = caught.iter().zip(&share).map(|(c, s)| scene_tint.map(|t| t * c[0] / s[0].max(0.02))).collect();
 
+        // The sky a water surface mirrors: the skylight the caller gave, split
+        // into visible bands as fv-core's skylight is (red 15 %, green 17 %,
+        // blue 23 % of it), else the scene's average light as a stand-in.
+        let sky = match self.sky_light_w_m2 { Some(w) => [0.15 * w, 0.17 * w, 0.23 * w], None => mean_light };
         let mut f = Frame::default();
         for (&(i, open), light) in surfaces.iter().zip(&surface_light) {
             let c = &view.cells[i];
@@ -649,7 +670,17 @@ impl Renderer {
                 (x + 1 == nx, SECTION_X), (y + 1 == ny, SECTION_Y),
             ].iter().filter(|(on, _)| *on).fold(0, |acc, (_, bit)| acc | bit);
             let pattern = PATTERN.get(c.substance as usize).copied().unwrap_or(0) as i32;
-            let albedo = surface_colour(colours[c.substance as usize], c, char_lin, ash_lin);
+            let mut albedo = surface_colour(colours[c.substance as usize], c, char_lin, ash_lin);
+            // Open water lying on this top face (all of it in the column above).
+            let water_mm = if open[2] && c.kind == SOLID { (z + 1..nz).map(|k| view.cells[idx(x, y, k)].water_mm).take_while(|&d| d > 0.0).sum::<f32>() } else { 0.0 };
+            let (mut flags, mut reflect, mut mirror) = (flags, 0.0, [0.0f32; 3]);
+            if water_mm > 0.0 {
+                let (wet, r) = wet_surface(albedo, water_mm);
+                albedo = wet;
+                reflect = r;
+                mirror = mirrored(view, &colours, [x, y, z], sky);
+                flags |= WET;
+            }
             // A glowing solid shines from its open faces (0.01 m² each).
             let faces = open.iter().filter(|o| **o).count() as f32;
             let glow = glow_colour(c).map(|w| w / (0.01 * faces));
@@ -658,6 +689,7 @@ impl Renderer {
                 albedo: [albedo[0], albedo[1], albedo[2], c.left as f32 / 255.0],
                 light: [light[0], light[1], light[2], 0.0],
                 glow: [glow[0], glow[1], glow[2], c.glow.iter().sum()],
+                mirror: [mirror[0], mirror[1], mirror[2], reflect],
             };
             let lsum: f32 = light.iter().sum();
             let self_lit = c.glow.iter().sum::<f32>() > SELF_LIT_W;
@@ -679,6 +711,7 @@ impl Renderer {
                 albedo: [albedo[0], albedo[1], albedo[2], c.left as f32 / 255.0],
                 light: [mean_light[0], mean_light[1], mean_light[2], 0.0],
                 glow: [glow[0], glow[1], glow[2], c.glow.iter().sum()],
+                mirror: [0.0; 4],
             };
             let list = if c.kind == POROUS { &mut f.tufts } else { &mut f.blocks };
             list.push(sprite);
@@ -805,15 +838,79 @@ fn gas_sprites(c: &ViewCell, xyz: [i32; 3], light: [f32; 3], f: &mut Frame) {
             albedo: [a, a, a, tau],
             light: [light[0], light[1], light[2], 0.0],
             glow: [0.0; 4],
+            mirror: [0.0; 4],
         });
     }
     let total: f32 = c.glow.iter().sum();
     if total > FLAME_MIN_W {
         let g = glow_colour(c).map(|w| w * FLAME_W_TO_W_M2);
-        f.flames.push(Sprite { cell: [xyz[0], xyz[1], xyz[2], 0], albedo: [0.0; 4], light: [0.0; 4], glow: [g[0], g[1], g[2], total] });
+        f.flames.push(Sprite { cell: [xyz[0], xyz[1], xyz[2], 0], albedo: [0.0; 4], light: [0.0; 4], glow: [g[0], g[1], g[2], total], mirror: [0.0; 4] });
     }
 }
 
+
+/// What a water surface on top of cell `at` mirrors toward the camera: the
+/// camera looks down at atan(½) from +x, +y, so the mirrored ray leaves the
+/// surface rising at atan(½) toward −x, −y. Followed through the grid, it
+/// either meets a solid (whose lit colour it shows) or leaves the box (the
+/// sky's).
+fn mirrored(view: &View, colours: &[[f32; 3]], at: [usize; 3], sky: [f32; 3]) -> [f32; 3] {
+    let (nx, ny, nz) = (view.nx as f32, view.ny as f32, view.nz as f32);
+    let d = [-0.632_f32, -0.632, 0.447]; // (−1, −1, ½·√2) normalised
+    let mut p = [at[0] as f32 + 0.5, at[1] as f32 + 0.5, at[2] as f32 + 1.01];
+    for _ in 0..400 {
+        for k in 0..3 { p[k] += d[k] * 0.25 }
+        if p[0] < 0.0 || p[1] < 0.0 || p[0] >= nx || p[1] >= ny || p[2] >= nz { return sky }
+        let c = &view.cells[((p[2] as usize) * view.ny + p[1] as usize) * view.nx + p[0] as usize];
+        if c.kind == SOLID {
+            let col = colours.get(c.substance as usize).copied().unwrap_or([0.0; 3]);
+            return std::array::from_fn(|k| col[k] * c.light[k]);
+        }
+    }
+    sky
+}
+
+/// Fresnel reflectance of a water surface for unpolarised light arriving
+/// `theta` from its normal (radians).
+fn fresnel(theta: f32) -> f32 {
+    let (ci, si) = (theta.cos(), theta.sin());
+    let st = si / WATER_N;
+    let ct = (1.0 - st * st).max(0.0).sqrt();
+    let rs = ((ci - WATER_N * ct) / (ci + WATER_N * ct)).powi(2);
+    let rp = ((ct - WATER_N * ci) / (ct + WATER_N * ci)).powi(2);
+    (rs + rp) / 2.0
+}
+
+/// How a surface looks under open water `depth_mm` deep: its colour (linear,
+/// what's seen through the water) and the water's own reflectance toward
+/// the camera.
+///
+/// - Wet things look darker: light that has come up from the bed is partly
+///   reflected back down at the water's underside (about half, by total
+///   internal reflection) and the bed absorbs some of it again (Lekner &
+///   Dorf 1988, Appl. Opt. 27, 1278): a_wet = (1 − R)(1 − r̄)·a / (1 − r̄·a),
+///   r̄ = 1 − (1 − r̄_out)/n² the water's internal reflectance, from its
+///   hemispherical external reflectance r̄_out ≈ 0.066.
+/// - The water tints what's under it by its own absorption per band
+///   (fv-core's `WATER_KAPPA_MILLI_PER_M`, Pope & Fry 1997) over the path
+///   down (refracted) and back up (diffuse, about twice the depth): blue-green
+///   in deep water, nothing to see in a puddle.
+/// - The surface mirrors the sky by Fresnel's law at the camera's angle.
+fn wet_surface(dry: [f32; 3], depth_mm: f32) -> ([f32; 3], f32) {
+    let r = fresnel(VIEW_INCIDENCE);
+    let r_internal = 1.0 - (1.0 - 0.066) / (WATER_N * WATER_N);
+    let cos_t = (1.0 - (VIEW_INCIDENCE.sin() / WATER_N).powi(2)).sqrt();
+    let path_m = depth_mm / 1_000.0 * (1.0 / cos_t + 2.0);
+    // Visible bands [red, green, blue] of fv-core's table (per metre).
+    let kappa = [1, 2, 3].map(|b| fv_core::substance::WATER_KAPPA_MILLI_PER_M[b] as f32 / 1_000.0);
+    let film = (depth_mm / WET_FILM_MM).clamp(0.0, 1.0);
+    let colour = std::array::from_fn(|k| {
+        let a = dry[k] * (-kappa[k] * path_m).exp();
+        let wet = (1.0 - r) * (1.0 - r_internal) * a / (1.0 - r_internal * a);
+        dry[k] + (wet - dry[k]) * film
+    });
+    (colour, r * film)
+}
 
 /// A solid's colour as it is now: darkened as it chars, greying to ash as it
 /// burns away (linear).

@@ -46,6 +46,9 @@ pub struct ViewCell {
     pub mist: f32,
     /// The temperature that faces the world, °C.
     pub temp_c: f32,
+    /// Open water lying in the cell's bottom (a puddle), mm deep; 0 for
+    /// none (water held in a solid doesn't count).
+    pub water_mm: f32,
 }
 
 /// A snapshot for drawing, cells in x-fastest order (index = (z·ny + y)·nx + x).
@@ -128,5 +131,7 @@ fn view_cell(c: &Cell, subs: &[Substance], light: [f32; 3], glow: [f32; 3]) -> V
         soot: c.gas[Gas::Soot as usize].0 as f32 / 1000.0 / ml * 1000.0,
         mist: c.gas[Gas::Droplets as usize].0 as f32 / 1000.0 / ml * 1000.0,
         temp_c: c.temperature(subs).celsius_f64() as f32,
+        // 1 mm over a face is FACE_MM2 mg.
+        water_mm: if c.open_water() { c.water.0 as f32 / 1_000.0 / crate::substance::FACE_MM2 as f32 } else { 0.0 },
     }
 }

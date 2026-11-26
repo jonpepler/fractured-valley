@@ -4,8 +4,10 @@
 //!   cargo run --release -p fv-render --example record -- --scene night-crib --size 64 --ticks 600
 //!
 //! Options (all optional):
-//!   --scene S       tree, dead-tree, campfire, grass, post, or the valley
-//!   --sky day|night afternoon sun, or no light but the fire's
+//!   --scene S       tree, dead-tree, campfire, grass, post, puddle, puddle-shade, or the valley
+//!   --sky day|night|moon afternoon sun, no light but the fire's, or a faint
+//!                   1 W/m² skylight (night you can see; energetically
+//!                   nothing next to the sun's ~500 W/m²)
 //!   --size N        world is N×N cells (10 cm each), default 64
 //!   --height N      world height in cells, default 64
 //!   --seed N        terrain seed, default 7
@@ -18,6 +20,9 @@
 //!   --torch-ticks N how many ticks the torch is held, default 80
 //!   --focus F       world (frame the whole box, default) or crib (close up on the fire)
 //!   --radiation M   packets (Monte Carlo) or field (discrete ordinates); default: the sim's
+//!   --light-ticks N average packet light over about N ticks (view only), default 10;
+//!                   more for time-lapses and dim light, where few packets land.
+//!                   Frames start once the light has averaged over that long.
 //!   --out DIR       output directory
 //! Writes DIR/<scene>.mp4 and DIR/<scene>-tNNNN.png (with -crib after the
 //! scene name for the close-up).
@@ -51,11 +56,12 @@ struct Args {
     torch_ticks: u64,
     focus: String,
     radiation: Option<Radiation>,
+    light_ticks: u64,
     out: String,
 }
 
 fn args() -> Args {
-    let mut a = Args { scene: "tree".into(), sky: "day".into(), size: 64, height: 64, seed: 7, ticks: 600, step: 4, scale: 3, stills: 4, fps: 20, torch_j: 250, torch_ticks: 80, focus: "close".into(), radiation: None, out: DEFAULT_OUT.into() };
+    let mut a = Args { scene: "tree".into(), sky: "day".into(), size: 64, height: 64, seed: 7, ticks: 600, step: 4, scale: 3, stills: 4, fps: 20, torch_j: 250, torch_ticks: 80, focus: "close".into(), radiation: None, light_ticks: 10, out: DEFAULT_OUT.into() };
     let raw: Vec<String> = std::env::args().skip(1).collect();
     for pair in raw.chunks(2) {
         let (key, value) = (pair[0].as_str(), pair.get(1).map(String::as_str).unwrap_or(""));
@@ -75,6 +81,7 @@ fn args() -> Args {
             "--torch-ticks" => a.torch_ticks = num(),
             "--focus" => a.focus = value.into(),
             "--out" => a.out = value.into(),
+            "--light-ticks" => a.light_ticks = num().max(1),
             "--radiation" => a.radiation = Some(match value { "field" => Radiation::Field, "packets" => Radiation::Packets, _ => panic!("--radiation is packets or field") }),
             _ => panic!("unknown option {key}"),
         }
@@ -121,6 +128,43 @@ fn build_scene(a: &Args) -> Scene {
             let torch = (2..n - 2).map(|x| (x, 2, 4)).collect();
             Scene { world: w, torch, centre: [(n / 2) as i32, (n / 2) as i32, 4], frame: (2 * (n * 2) + 16, n * 2 + 24), char_post: None }
         }
+        "puddle" | "puddle-shade" => {
+            // A thin puddle on stone after rain (air 20 °C, 85 %), deepest in
+            // the middle (0.3 mm), thinnest at its rim (0.02 mm), so it dries
+            // from the edge inward. "puddle-shade" stands a 1.2 m L-shaped
+            // stone wall on the two sunward sides, which shades all of it; the
+            // wall is behind the puddle from the camera, so it hides nothing.
+            let t = fv_core::units::celsius(20);
+            let mut w = fv_core::world::World::new(a.size, a.size, a.height, a.seed, t);
+            let subs = w.subs.clone();
+            let stone = Cell::solid_of(STONE, 1000, 2, t, &subs);
+            let n = a.size;
+            for z in 0..4 { for y in 0..n { for x in 0..n { w.set(x, y, z, stone) } } }
+            if a.scene == "puddle-shade" {
+                for z in 4..16.min(a.height) { for y in 0..n { for x in 0..n { if x < 2 || y < 2 { w.set(x, y, z, stone) } } } }
+            }
+            fv_core::scene::bond_all(&mut w, fv_core::scene::natural_bonds);
+            let humid = |c: &mut Cell| {
+                let ml = c.gas_volume_ml(&subs);
+                if ml <= 0 || c.gas_mass().0 == 0 { return }
+                let sat = fv_core::tables::tables().saturated_ug_per_l[fv_core::tables::k_index(t.0)];
+                c.gas[Gas::Vapour as usize] = fv_core::units::Mass(sat * 85 / 100 * ml / CELL_VOLUME_ML);
+                c.set_temperature(t, &subs);
+            };
+            for c in w.cells.iter_mut() { if c.substance == NONE { humid(c) } }
+            let mut outside = w.outside_air;
+            humid(&mut outside);
+            w.outside_air = outside;
+            let (centre, r) = (n as f64 / 2.0 + 1.0, 3.5);
+            for y in 0..n { for x in 0..n {
+                let d = ((x as f64 + 0.5 - centre).powi(2) + (y as f64 + 0.5 - centre).powi(2)).sqrt();
+                if d > r { continue }
+                let mut p = Cell::puddle_um((20.0 + 280.0 * (1.0 - d / r)) as i64, t, &subs);
+                humid(&mut p);
+                w.set(x, y, 4, p);
+            }}
+            Scene { world: w, torch: vec![], centre: [(n / 2) as i32, (n / 2) as i32, 5], frame: (2 * (n * 2) + 16, n * 2 + 48), char_post: None }
+        }
         "post" => {
             let mut w = fv_core::world::World::new(a.size, a.size, a.height, a.seed, fv_core::units::celsius(18));
             let subs = w.subs.clone();
@@ -155,7 +199,7 @@ fn build_scene(a: &Args) -> Scene {
 
 fn main() {
     let a = args();
-    let sky = match a.sky.as_str() { "night" => Sky::NIGHT, _ => Sky::afternoon() };
+    let sky = match a.sky.as_str() { "night" => Sky::NIGHT, "moon" => Sky { sky_w_m2: 1, ..Sky::NIGHT }, _ => Sky::afternoon() };
     std::fs::create_dir_all(&a.out).expect("make output directory");
     let scene = build_scene(&a);
     let base = scene.world.cells.len();
@@ -179,6 +223,7 @@ fn main() {
     let mut renderer = Renderer::new_headless(width, height).expect("GPU");
     // Tell the camera how bright the sky is, so it knows day from night.
     renderer.exposure.sky_w_m2 = Some((sim.sky.sun_w_m2 + sim.sky.sky_w_m2) as f32);
+    renderer.sky_light_w_m2 = Some(sim.sky.sky_w_m2 as f32);
     let info = renderer.device().adapter_info();
     println!("{} cells, image {width}×{height}, GPU: {} ({:?})", base, info.name, info.backend);
 
@@ -191,8 +236,11 @@ fn main() {
         .expect("start ffmpeg");
     let pipe = ffmpeg.stdin.as_mut().unwrap();
 
+    let open_water = |sim: &Sim| -> i64 { sim.world.cells.iter().filter(|c| c.open_water()).map(|c| c.water.0).sum() };
+    let water_at_start = open_water(&sim);
     let still_every = if a.stills > 0 { (a.ticks / a.stills).max(1) } else { u64::MAX };
     let mut viewer = Viewer::new();
+    viewer.blend = 1.0 / a.light_ticks as f32;
     let (mut sim_time, mut render_time, mut frames) = (0.0, 0.0, 0);
     for tick in 0..=a.ticks {
         let t = Instant::now();
@@ -214,7 +262,7 @@ fn main() {
         let view = viewer.view_sim(&sim);
         sim_time += t.elapsed().as_secs_f64();
         let still = tick > 0 && tick % still_every == 0;
-        if tick % a.step != 0 && !still { continue }
+        if (tick % a.step != 0 && !still) || tick < a.light_ticks { continue }
         let t = Instant::now();
         let pixels = renderer.render(&view, &camera);
         render_time += t.elapsed().as_secs_f64();
@@ -225,6 +273,11 @@ fn main() {
             write_png(&path, width, height, &pixels);
             println!("tick {tick}: {:?} → {path}", renderer.stats);
         }
+    }
+    if water_at_start > 0 {
+        let left = open_water(&sim);
+        println!("open water: {:.2} g → {:.2} g ({:.0} % evaporated) over {:.0} simulated minutes",
+                 water_at_start as f64 / 1e6, left as f64 / 1e6, 100.0 * (water_at_start - left) as f64 / water_at_start as f64, a.ticks as f64 * 0.05 / 60.0);
     }
     drop(ffmpeg.stdin.take());
     ffmpeg.wait().expect("ffmpeg");
