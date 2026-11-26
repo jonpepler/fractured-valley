@@ -36,7 +36,14 @@ pub struct Tables {
     /// Planck shares of emission in [infrared, red, green, blue] (blue
     /// includes everything shorter), out of 2³², per kelvin.
     pub bands: Vec<[u64; 4]>,
+    /// Rothermel's effective heating number ε = exp(−138/σ) (σ in 1/ft),
+    /// per mille, by σ in 1/m: the share of a fine fuel that must reach
+    /// ignition before it lights (its surface layer; thin blades nearly all).
+    pub heating_permille: Vec<i64>,
 }
+
+/// Largest surface-to-volume ratio the heating table covers, 1/m.
+pub const MAX_SIGMA: usize = 20_000;
 
 pub fn tables() -> &'static Tables {
     static T: OnceLock<Tables> = OnceLock::new();
@@ -94,6 +101,10 @@ fn build() -> Tables {
         saturated_ug_per_l: saturated,
         sigma_t4,
         bands,
+        heating_permille: (0..=MAX_SIGMA).map(|sigma| {
+            if sigma == 0 { return 0 }
+            (libm::exp(-138.0 / (sigma as f64 * 0.3048)) * 1000.0).round() as i64
+        }).collect(),
     }
 }
 

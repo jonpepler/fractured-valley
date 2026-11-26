@@ -18,6 +18,6 @@ fn main() {
         sim.step();
         if tick % 10 != 9 { continue }
         let w = &sim.world; let c = w.get(8, 8, 4); let up = w.get(8, 8, 5); let nb = w.get(7, 8, 4);
-        println!("{tick}: solid {:.0}C gas {:.0}C water {} vol {} char {} fuel {} O2 {} | above gas {:.0}C fuel {} | nb solid {:.0}C vol {}", c.solid_temperature(&w.subs).celsius_f64(), c.gas_temperature().celsius_f64(), c.water.0, c.solid[VOLATILE].0, c.solid[CHAR].0, c.gas[Gas::Fuel as usize].0, c.gas[Gas::Oxygen as usize].0, up.gas_temperature().celsius_f64(), up.gas[Gas::Fuel as usize].0, nb.solid_temperature(&w.subs).celsius_f64(), nb.solid[VOLATILE].0);
+        println!("{tick}: solid {:.0}C gas {:.0}C water {} vol {} char {} fuel {} O2 {} | above gas {:.0}C fuel {} | nb solid {:.0}C vol {}", c.surface_temperature(&w.subs).celsius_f64(), c.gas_temperature().celsius_f64(), c.water.0, c.solid[VOLATILE].0, c.solid[CHAR].0, c.gas[Gas::Fuel as usize].0, c.gas[Gas::Oxygen as usize].0, up.gas_temperature().celsius_f64(), up.gas[Gas::Fuel as usize].0, nb.surface_temperature(&w.subs).celsius_f64(), nb.solid[VOLATILE].0);
     }
 }

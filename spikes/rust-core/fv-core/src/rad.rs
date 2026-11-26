@@ -195,7 +195,7 @@ fn emitters(c: &Cell, subs: &[Substance], faces: i64) -> Vec<Emitter> {
     let mut out = Vec::new();
     if c.has_solid() {
         // 4κV = σ·share·0.001 m³ = σ·share·0.1 faces.
-        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 / 10).min(cap), t: c.solid_temperature(subs), albedo: solid_albedo, from_gas: false });
+        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 / 10).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false });
     }
     let tg = c.gas_temperature();
     // Soot: 4κV = 4 × (mg/L per m) × 0.001 m³ = 0.4 faces per mg = µg/2500.

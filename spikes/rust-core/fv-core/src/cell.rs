@@ -80,10 +80,17 @@ impl Cell {
     /// The latent heat held by the vapour.
     pub fn latent(&self) -> Energy { self.gas[Gas::Vapour as usize] * LATENT_HEAT_VAPOUR }
 
-    /// Heat capacity of an opaque cell's surface layer (a tenth of its solid).
+    /// Heat capacity of a solid's surface layer: what a fire heats first and
+    /// what has to reach ignition. A dense solid's outer tenth; for fine fuel
+    /// (twigs, grass) the share Rothermel's effective heating number gives,
+    /// exp(−138/σ) with σ in 1/ft: about half of 6 mm twigs, nearly all of a
+    /// grass blade (Rothermel 1972).
     pub fn skin_capacity(&self, subs: &[Substance]) -> HeatCapacity {
-        if !self.opaque(subs) { return HeatCapacity::ZERO }
-        HeatCapacity(self.solid_capacity(subs).0 * SKIN_PERMILLE / 1000)
+        if self.opaque(subs) { return HeatCapacity(self.solid_capacity(subs).0 * SKIN_PERMILLE / 1000) }
+        let sigma = subs[self.substance as usize].surface_per_volume;
+        if sigma <= 0 || self.solid_mass().0 == 0 { return HeatCapacity::ZERO }
+        let e = crate::tables::tables().heating_permille[(sigma as usize).min(crate::tables::MAX_SIGMA)];
+        HeatCapacity(self.solid_capacity(subs).0 * e / 1000)
     }
 
     /// Heat capacity of the solid below the surface layer.
@@ -123,7 +130,7 @@ impl Cell {
     /// The store that surface heat goes into: an opaque cell's surface layer,
     /// an airy cell's solid if it has one, else its gas.
     pub fn surface_store(&mut self, subs: &[Substance]) -> &mut Energy {
-        if self.opaque(subs) { return &mut self.skin }
+        if self.skin_capacity(subs).0 > 0 { return &mut self.skin }
         if self.has_solid() { return &mut self.solid_energy }
         &mut self.energy
     }
