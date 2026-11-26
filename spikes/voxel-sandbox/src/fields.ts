@@ -35,16 +35,16 @@ export const KINDS = 6
  * slowly disperses). Oxygen used doesn't fade: fresh air only comes back by
  * mixing in from around, so a closed space stays starved.
  */
-const FADE = [14, 9, 12, 10, 0, 0]
+const FADE = [14, 9, 12, 24, 0, 0]
 /** Oxygen in fresh air, in the same units as O2Used (21% of air ≈ 2100). */
 const O2_FRESH = 2100
 /** Oxygen used per unit of vapour burnt. */
-const O2_PER_FUEL = 3
+const O2_PER_FUEL = 2
 /** Vapour burns where the air is at least this hot (°C), given oxygen. */
 const VAPOUR_IGNITES = 420
 /** Share of the vapour in a cell that burns per tick, out of 256, and heat released per unit burnt. */
 const BURN_SHARE = 220
-const HEAT_PER_FUEL = 3
+const HEAT_PER_FUEL = 6
 /** Soot made per unit of vapour burnt, out of 256 (a well-fed flame makes little). */
 const SOOT_PER_FUEL = 40
 /** Heat a cell gains from flame in the cells around it, per unit of flame, in 1/16 °C. */
@@ -417,7 +417,10 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
       const w000 = ((256 - tx) * (256 - ty) >> 8) * (256 - tz) >> 8, w100 = (tx * (256 - ty) >> 8) * (256 - tz) >> 8
       const w010 = ((256 - tx) * ty >> 8) * (256 - tz) >> 8, w110 = (tx * ty >> 8) * (256 - tz) >> 8
       const w001 = ((256 - tx) * (256 - ty) >> 8) * tz >> 8, w101 = (tx * (256 - ty) >> 8) * tz >> 8
-      const w011 = ((256 - tx) * ty >> 8) * tz >> 8, w111 = (tx * ty >> 8) * tz >> 8
+      const w011 = ((256 - tx) * ty >> 8) * tz >> 8
+      // The last weight takes the rounding remainder, so the eight always sum
+      // to exactly 256: carrying gas neither loses nor makes any of it.
+      const w111 = 256 - w000 - w100 - w010 - w110 - w001 - w101 - w011
       const c000 = okx0 && oky0 && okz0, c100 = okx1 && oky0 && okz0, c010 = okx0 && oky1 && okz0, c110 = okx1 && oky1 && okz0
       const c001 = okx0 && oky0 && okz1, c101 = okx1 && oky0 && okz1, c011 = okx0 && oky1 && okz1, c111 = okx1 && oky1 && okz1
       // Neighbours for the blur (outside reads as 0).
@@ -426,6 +429,7 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
       const izp = fz + 1 < nz ? i + nxy : -1, izm = fz > 0 ? i - nxy : -1
       // Carry, blur and fade each gas (flame is not carried: it is made below).
       const val = [0, 0, 0, 0, 0, 0]
+      let lostFuel = 0
       for (const k of CARRIED) {
         const a = v.cur[k]!
         // Gas traced back into a wall reads as this cell's own (walls neither
@@ -436,17 +440,27 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
         const adv = ((c000 ? (sol[j0] ? own : a[j0]!) * w000 : 0) + (c100 ? (sol[j1] ? own : a[j1]!) * w100 : 0) +
           (c010 ? (sol[j2] ? own : a[j2]!) * w010 : 0) + (c110 ? (sol[j3] ? own : a[j3]!) * w110 : 0) +
           (c001 ? (sol[j4] ? own : a[j4]!) * w001 : 0) + (c101 ? (sol[j5] ? own : a[j5]!) * w101 : 0) +
-          (c011 ? (sol[j6] ? own : a[j6]!) * w011 : 0) + (c111 ? (sol[j7] ? own : a[j7]!) * w111 : 0)) >> 8
+          (c011 ? (sol[j6] ? own : a[j6]!) * w011 : 0) + (c111 ? (sol[j7] ? own : a[j7]!) * w111 : 0) + 128) >> 8
         // A solid neighbour counts as this cell (gas doesn't soak into walls,
         // and a wall doesn't supply fresh air); outside the grid is open air.
         const nb = ((ixp < 0 ? 0 : sol[ixp] ? own : a[ixp]!) + (ixm < 0 ? 0 : sol[ixm] ? own : a[ixm]!) +
           (iyp < 0 ? 0 : sol[iyp] ? own : a[iyp]!) + (iym < 0 ? 0 : sol[iym] ? own : a[iym]!) +
-          (izp < 0 ? 0 : sol[izp] ? own : a[izp]!) + (izm < 0 ? 0 : sol[izm] ? own : a[izm]!)) / 6 | 0
+          (izp < 0 ? 0 : sol[izp] ? own : a[izp]!) + (izm < 0 ? 0 : sol[izm] ? own : a[izm]!) + 3) / 6 | 0
         // Smoke (soot, steam) mixes into the air around it faster than heat or vapour, so plumes widen and thin.
-        let x = k === F.Soot || k === F.Steam ? (adv * 5 + nb * 3) >> 3 : (adv * 3 + nb) >> 2
-        x -= (x * FADE[k]! + 255) >> 8
+        // Moving air is turbulent and mixes with its neighbours faster: fast
+        // air (a fire's plume) pulls fresh air in, so flames get oxygen. It's
+        // mixing, not a source: a sealed room still runs out.
+        const mixMore = vel ? Math.min(3, (Math.abs(vel[0]![i]!) + Math.abs(vel[1]![i]!) + Math.abs(vel[2]![i]!)) >> 7) : 0
+        const nbShare = (k === F.Soot || k === F.Steam ? 3 : 2) + mixMore // out of 8
+        let x = (adv * (8 - nbShare) + nb * nbShare + 4) >> 3
+        const faded = (x * FADE[k]! + 255) >> 8
+        x -= faded
         val[k] = x < 24 ? 0 : x
+        lostFuel = k === F.Fuel ? faded : lostFuel
       }
+      // Vapour that cools and thins before it finds air doesn't vanish: it
+      // condenses into tarry droplets, which is smoke.
+      val[F.Soot] = Math.min(CAP, val[F.Soot]! + (lostFuel >> 1))
       // Radiation: flame next door (last tick) heats this cell, most from the
       // flame beside and below it. This is how flame reaches fuel it isn't in.
       const fl0 = v.cur[F.Flame]!

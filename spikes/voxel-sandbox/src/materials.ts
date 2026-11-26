@@ -141,7 +141,7 @@ const list: Material[] = [
   },
   {
     id: M.Scorched, name: 'scorched earth', solid: true, opaque: true, terrain: true, density: 16,
-    palette: ['#3e3129', '#4a3a2f', '#352a24'].map(hex),
+    palette: ['#2f2c2a', '#383431', '#272523', '#33302d', '#2b2927', '#58534c'].map(hex), // charcoal, an ash fleck
   },
   {
     id: M.Moss, name: 'moss', solid: false, opaque: true, density: 1,

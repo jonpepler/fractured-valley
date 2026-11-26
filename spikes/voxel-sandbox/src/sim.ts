@@ -28,6 +28,7 @@ const DRYING_HEAT = 100
 const MAX_EMBERS = 150
 /** Temperature (°C) of the air touching a burning, dry surface. */
 const SURFACE_GLOW = 700
+const GLOW_LOST_PER_FINENESS = 40
 /** Downward pull on an ember per tick (1/256 cells per tick²). */
 const EMBER_GRAVITY = 6
 /** Which side of a burning cell its heat goes to: up first, then around. */
@@ -114,7 +115,11 @@ export class Sim {
   /** Glowing embers in flight (simulation state: they can start fires). */
   embers: Ember[] = []
 
+  /** How many of each event there has ever been (the log above keeps only the latest). */
+  readonly eventCounts: Partial<Record<SimEvent['kind'], number>> = {}
+
   private note(kind: SimEvent['kind'], cells: number, at: number) {
+    this.eventCounts[kind] = (this.eventCounts[kind] ?? 0) + 1
     this.events.push({ tick: this.tick, kind, cells, at: unpack(at) })
     if (this.events.length > 500) this.events.shift()
   }
@@ -261,10 +266,12 @@ export class Sim {
       if (boil) w.setMoisture(x, y, z, wet - 1)
       // A quarter of the energy is direct heat from glowing char; the rest
       // leaves as burnable vapour, which burns in the air as flame.
-      f.emit(ax, ay, az, fl.heat >> 2, fl.soot >> 1, boil * 240, (fl.heat * 3) >> 2)
+      f.emit(ax, ay, az, fl.heat >> 2, fl.soot >> 1, boil * 240, fl.heat >> 3)
       // Once dry, the burning surface glows and the air touching it is that
       // hot, so its own vapour lights (a lone log keeps burning).
-      if (!boil && fl.fineness <= 2) f.warm(ax, ay, az, SURFACE_GLOW) // thick fuel chars and glows; fine fuel flashes through
+      // Thick fuel chars and glows hottest; fine fuel (blades, leaves) has
+      // little char, so the air it touches is less hot.
+      if (!boil) f.warm(ax, ay, az, SURFACE_GLOW - (fl.fineness - 1) * GLOW_LOST_PER_FINENESS)
       const h = hash32(this.seed, this.tick, p, 0xb0)
       if (this.embers.length < MAX_EMBERS && fl.fineness >= 5 && chance(h >>> 8, fl.fineness, 40000)) {
         // An ember leaves upward with a little random push.

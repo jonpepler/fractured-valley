@@ -89,11 +89,19 @@ const EMBER_PX = [[0xff, 0x8a, 0x24], [0xe8, 0x52, 0x18], [0xff, 0xc0, 0x50]].ma
 // Smoke from steam (light) to soot (dark).
 const SMOKE_PX = [[0xb4, 0xb0, 0xa8], [0x96, 0x92, 0x8c], [0x66, 0x62, 0x5e], [0x4c, 0x48, 0x46]].map(packed)
 const MAX_FLAME_PARTICLES = 12000
+const MAX_PUFFS = 4000
+/** Field smoke (soot + steam) a cell needs, near the fire, to give off a visible puff. */
+const PUFF_MIN_SMOKE = 600
+/** Puff opacity steps, out of 255. */
+const PUFF_LEVELS = [0, 50, 90, 125, 155, 180]
+interface SmokePuff { x: number; y: number; z: number; r: number; age: number; life: number; amount: number; dark: number }
 /** Splatted weight a pixel needs to show as flame. */
 const FLAME_THRESHOLD = 7
+/** Burning (simulation flame units) at which a cell feeds flame every tick. */
+const FLAME_FULL_FEED = 48
 const FIRELIGHT = rgb(0xff, 0x9a, 0x40)
 /** Smoke opacity levels, out of 255, from barely there to thick. */
-const SMOKE_LEVELS = [0, 45, 80, 110, 135, 155, 175]
+const SMOKE_LEVELS = [0, 15, 28, 40, 50, 58, 65]
 interface FlameParticle { x: number; y: number; z: number; vx: number; vy: number; vz: number; heat: number; cool: number; life: number }
 // The 14 pixels of a cube sprite: [dx, dy, face] with face 0 top, 1 left, 2 right.
 const SPRITE: readonly (readonly [number, number, number])[] = [
@@ -334,7 +342,10 @@ export class IsoRenderer {
     const charA = Math.min(235, 70 + ((progress * 180) >> 8))
     const faces = [blend(top, CHAR_PX, charA), blend(left, CHAR_PX, charA), blend(right, CHAR_PX, charA)]
     // Quick-burning stuff (leaves, grass) is mostly glowing; wood glows more as it burns through.
-    const emberPct = fine >= 5 ? 12 : 6 + (progress >> 4) // sparse glow points; dense speckle reads as a brown cloud
+    // Fine fuel (grass, leaves) glows only while it first catches and goes
+    // dark as it chars, so glow sits on the burning edge, not across the
+    // burnt ground behind it. Wood glows more as it burns through.
+    const emberPct = fine >= 5 ? Math.max(0, 8 - (progress >> 4)) : 6 + (progress >> 4)
     for (let i = 0; i < SPRITE.length; i++) {
       const [dx, dy, face] = SPRITE[i]!
       const e = hash32(x * 31 + i, y, z, tick >> 2)
@@ -356,7 +367,7 @@ export class IsoRenderer {
     }
     const { gasSmoke, gasSoot, gasHeat, gasMark, gasWeight } = this
     const touched: number[] = []
-    if (tick !== this.particleTick) { this.stepFlames(fields, tick); this.particleTick = tick }
+    if (tick !== this.particleTick) { this.stepFlames(fields, tick); this.stepPuffs(fields, tick); this.particleTick = tick }
     this.drawFirelight(fields, tick)
     // Pass 1: add up the gas over every pixel, each field cell spreading as a
     // soft blob (stronger at its centre). Gas behind the world is hidden.
@@ -409,6 +420,7 @@ export class IsoRenderer {
       if (lit) col = blend(col, FLAME_PX[3]!, lit)
       this.px[i] = blend(this.px[i]!, col, level)
     }
+    this.drawPuffs(tick)
     this.drawFlames()
   }
 
@@ -435,7 +447,13 @@ export class IsoRenderer {
       // spell, so the front breaks into separate tongues with gaps between.
       const spell = hash32(fx * 7919 + fy, fz, tick >> 3)
       if ((spell & 255) < 85) continue
-      const tall = 0.55 + ((spell >>> 8) & 255) / 300 // ×0.55 … ×1.4
+      // A cell burning only faintly feeds a tongue only now and then, in
+      // proportion: thin burning shows as nothing, not as scattered sparks.
+      if (flame < FLAME_FULL_FEED && (hash32(fx * 31 + fy, fz, tick, 0xfe) & 255) >= (flame * 256) / FLAME_FULL_FEED) continue
+      // Height follows how much is burning here: a small burn gives a short
+      // tongue, only heavy burning a tall one, so a dying fire shrinks.
+      const fed = Math.min(1, flame / 160)
+      const tall = (0.45 + ((spell >>> 8) & 255) / 400) * (0.5 + 0.6 * fed) // ×0.22 … ×1.2
       const n = Math.min(3, 1 + (flame >> 7))
       const [gx, gy, gz] = fields.velocity(this.seed, tick, fx, fy, fz, heat)
       for (let k = 0; k < n && kept.length < MAX_FLAME_PARTICLES; k++) {
@@ -524,7 +542,11 @@ export class IsoRenderer {
       fAcc[i] = 0; fHeat[i] = 0
       if (acc < FLAME_THRESHOLD) continue
       // Denser flame is hotter-looking at its core; thin edges take a redder shade.
-      const shown = acc < FLAME_THRESHOLD + 3 ? heat - 140 : heat + Math.min(80, (acc - FLAME_THRESHOLD) * 6)
+      let shown = acc < FLAME_THRESHOLD + 3 ? heat - 140 : heat + Math.min(80, (acc - FLAME_THRESHOLD) * 6)
+      // Narrow darker streaks inside the body, drifting slowly, so neighbouring
+      // tongues read as separate rather than one flat sheet.
+      const px = i % W
+      if ((hash32(px >> 1, this.particleTick >> 3, 0x57) & 7) === 0) shown -= 160
       this.px[i] = FLAME_PX[shown > 1000 ? 0 : shown > 880 ? 1 : shown > 760 ? 2 : shown > 640 ? 3 : shown > 540 ? 4 : 5]!
       this.depth[i] = fDepth[i]!
     }
@@ -533,6 +555,77 @@ export class IsoRenderer {
   private fAcc = new Uint32Array(0)
   private fHeat = new Uint32Array(0)
   private fDepth = new Int32Array(0)
+
+  /**
+   * Smoke puffs: the smoke field (simulation) given visible shape. Puffs are
+   * born where the field's smoke is thick near the fire, take its mix of
+   * soot and steam for their shade, then ride the simulation's air velocity,
+   * growing and thinning as they rise, so the eye can follow smoke travelling
+   * and leaning with the wind. View only; seeded from the tick.
+   */
+  private stepPuffs(fields: Fields, tick: number) {
+    const kept: SmokePuff[] = []
+    for (const q of this.puffs) {
+      const fx = Math.floor(q.x / FR), fy = Math.floor(q.y / FR), fz = Math.floor(q.z / FR)
+      const [gx, gy, gz] = fields.velocity(this.seed, tick, fx, fy, fz, 0)
+      q.x += (gx * FR) / 256; q.y += (gy * FR) / 256; q.z += Math.max(0.04, (gz * FR) / 256)
+      q.r += 0.035
+      q.amount *= 0.982
+      if (++q.age < q.life && q.amount > 0.06) kept.push(q)
+    }
+    for (const [fx, fy, fz, heat, soot, steam] of fields.cells()) {
+      const smoke = soot + steam
+      if (smoke < PUFF_MIN_SMOKE || heat < 120 || kept.length >= MAX_PUFFS) continue
+      const h = hash32(fx * 7333 + fy, fz, tick)
+      if (h % 8 !== 0) continue // about one puff per thick cell every 8 ticks
+      kept.push({
+        x: fx * FR + ((h >>> 8) & 255) / 128, y: fy * FR + ((h >>> 16) & 255) / 128, z: fz * FR + 1,
+        r: 0.8 + ((h >>> 24) & 7) / 10, age: 0, life: 60 + (h & 63),
+        amount: Math.min(1, smoke / 2500), dark: Math.min(3, (soot * 4) / smoke),
+      })
+    }
+    this.puffs = kept
+  }
+
+  private drawPuffs(_tick: number) {
+    const W = this.width, H = this.height
+    if (this.pAcc.length !== W * H) { this.pAcc = new Uint32Array(W * H); this.pDark = new Uint32Array(W * H) }
+    const { pAcc, pDark } = this
+    const [bx, by] = this.anchor(0, 0, 0)
+    const hit: number[] = []
+    for (const q of this.puffs) {
+      const cx = bx + 2 * (q.x - q.y) + 1, cy = by + q.x + q.y - 2 * q.z + 1
+      const d = Math.round(q.x + q.y + q.z)
+      const rp = q.r * 2.2 // screen radius in px
+      const r2 = rp * rp
+      const a = Math.round(q.amount * 256)
+      for (let dy = Math.floor(-rp); dy <= rp; dy++) for (let dx = Math.floor(-rp); dx <= rp; dx++) {
+        const dd = dx * dx + dy * dy
+        if (dd > r2) continue
+        const x = Math.round(cx + dx), y = Math.round(cy + dy)
+        if (x < 0 || y < 0 || x >= W || y >= H) continue
+        const i = y * W + x
+        if (d < this.depth[i]!) continue
+        const wgt = (a * (r2 - dd)) / r2 // soft edge: full at the centre, nothing at the rim
+        if (!pAcc[i]) hit.push(i)
+        pAcc[i]! += wgt
+        pDark[i]! += wgt * q.dark
+      }
+    }
+    for (const i of hit) {
+      const acc = pAcc[i]!, dark = pDark[i]! / acc
+      pAcc[i] = 0; pDark[i] = 0
+      const level = acc > 420 ? 5 : acc > 300 ? 4 : acc > 200 ? 3 : acc > 120 ? 2 : acc > 60 ? 1 : 0
+      if (!level) continue
+      const lo = Math.floor(dark), hi = Math.min(3, lo + 1), t = Math.round((dark - lo) * 255)
+      const col = blend(SMOKE_PX[lo]!, SMOKE_PX[hi]!, t)
+      this.px[i] = blend(this.px[i]!, col, PUFF_LEVELS[level]!)
+    }
+  }
+
+  private puffs: SmokePuff[] = []
+  private pAcc = new Uint32Array(0)
+  private pDark = new Uint32Array(0)
 
   private flames: FlameParticle[] = []
   private particleTick = -1

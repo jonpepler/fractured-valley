@@ -77,10 +77,12 @@ describe('determinism', () => {
 describe('the burning post', () => {
   test('the post gives way under the metal block, which topples and lands', () => {
     const sim = burnTheTestPost()
-    const kinds = sim.events.map(e => e.kind)
-    expect(kinds).toContain('gave-way')
-    expect(kinds).toContain('detached')
-    expect(kinds).toContain('landed')
+    // Totals, not the event log: the log keeps only the latest 500, and a
+    // tree the fire reaches can fill it with crumbs.
+    const n = sim.eventCounts
+    expect(n['gave-way']).toBeGreaterThan(0)
+    expect(n.detached).toBeGreaterThan(0)
+    expect(n.landed).toBeGreaterThan(0)
     expect(sim.bodies).toHaveLength(0) // everything has come to rest
     // The block is still in one piece, and lower than it started.
     let metal = 0, top = 0
