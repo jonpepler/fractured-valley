@@ -74,7 +74,7 @@ const SURFACE_H_PER_SIGMA: i64 = 25;
 /// cylinder of diameter d = 4/σ carries heat as Nu = 0.3 + 0.62·Re^½·Pr^⅓
 /// (Churchill & Bernstein 1977, low-Re form, Pr ≈ 0.7), never below still
 /// air's Nu = 2. Kinematic viscosity of air ν ≈ 1.5×10⁻⁵·(T/293 K)^1.75.
-fn surface_h(sigma: i64, t_gas: Temperature, ambient: Temperature) -> i64 {
+pub fn surface_h(sigma: i64, t_gas: Temperature, ambient: Temperature) -> i64 {
     if sigma <= 0 { return SURFACE_H_PER_SIGMA }
     let v = crate::transport::buoyant_churn(t_gas, ambient) as f64 / 1000.0; // m/s
     let d = 4.0 / sigma as f64;

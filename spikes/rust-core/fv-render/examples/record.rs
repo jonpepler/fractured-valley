@@ -122,6 +122,19 @@ fn build_scene(a: &Args) -> Scene {
             let torch = vec![(cx, cy, 4), (cx + 2, cy + 1, 4), (cx + 1, cy + 3, 4), (cx + 3, cy + 2, 4)];
             Scene { world: w, torch, centre: [(cx + 2) as i32, (cy + 2) as i32, 6], frame: (200, 150), char_post: None }
         }
+        "grass" => {
+            // A field of dry grass on soil, lit along one edge.
+            let mut w = fv_core::world::World::new(a.size, a.size, a.height, a.seed, fv_core::units::celsius(15));
+            let subs = w.subs.clone();
+            let t = fv_core::units::celsius(15);
+            let soil = Cell::solid_of(SOIL, 1000, 150, t, &subs);
+            let grass = Cell::solid_of(GRASS, 1000, 100, t, &subs);
+            let n = a.size;
+            for y in 0..n { for x in 0..n { for z in 0..4 { w.set(x, y, z, soil) } w.set(x, y, 4, grass) } }
+            fv_core::scene::bond_all(&mut w, fv_core::scene::natural_bonds);
+            let torch = (2..n - 2).map(|x| (x, 2, 4)).collect();
+            Scene { world: w, torch, centre: [(n / 2) as i32, (n / 2) as i32, 4], frame: (2 * (n * 2) + 16, n * 2 + 24), char_post: None }
+        }
         "post" => {
             let mut w = fv_core::world::World::new(a.size, a.size, a.height, a.seed, fv_core::units::celsius(18));
             let subs = w.subs.clone();

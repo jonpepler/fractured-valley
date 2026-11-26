@@ -68,7 +68,8 @@ impl Sim {
         self.step_after_diffuse();
     }
 
-    /// The first part of `step`, up to the diffusion phase. With
+    /// The first part of `step`, up to the diffusion phase (this tick's
+    /// commands). With
     /// `step_after_diffuse` this lets a caller that cannot block (a web page
     /// waiting for its peers' bricks) drive the diffusion phase itself, e.g.
     /// with `transport::diffuse_part` and `apply_parts`. `step` is exactly
@@ -81,13 +82,16 @@ impl Sim {
         let (due, later): (Vec<_>, Vec<_>) = self.queue.drain(..).partition(|s| s.tick == now);
         self.queue = later;
         for s in due { apply(w, &mut self.books, s.command) }
-        self.flow.step(w);
-        advect(w, &self.flow, self.advect_steps);
     }
 
     /// The rest of `step`, after the diffusion phase.
     pub fn step_after_diffuse(&mut self) {
         let w = &mut self.world;
+        // Heat crosses faces (diffusion) before the air moves: a flame's
+        // heat, released into its gas at the end of the last tick, reaches
+        // the fuel beside it before the plume carries that gas away.
+        self.flow.step(w);
+        advect(w, &self.flow, self.advect_steps);
         chem::react(w);
         rad::radiate_by(self.radiation, w, &self.sky, &mut self.light);
         // What holds things up; whatever came loose starts to fall.

@@ -15,6 +15,11 @@
 //!   moving, turbulent air), carrying its heat with it;
 //! - **pressure**: a cell holding more gas than fits at its temperature
 //!   (hot air, or gas just given off by burning wood) pushes the excess out;
+//! - **flame contact**: flames lean and flicker sideways and touch the fuel
+//!   beside them (Finney et al. 2015: fine fuel ignites by this contact, not
+//!   by radiation, which convective cooling defeats). A 10 cm cell can't
+//!   hold the flame's shape, so its hot gas heats the neighbour's fuel
+//!   across the face for the share of the time a flame leans that way;
 //! - **carrying** (in [`advect`]): moving air takes a share of its contents
 //!   across each face it flows through.
 
@@ -41,7 +46,22 @@ pub struct Side {
     pub excess: Mass,
     /// The surroundings' temperature (the same for every cell).
     pub ambient: Temperature,
+    /// Temperature of this cell's flame gas if it is burning with a flame
+    /// (its fuel is past ignition and its gas is hot), else zero.
+    pub flame_t: Temperature,
+    /// The most this cell's flame gas can give through one face this tick.
+    pub flame_heat: Energy,
+    /// Conductance from gas to this cell's fuel surface (h·A), µW/K, if it
+    /// has fuel that can catch; zero otherwise.
+    pub fuel_g: i64,
 }
+
+/// Share of the time a flame leans over the fuel beside it (flame fingers
+/// flicker at a few hertz and touch the fuel ahead intermittently: Finney
+/// et al. 2015).
+const FLAME_LEAN_PERMILLE: i64 = 500;
+/// Mean temperature of a flame's continuous region (McCaffrey 1979).
+const FLAME_CONTACT: Temperature = Temperature(1_173_000);
 
 /// Thermal conductivity of still air, mW/(m·K).
 const AIR_CONDUCTIVITY: i64 = 26;
@@ -66,7 +86,21 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
     let fresh: i64 = FRESH_AIR.iter().map(|m| m.0).sum();
     // What fits at this temperature (ideal gas at constant pressure).
     let fits = if t.0 > 0 { (fresh as i128 * gas_ml as i128 * ambient.0 as i128 / (CELL_VOLUME_ML as i128 * t.0 as i128)) as i64 } else { i64::MAX };
+    let volatile = c.solid[crate::cell::VOLATILE].0 > 0;
+    let flaming = volatile && t_skin >= crate::chem::IGNITION && t >= crate::chem::IGNITION;
+    // What touches the fuel is the flame itself, not the cell's average gas:
+    // the continuous flame region averages ~900 °C (McCaffrey 1979).
+    let flame_t = if flaming { FLAME_CONTACT } else { Temperature(0) };
+    let flame_heat = if flaming { Energy(((c.energy - c.latent()).0 - (c.gas_capacity() * ambient).0).max(0) / 6) } else { Energy::ZERO };
+    let sigma = s.surface_per_volume;
+    let fuel_g = if volatile && sigma > 0 {
+        let area = if c.permeable(subs) { c.inner_surface_mm2(subs) } else { 10_000 };
+        // h [mW/(m²·K)] × A [mm²] = 10⁻⁹ W/K = 10⁻³ µW/K
+        let h = if c.permeable(subs) { crate::chem::surface_h(sigma, t, ambient) * sigma } else { 15_000 };
+        (h as i128 * area as i128 / 1_000) as i64
+    } else { 0 };
     Side {
+        flame_t, flame_heat, fuel_g,
         t, t_cond, t_skin, gas_ml, permeable: c.permeable(subs),
         // k [mW/(m·K)] × 0.01 m² / 0.05 m = 0.2·k mW/K = 200·k µW/K
         half: Conductance(k * 200),
@@ -101,6 +135,9 @@ pub struct Flux {
     /// heat goes to and from the surface layer).
     pub film: bool,
     pub gas: [Mass; GASES],
+    /// Flame contact: heat from one side's flame gas into the other's fuel
+    /// surface (positive: lower cell's gas to upper cell's fuel).
+    pub flame: Energy,
 }
 
 /// Energy carried by an amount of gas leaving a cell at temperature `t`.
@@ -112,8 +149,18 @@ fn carried(k: usize, m: Mass, t: Temperature) -> Energy {
 
 /// Conduction, mixing and pressure across one face, lower cell first.
 /// `speed` is the air speed at the face (mm/s, unsigned).
-pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64) -> Flux {
+pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: usize) -> Flux {
     let mut f = Flux::default();
+    // Flame contact, sideways only (upward, the plume itself carries the
+    // flame's gas over what's above).
+    if axis != 2 {
+        let touch = |from: &Side, to: &Side| -> i64 {
+            if from.flame_t.0 == 0 || to.fuel_g == 0 || to.t_skin >= from.flame_t { return 0 }
+            let g = Conductance(to.fuel_g * FLAME_LEAN_PERMILLE / 1_000);
+            ((g * (from.flame_t - to.t_skin)) * TICK).0.min(from.flame_heat.0)
+        };
+        f.flame = Energy(touch(a, b) - touch(b, a));
+    }
     // Conduction: two half-cells in series; a solid meeting air goes through the film.
     let (ga, gb) = (a.half.0.max(1) as i128, b.half.0.max(1) as i128);
     let mut g = ga * gb / (ga + gb);
@@ -175,6 +222,10 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64) -> Flu
 pub fn apply(out: &mut Cell, me: &Side, f: &Flux, sign: i64) {
     let e = Energy(f.energy.0 * sign);
     if me.permeable { out.energy += e } else if f.film { out.skin += e } else { out.solid_energy += e }
+    // Flame contact: the giver's flame gas loses it, the taker's fuel surface gains it.
+    let flame = f.flame.0 * sign;
+    // (Fuel that can catch always has a surface layer.)
+    if flame < 0 { out.energy += Energy(flame) } else { out.skin += Energy(flame) }
     out.energy += Energy(f.carried.0 * sign);
     for k in 0..GASES { out.gas[k] += Mass(f.gas[k].0 * sign) }
 }
@@ -247,16 +298,35 @@ pub fn diffuse_brick(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVe
                     Neighbour::Inside(n) => {
                         let ni = neighbour_index(w, x, y, z, axis, dir);
                         let ns = &sides[ni];
-                        let flux = if dir > 0 { diffuse_face(me, my, n, ns, speed) } else { diffuse_face(n, ns, me, my, speed) };
+                        let flux = if dir > 0 { diffuse_face(me, my, n, ns, speed, axis) } else { diffuse_face(n, ns, me, my, speed, axis) };
                         apply(&mut next, my, &flux, -dir);
                     }
                     Neighbour::Outside(o) => {
-                        let flux = if dir > 0 { diffuse_face(me, my, o, outside, speed) } else { diffuse_face(o, outside, me, my, speed) };
+                        let flux = if dir > 0 { diffuse_face(me, my, o, outside, speed, axis) } else { diffuse_face(o, outside, me, my, speed, axis) };
                         apply(&mut next, my, &flux, -dir);
                         tally_edge(tally, &flux, -dir);
                     }
                     Neighbour::Mirror => {}
                 }
+            }
+        }
+        // While a neighbour's flame leans over this cell's fuel, the fuel
+        // sits in flame gas, not its own cooler air: for that share of the
+        // time, take back the cooling its own air would have given it (the
+        // reaction step cools it fully against its own air).
+        if my.fuel_g > 0 && my.t_skin > my.t {
+            let mut lean = 0;
+            for axis in 0..2 { for dir in [-1i64, 1] {
+                if let Neighbour::Inside(_) = w.neighbour(x, y, z, axis, dir) {
+                    if sides[neighbour_index(w, x, y, z, axis, dir)].flame_t.0 > 0 { lean += FLAME_LEAN_PERMILLE }
+                }
+            }}
+            let lean = lean.min(1_000);
+            if lean > 0 {
+                let g = Conductance(my.fuel_g * lean / 1_000);
+                let q = ((g * (my.t_skin - my.t)) * TICK).0.min(((me.energy - me.latent()).0 / 4).max(0));
+                next.energy -= Energy(q);
+                next.skin += Energy(q);
             }
         }
         out[l] = next;

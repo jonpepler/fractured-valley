@@ -38,7 +38,6 @@ fn kindling_bed(n: usize, bed: usize) -> (Sim, usize) {
 fn burning(c: &Cell) -> bool { c.substance == KINDLING && c.solid[VOLATILE].0 < Cell::default().solid[VOLATILE].0.max(39_000_000) }
 
 #[test]
-#[ignore = "open: embers peak ~1000 °C, at the top of the range (26 Nov)"]
 fn burning_twigs_and_their_embers_stay_at_real_temperatures() {
     // Burning wood's surface sits around 300–700 °C while it flames, and its
     // glowing char at about 600–1000 °C (Drysdale, An Introduction to Fire
@@ -60,7 +59,7 @@ fn burning_twigs_and_their_embers_stay_at_real_temperatures() {
 }
 
 #[test]
-#[ignore = "open: radiation reaches unburnt fuel, but cold inflow cools it; flames can't lean over it at 10 cm (26 Nov)"]
+#[ignore = "open: spreads ~25 cm/min, 8x Rothermel; a 10 cm cell can't hold a front narrower than itself (burning zone R·τ ≈ 5 cm) (26 Nov)"]
 fn a_line_of_fire_creeps_through_twigs_at_rothermels_rate() {
     // Rothermel's spread model (1972) for a line of fire, no wind or slope,
     // in this bed: σ = 700/m (213/ft), 50 kg/m³ bulk, packing β = 0.04,
