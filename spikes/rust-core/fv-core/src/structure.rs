@@ -241,6 +241,16 @@ pub fn settle(w: &mut World) -> Report {
             }
         }
     }
+    if std::env::var("FV_DEBUG_LOOSE").is_ok() {
+        for (id, group) in pieces.iter().enumerate() {
+            if is_held[id] { continue }
+            for p in group.iter().take(3) {
+                let below = if p[2] > 0 { Some([p[0], p[1], p[2] - 1]) } else { None };
+                eprintln!("loose cell {:?} sub {} | below {:?}: solid {} held {} crushed {}", p, w.get(p[0], p[1], p[2]).substance,
+                    below, below.map_or(false, |b| solid(b[0], b[1], b[2])), below.map_or(false, |b| held[at(b)]), below.map_or(false, |b| crushed[at(b)]));
+            }
+        }
+    }
     for (id, group) in pieces.into_iter().enumerate() { if !is_held[id] { report.loose.push(group) } }
     report
 }
@@ -271,6 +281,15 @@ fn solve_piece(w: &World, cells: &[[usize; 3]], grounded: &[bool], report: &mut 
             // Record each face once: from its lower cell.
             let lower = if dir > 0 { *p } else { q };
             if dir > 0 || other.is_none() { faces.push((i, other, axis, lower, b)) }
+        }
+        // Resting on the bottom of the world: a fixed support.
+        if p[2] == 0 {
+            let mut b = bond(w.get(p[0], p[1], p[2]), w.get(p[0], p[1], p[2]), &w.subs);
+            b.tension = f64::INFINITY;
+            b.shear = f64::INFINITY;
+            b.compression = f64::INFINITY;
+            b.stiffness = b.stiffness.max(GRANULAR_MPA * 1e6 * AREA / LENGTH);
+            links[i].push((None, 2, b, true));
         }
         // Resting on what's below, and being rested on from above.
         for dz in [-1i64, 1] {

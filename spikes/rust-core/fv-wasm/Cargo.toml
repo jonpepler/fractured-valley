@@ -1,0 +1,25 @@
+[package]
+name = "fv-wasm"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Spike: the simulation core in the browser, with its multiplayer capabilities intact"
+
+[lib]
+# cdylib: the .wasm for browsers. rlib: so the native example and tests can use
+# exactly the same scenario code.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Rayon on Web Workers. Needs the nightly shared-memory build (see README).
+threads = ["fv-core/parallel", "dep:wasm-bindgen-rayon"]
+
+[dependencies]
+fv-core = { path = "../fv-core", default-features = false }
+# Pinned exactly: wasm-bindgen-cli must be the same version.
+wasm-bindgen = "=0.2.130"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# `no-bundler`: its worker script finds our JS by URL, so plain static pages work.
+wasm-bindgen-rayon = { version = "1.3", optional = true, features = ["no-bundler"] }

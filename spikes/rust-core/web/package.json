@@ -1,0 +1,19 @@
+{
+  "name": "fv-wasm-web",
+  "private": true,
+  "type": "module",
+  "description": "Browser harness for the Rust core compiled to WebAssembly. Kept outside the pnpm workspace (like ci/determinism) so it can install on its own.",
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "build:js": "bash scripts/build.sh js",
+    "serve": "node scripts/serve.mjs dist 4180",
+    "test": "node tests/determinism.mjs && node tests/threads.mjs && node tests/peers.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "playwright": "1.63.0",
+    "trystero": "0.27.0"
+  }
+}

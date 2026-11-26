@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FV core in the browser</title>
+  <style>body { font: 14px/1.5 system-ui, sans-serif; margin: 16px; background: #fff; color: #111 }</style>
+</head>
+<body>
+  <h1>Fractured Valley core, compiled to WebAssembly</h1>
+  <ul>
+    <li><a href="determinism.html">Determinism</a>: the scenario's hash list (compare with native.json).</li>
+    <li><a href="threads.html">Threads</a>: rayon on 4 Web Workers vs single-threaded (needs cross-origin isolation; the service worker provides it).</li>
+    <li>Peers: open <a href="peers.html?role=host&amp;room=demo" target="_blank">a host</a>, then <a href="peers.html?role=join&amp;room=demo" target="_blank">a joiner</a> in another tab.
+      Add <code>&amp;net=trystero</code> to both for real peer-to-peer across machines.</li>
+    <li><a href="native.json">native.json</a>: the native build's hashes.</li>
+  </ul>
+</body>
+</html>

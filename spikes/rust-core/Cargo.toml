@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["fv-core"]
+members = ["fv-core", "fv-wasm"]
 
 [workspace.package]
 edition = "2021"

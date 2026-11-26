@@ -1,0 +1,98 @@
+# Does the Rust simulation core keep its multiplayer capabilities in the
+# browser? Runs fv-core's tests (checkpoint join, peers splitting a tick),
+# builds the core to WebAssembly (single-threaded on stable, threaded on
+# nightly), and checks that Chromium, Firefox and WebKit compute exactly the
+# same hash list as the native build. On Linux it also runs the threads test
+# (4 Web Workers behind the coi-serviceworker, on a header-less server) and
+# the two-page peers test.
+#
+# Every push: Linux only (cheap, and catches most mistakes).
+# Full check (Linux, Apple Silicon macOS, Windows): run it by hand from the
+# Actions tab ("Run workflow"), and once a month as a checkpoint. macOS
+# minutes cost ~10x Linux on a private repo; on a public repo all are free.
+name: rust-core
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 1 * *'
+  push:
+    branches: [main]
+    paths: ['spikes/rust-core/**', '.github/workflows/rust-core.yml']
+
+env:
+  CARGO_TERM_COLOR: always
+  # The threaded build needs nightly (shared-memory std). Pinned so a nightly
+  # regression cannot fail CI by surprise; bump it deliberately.
+  # scripts/build.sh reads FV_NIGHTLY.
+  FV_NIGHTLY: nightly-2026-11-25
+
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (stable + wasm, and pinned nightly with rust-src)
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup toolchain install "$FV_NIGHTLY" --profile minimal --component rust-src --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/rust-core
+      - name: wasm-bindgen-cli (must match the crate's pinned 0.2.130)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.130
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: fv-core tests
+        working-directory: spikes/rust-core
+        run: cargo test --release -p fv-core
+      - name: fv-wasm tests (a tick in parts == Sim::step)
+        working-directory: spikes/rust-core
+        run: cargo test --release -p fv-wasm
+      - name: Build the WebAssembly and the pages
+        working-directory: spikes/rust-core/web
+        run: |
+          npm ci --no-audit --no-fund
+          bash scripts/build.sh
+      - name: Install browsers
+        working-directory: spikes/rust-core/web
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Determinism (Chromium, Firefox, WebKit vs native)
+        working-directory: spikes/rust-core/web
+        run: node tests/determinism.mjs --out ../../../results
+      - name: Threads (4 workers via the service worker, Chromium)
+        if: runner.os == 'Linux'
+        working-directory: spikes/rust-core/web
+        run: node tests/threads.mjs
+      - name: Peers (late join + split ticks + spot-check, Chromium)
+        if: runner.os == 'Linux'
+        working-directory: spikes/rust-core/web
+        run: node tests/peers.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-core-results-${{ matrix.os }}
+          path: results
+
+  # Every machine's native and browser hashes must also agree with each other.
+  compare:
+    needs: run
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: results
+      - name: Compare
+        run: node ci/determinism/compare.mjs results | tee -a "$GITHUB_STEP_SUMMARY"

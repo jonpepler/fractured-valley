@@ -141,6 +141,7 @@ pub const BRICK: u8 = 6;
 pub const MORTAR: u8 = 7;
 pub const IRON: u8 = 8;
 pub const ORE: u8 = 9;
+pub const KINDLING: u8 = 10;
 
 pub fn table() -> Vec<Substance> {
     let organic = Strength { tensile_kpa: 0, compressive_kpa: 0, stiffness_mpa: 0 };
@@ -232,6 +233,16 @@ pub fn table() -> Vec<Substance> {
             // λ·dt = ln2 / (88 y) × 0.05 s = 1.25×10⁻¹¹ per tick → × 2⁶⁴.
             decay_per_tick: 230_584_300,
             penetrating: f(200), colour: [96, 110, 90],
+        },
+        Substance {
+            // Dry twigs and sticks (~6 mm across, σ = 4/d ≈ 700 /m), loosely
+            // piled: ~50 kg/m³ of fuel with air through it. Fires start here.
+            name: "kindling", full_mass: grams(50), porosity: f(960), permeable: true, surface_per_volume: 700,
+            composition: [800, 180, 20], typical_moisture: 100, specific_heat: j_per_kg_k(1_700), conductivity: 150,
+            volatile_chemical: kj_per_kg(15_600),
+            optics: Optics { albedo: [f(400), f(420), f(300), f(190)], emissivity: f(900), ionising_cm2_per_g: 60 },
+            strength: Strength { tensile_kpa: 5, compressive_kpa: 5, stiffness_mpa: 1 },
+            nuclear: kj_per_kg(0), decay_per_tick: 0, penetrating: Fraction::ZERO, colour: [128, 92, 56],
         },
     ]
 }

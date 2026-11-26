@@ -38,8 +38,10 @@ pub const GREEN: usize = 2;
 pub const BLUE: usize = 3;
 pub const IONISING: usize = 4;
 
-/// Smallest packet, µJ (1.5 J). Hot cells send many; warm cells send one now and then.
+/// Smallest infrared packet, µJ (1.5 J). Hot cells send many; warm cells send one now and then.
 const QUANTUM: i64 = 1_500_000;
+/// Smallest visible-light packet, µJ (0.5 mJ).
+const VISIBLE_QUANTUM: i64 = 500;
 /// Most packets one cell sends per tick (larger packets beyond this).
 const MAX_PER_CELL: i64 = 48;
 const MAX_STEPS: usize = 200;
@@ -210,29 +212,42 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
 }
 
 /// Turns `energy` of thermal emission at `t` into packets; returns how much
-/// was actually sent. Small emitters send one packet now and then (on
-/// average exactly their emission); big ones up to MAX_PER_CELL.
+/// was actually sent. The energy is split exactly between bands by Planck's
+/// law, and each band gets its own packet size: visible light is a tiny
+/// share of a fire's output but it is what lights a scene, so it travels as
+/// many small packets (millijoules) while infrared goes as fewer big ones.
+/// Small amounts go as one packet now and then (on average exactly their
+/// emission).
 #[allow(clippy::too_many_arguments)]
 fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, t: Temperature, stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
     if energy <= 0 { return 0 }
-    let (count, size, sent) = if energy >= QUANTUM * MAX_PER_CELL {
-        (MAX_PER_CELL, energy / MAX_PER_CELL, energy)
-    } else {
-        let whole = energy / QUANTUM;
-        let extra = i64::from(stream.below(QUANTUM as u64) < (energy % QUANTUM) as u64);
-        (whole + extra, QUANTUM, (whole + extra) * QUANTUM)
-    };
-    let bands = tables().bands[k_index(t.0)];
-    let mut left = sent;
-    for n in 0..count {
-        let e = if n == count - 1 { left } else { size };
-        left -= e;
-        let band = pick_band(&bands, stream.next() >> 32);
-        if (1..=3).contains(&band) { glow[band - 1] += e }
-        let (pos, dir) = if from_face { face_start(w, x, y, z, stream) } else { (centre(x, y, z, stream), isotropic(stream)) };
-        out.push(Packet { pos, dir, energy: e, band: band as u8, bounces: 0, stream: Stream(stream.next()) });
+    let shares = tables().bands[k_index(t.0)];
+    let mut sent_total = 0;
+    let mut left_to_split = energy;
+    for band in 0..4 {
+        // The last band takes what rounding left, so the split is exact.
+        let e_band = if band == 3 { left_to_split } else { Fraction(shares[band]).of(energy) };
+        left_to_split -= e_band;
+        if e_band <= 0 { continue }
+        let quantum = if band == IR { QUANTUM } else { VISIBLE_QUANTUM };
+        let (count, size, sent) = if e_band >= quantum * MAX_PER_CELL {
+            (MAX_PER_CELL, e_band / MAX_PER_CELL, e_band)
+        } else {
+            let whole = e_band / quantum;
+            let extra = i64::from(stream.below(quantum as u64) < (e_band % quantum) as u64);
+            (whole + extra, quantum, (whole + extra) * quantum)
+        };
+        let mut left = sent;
+        for n in 0..count {
+            let e = if n == count - 1 { left } else { size };
+            left -= e;
+            if (1..=3).contains(&band) { glow[band - 1] += e }
+            let (pos, dir) = if from_face { face_start(w, x, y, z, stream) } else { (centre(x, y, z, stream), isotropic(stream)) };
+            out.push(Packet { pos, dir, energy: e, band: band as u8, bounces: 0, stream: Stream(stream.next()) });
+        }
+        sent_total += sent;
     }
-    sent
+    sent_total
 }
 
 fn pick_band(bands: &[u64; 4], r: u64) -> usize {
