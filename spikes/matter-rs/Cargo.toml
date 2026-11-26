@@ -1,0 +1,10 @@
+[package]
+name = "fv-matter"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: continuous, interacting matter properties owned by the substance"
+
+[dependencies]
+fv-units = { path = "../units-rs" }
+typenum = "1.17"
