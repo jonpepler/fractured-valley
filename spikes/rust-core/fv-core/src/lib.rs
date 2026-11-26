@@ -12,6 +12,7 @@ pub mod rad;
 pub mod rng;
 pub mod scene;
 pub mod sim;
+pub mod structure;
 pub mod substance;
 pub mod tables;
 pub mod transport;

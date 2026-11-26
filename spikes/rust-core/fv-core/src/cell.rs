@@ -129,13 +129,21 @@ impl Cell {
         s.surface_per_volume * self.solid_share(subs).of(1_000)
     }
 
-    /// How intact the solid is, out of 1000: the bonds of burnt or charred
-    /// matter carry less. Char holds about a fifth as well as sound wood.
+    /// How intact the solid is, out of 1000: what's left of the part that
+    /// carries its strength. In wood that's the fibre (the volatile part);
+    /// charcoal holds ~2 % as well in tension and ash nothing. In rock or
+    /// brick it's the mineral itself.
     pub fn integrity_permille(&self, subs: &[Substance]) -> i64 {
         let s = &subs[self.substance as usize];
         if s.full_mass.0 == 0 { return 0 }
-        let sound = self.solid[VOLATILE].0 + self.solid[MINERAL].0 + self.solid[CHAR].0 / 5;
-        (sound * 1000 / s.full_mass.0).clamp(0, 1000)
+        let mineral_matter = s.composition[MINERAL] >= 500;
+        let weigh = |m: [i64; 3]| -> i64 {
+            if mineral_matter { return m[MINERAL] }
+            m[VOLATILE] + m[CHAR] / 50
+        };
+        let full = weigh([s.full_mass.0 * s.composition[0] / 1000, s.full_mass.0 * s.composition[1] / 1000, s.full_mass.0 * s.composition[2] / 1000]);
+        if full <= 0 { return 0 }
+        (weigh([self.solid[0].0, self.solid[1].0, self.solid[2].0]) * 1000 / full).clamp(0, 1000)
     }
 
     /// Set both energies from one temperature.
