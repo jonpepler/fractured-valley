@@ -5,7 +5,7 @@
 
 import { growTree, type TreeShape } from './tree'
 import { Grid } from './grid'
-import { M } from './materials'
+import { M, mat } from './materials'
 import { fbm2, hash32, valueNoise2 } from './rng'
 
 export interface Column {
@@ -118,6 +118,7 @@ export function generate(spec: WorldSpec = DEFAULT_SPEC): Grid {
     if (col(x, y).top + 1 < spec.waterLevel) continue // not in the pond
     growTree(g, spec.seed, x, y, col(x, y).top + 1, shape)
   }
+  assignMoisture(g, spec)
   placePostAndBlock(g, col, Math.floor(spec.sx * 0.52), Math.floor(spec.sy * 0.56))
   g.compact()
   return g
@@ -148,17 +149,40 @@ function placeRuin(g: Grid, spec: WorldSpec, col: ColFn, cx: number, cy: number)
   }
 }
 
+/**
+ * Every cell of a material with a typical moisture gets it, varied by a
+ * smooth noise field (drier and wetter patches) and wetter near water.
+ */
+function assignMoisture(g: Grid, spec: WorldSpec) {
+  for (let b = 0; b < g.bricks.length; b++) {
+    const brick = g.bricks[b]
+    if (!brick) continue
+    const bx = b % g.bx, by = Math.floor(b / g.bx) % g.by, bz = Math.floor(b / (g.bx * g.by))
+    for (let i = 0; i < brick.material.length; i++) {
+      const typical = mat(brick.material[i]!).moisture
+      if (!typical) continue
+      const x = bx * 16 + (i & 15), y = by * 16 + ((i >> 4) & 15), z = bz * 16 + (i >> 8)
+      // ×0.5 .. ×1.5 across the valley, in patches a few metres wide.
+      const patch = valueNoise2(spec.seed ^ 0x3e7, x, y, 40) // 0..65535
+      let wet = (typical * (32768 + patch)) >> 16
+      if (z <= spec.waterLevel + 3) wet += 60 // low ground by the water stays damp
+      g.setMoisture(x, y, z, Math.min(255, Math.max(1, wet)))
+    }
+  }
+}
+
 /** The benchmark rig: a wooden post carrying a metal block. */
 function placePostAndBlock(g: Grid, col: ColFn, cx: number, cy: number) {
   const base = col(cx, cy).top
   const postH = 16
   for (let z = base + 1; z <= base + postH; z++)
-    for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) g.set(cx + dx, cy + dy, z, M.Timber)
+    // Seasoned, dry wood: the same wood as a tree, at 12% moisture instead of ~100%.
+    for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) g.set(cx + dx, cy + dy, z, M.Wood, 0, 12)
   for (let dz = 1; dz <= 6; dz++) for (let dy = -2; dy < 4; dy++) for (let dx = -2; dx < 4; dx++)
     g.set(cx + dx, cy + dy, base + postH + dz, M.Metal)
   // Dry grass around its foot, so a fire there takes hold.
   for (let dy = -5; dy < 7; dy++) for (let dx = -5; dx < 7; dx++) {
     const c = col(cx + dx, cy + dy)
-    if (g.get(cx + dx, cy + dy, c.top + 1) === M.Air) g.set(cx + dx, cy + dy, c.top + 1, M.TallGrass)
+    if (g.get(cx + dx, cy + dy, c.top + 1) === M.Air) g.set(cx + dx, cy + dy, c.top + 1, M.TallGrass, 0, 10)
   }
 }

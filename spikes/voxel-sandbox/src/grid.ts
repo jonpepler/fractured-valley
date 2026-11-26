@@ -13,7 +13,10 @@ export const BRICK_CELLS = BRICK * BRICK * BRICK
 
 export class Brick {
   readonly material = new Uint8Array(BRICK_CELLS)
+  /** Per-material progress, e.g. how far through burning (0 = untouched). */
   readonly state = new Uint8Array(BRICK_CELLS)
+  /** Water content, as % of dry mass (0 = bone dry; living leaves ~150). */
+  readonly moisture = new Uint8Array(BRICK_CELLS)
 }
 
 /** Position and orientation of a moving body (world cells; quaternion). */
@@ -81,20 +84,45 @@ export class Grid {
     return brick ? brick.state[Grid.local(x, y, z)]! : 0
   }
 
-  set(x: number, y: number, z: number, material: number, state = 0): void {
+  getMoisture(x: number, y: number, z: number): number {
+    if (!this.inBounds(x, y, z)) return 0
+    const brick = this.bricks[this.brickIndex(x, y, z)]
+    return brick ? brick.moisture[Grid.local(x, y, z)]! : 0
+  }
+
+  setMoisture(x: number, y: number, z: number, moisture: number): void {
     if (!this.inBounds(x, y, z)) return
     const b = this.brickIndex(x, y, z)
     let brick = this.bricks[b]
     if (!brick) {
-      if (this.uniform[b] === material && state === 0) return
+      if (moisture === 0) return
       brick = new Brick()
       brick.material.fill(this.uniform[b]!)
       this.bricks[b] = brick
     }
     const i = Grid.local(x, y, z)
-    if (brick.material[i] === material && brick.state[i] === state) return
+    if (brick.moisture[i] === moisture) return
+    brick.moisture[i] = moisture
+    this.version[b]!++
+  }
+
+  /** Set a cell's material and state. Moisture is kept unless given. */
+  set(x: number, y: number, z: number, material: number, state = 0, moisture?: number): void {
+    if (!this.inBounds(x, y, z)) return
+    const b = this.brickIndex(x, y, z)
+    let brick = this.bricks[b]
+    if (!brick) {
+      if (this.uniform[b] === material && state === 0 && !moisture) return
+      brick = new Brick()
+      brick.material.fill(this.uniform[b]!)
+      this.bricks[b] = brick
+    }
+    const i = Grid.local(x, y, z)
+    const wet = moisture ?? brick.moisture[i]!
+    if (brick.material[i] === material && brick.state[i] === state && brick.moisture[i] === wet) return
     brick.material[i] = material
     brick.state[i] = state
+    brick.moisture[i] = wet
     this.version[b]!++
     this.changeLog?.push(x | y << 10 | z << 20)
   }
@@ -120,7 +148,7 @@ export class Grid {
       const m = brick.material[0]!
       let isUniform = true
       for (let i = 0; i < BRICK_CELLS; i++) {
-        if (brick.material[i] !== m || brick.state[i] !== 0) { isUniform = false; break }
+        if (brick.material[i] !== m || brick.state[i] !== 0 || brick.moisture[i] !== 0) { isUniform = false; break }
       }
       if (isUniform) {
         this.bricks[b] = null
@@ -138,8 +166,8 @@ export class Grid {
     return {
       bricks,
       detailed,
-      // two typed arrays per detailed brick + the uniform/version tables
-      bytes: detailed * BRICK_CELLS * 2 + bricks * (1 + 4 + 8),
+      // three typed arrays per detailed brick + the uniform/version tables
+      bytes: detailed * BRICK_CELLS * 3 + bricks * (1 + 4 + 8),
       cells: this.sx * this.sy * this.sz,
     }
   }
@@ -170,8 +198,8 @@ function hashBrick(g: Grid, b: number): number {
   if (!brick) h = hashUniform(g.uniform[b]!)
   else {
     h = FNV
-    const m = brick.material, s = brick.state
-    for (let i = 0; i < BRICK_CELLS; i++) h = mix(h, m[i]! | (s[i]! << 8))
+    const m = brick.material, s = brick.state, w = brick.moisture
+    for (let i = 0; i < BRICK_CELLS; i++) h = mix(h, m[i]! | (s[i]! << 8) | (w[i]! << 16))
   }
   g.brickHash[b] = h
   g.hashedAt[b] = g.version[b]! + 1

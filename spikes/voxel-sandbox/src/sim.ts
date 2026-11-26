@@ -6,7 +6,8 @@
 // - Integer maths only. Every collection is walked in sorted order.
 // - Commands are applied in (tick, peer, seq) order on every peer.
 
-import { prevailing, windAt } from './wind'
+import { F, FR, Fields } from './fields'
+import { prevailing } from './wind'
 import { Grid, hashGrids } from './grid'
 import { M, mat } from './materials'
 import { cellCentre, Physics, poseBits, supports } from './physics'
@@ -20,6 +21,16 @@ export type Command =
 
 /** Broken-off pieces smaller than this fall as debris rather than as rigid bodies. */
 export const SMALL_PIECE = 8
+/** Air hotter than this (°C) dries fuel next to it. */
+const DRYING_HEAT = 100
+const MAX_EMBERS = 600
+/** Downward pull on an ember per tick (1/256 cells per tick²). */
+const EMBER_GRAVITY = 6
+/** Which side of a burning cell its heat goes to: up first, then around. */
+const OPEN_ORDER: readonly [number, number, number][] = [[0, 0, 1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1]]
+
+/** An ember in flight: position and velocity in 1/256 cells (per tick). */
+export interface Ember { x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number }
 /** Velocity change in one tick (1/16 cells/s) that counts as an impact: 24 cells/s. */
 const IMPACT_DV = 24 * 16
 /** How much harder a cell is to smash than to crush slowly (× load capacity). */
@@ -52,7 +63,7 @@ const N6: readonly [number, number, number][] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0
 /** Notable moments, kept for inspection and tests (pillar 6). */
 export interface SimEvent {
   readonly tick: number
-  readonly kind: 'gave-way' | 'detached' | 'crumbled' | 'landed' | 'smashed'
+  readonly kind: 'gave-way' | 'detached' | 'crumbled' | 'landed' | 'smashed' | 'ember-lit'
   readonly cells: number
   readonly at: readonly [number, number, number]
 }
@@ -67,6 +78,8 @@ export interface StepStats {
 
 export interface SimState {
   tick: number
+  embers: Ember[]
+  gas: { brick: number; values: number[] }[]
   burning: number[]
   loose: number[]
   debris: number[]
@@ -90,13 +103,19 @@ export class Sim {
   last: StepStats = { burning: 0, loose: 0, bodies: 0, detached: 0, failed: 0 }
   readonly events: SimEvent[] = []
   readonly physics = new Physics()
+  /** Heat, soot and steam in the air. */
+  readonly fields: Fields
+  /** Glowing embers in flight (simulation state: they can start fires). */
+  embers: Ember[] = []
 
   private note(kind: SimEvent['kind'], cells: number, at: number) {
     this.events.push({ tick: this.tick, kind, cells, at: unpack(at) })
     if (this.events.length > 500) this.events.shift()
   }
 
-  constructor(readonly world: Grid, readonly seed: number) {}
+  constructor(readonly world: Grid, readonly seed: number) {
+    this.fields = new Fields(world)
+  }
 
   /** Everything besides the world grid that carries from one tick to the next. */
   exportState(): SimState {
@@ -104,6 +123,8 @@ export class Sim {
     const sorted = (set: Set<number>) => [...set].sort((a, b) => a - b)
     return {
       tick: this.tick,
+      embers: this.embers.map(e => ({ ...e })),
+      gas: this.fields.exportActive(),
       burning: sorted(this.burning),
       loose: sorted(this.loose),
       debris: sorted(this.debris),
@@ -114,6 +135,8 @@ export class Sim {
 
   importState(s: SimState): void {
     this.tick = s.tick
+    this.embers = s.embers.map(e => ({ ...e }))
+    this.fields.importActive(s.gas)
     this.burning = new Set(s.burning)
     this.loose = new Set(s.loose)
     this.debris = new Set(s.debris)
@@ -134,6 +157,7 @@ export class Sim {
     const stats: StepStats = { burning: 0, loose: 0, bodies: 0, detached: 0, failed: 0 }
     this.applyCommands()
     this.stepFire(stats)
+    this.fields.step(this.seed, this.tick)
     this.stepGrowth()
     this.stepLoose()
     if (this.tick % 4 === 0) this.checkLoads(stats)
@@ -150,6 +174,8 @@ export class Sim {
   hash(): number {
     let h = hashGrids(this.grids)
     h = hash32(h, this.tick)
+    h = this.fields.hash(h, (a, v) => hash32(a, v))
+    for (const e of this.embers) h = hash32(hash32(h, e.x, e.y, e.z), e.vx, e.vy, e.vz ^ (e.life << 16))
     for (const b of this.bodies) for (const v of poseBits(b.grid.pose!)) h = hash32(h, v, b.resting)
     return h
   }
@@ -163,8 +189,14 @@ export class Sim {
     due.sort((a, b) => a.peer - b.peer || a.seq - b.seq)
     for (const { command: c } of due) {
       if (c.kind === 'ignite') {
-        for (let dz = -1; dz <= 2; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
-          this.ignite(c.x + dx, c.y + dy, c.z + dz)
+        // A flame held there: a burst of heat, and anything dry enough catches.
+        // Wet things (a living trunk) only start drying.
+        for (let dz = -1; dz <= 2; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const x = c.x + dx, y = c.y + dy, z = c.z + dz
+          const fl = mat(this.world.get(x, y, z)).flammable
+          if (fl && this.world.getMoisture(x, y, z) <= fl.extinction) this.ignite(x, y, z)
+        }
+        this.fields.emit(c.x, c.y, c.z + 1, 900, 0, 0)
       } else {
         const g = new Grid(6, 6, 6)
         for (let z = 0; z < 6; z++) for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++) g.set(x, y, z, M.Metal)
@@ -184,47 +216,122 @@ export class Sim {
   }
 
   // ── fire ────────────────────────────────────────────────────────────────
+  //
+  // Fire is heat moving through the gas fields (src/fields.ts):
+  // - a burning cell heats the air next to it and gives off soot;
+  // - hot air dries the fuel it touches (steam is the water leaving), and
+  //   fuel dry enough and hot enough catches;
+  // - wind and rising hot air carry heat on, so fire runs downwind and up;
+  // - fine fuel throws embers that ride the plume and can light what they hit.
+  // Burn progress lives in the cell's state byte, 1..255.
 
   private stepFire(stats: StepStats) {
-    const w = this.world
-    const cells = [...this.burning].sort((a, b) => a - b)
-    const base = prevailing(this.seed, this.tick)
-    for (const p of cells) {
+    const w = this.world, f = this.fields
+    // 1. Burning cells: advance, heat the air, throw embers, burn out.
+    for (const p of [...this.burning].sort((a, b) => a - b)) {
       const [x, y, z] = unpack(p)
       const m = mat(w.get(x, y, z))
-      const f = m.flammable
+      const fl = m.flammable
       const s = w.getState(x, y, z)
-      if (!f || s === 0) { this.burning.delete(p); continue }
-      const wind = windAt(this.seed, this.tick, x, y, base)
-      for (let k = 0; k < SPREAD.length; k++) {
-        const [dx, dy, dz] = SPREAD[k]!
-        const nx = x + dx, ny = y + dy, nz = z + dz
-        const nf = mat(w.get(nx, ny, nz)).flammable
-        if (!nf || w.getState(nx, ny, nz) !== 0) continue
-        // Downwind neighbours catch more easily, upwind ones less (never below a quarter).
-        const down = dx * wind.x + dy * wind.y // ±256
-        const num = Math.max(nf.catchPerMille >> 2, (nf.catchPerMille * (256 + 2 * down)) >> 8)
-        if (chance(hash32(this.seed, this.tick, pack(nx, ny, nz), k), num, 1000)) this.ignite(nx, ny, nz)
+      if (!fl || s === 0) { this.burning.delete(p); continue }
+      // Heat goes into the air: above if open, else beside.
+      const [ax, ay, az] = this.openSide(x, y, z)
+      // Water still in the fuel boils off as it burns: green leaves give white
+      // smoke (steam), dry wood dark smoke (soot).
+      // While there is water left, burning spends its heat boiling it off
+      // (about one point every other tick) and makes no progress.
+      const wet = w.getMoisture(x, y, z)
+      const h0 = hash32(this.seed, this.tick, p, 0xb1)
+      const boil = wet && (h0 & 1) ? 1 : 0
+      if (boil) w.setMoisture(x, y, z, wet - 1)
+      f.emit(ax, ay, az, fl.heat, fl.soot, boil * 120)
+      const h = hash32(this.seed, this.tick, p, 0xb0)
+      if (this.embers.length < MAX_EMBERS && fl.fineness >= 5 && chance(h >>> 8, fl.fineness, 12000)) {
+        // An ember leaves upward with a little random push.
+        const r = (k: number) => ((h >>> k) & 31) - 16
+        this.embers.push({ x: ax * 256 + 128, y: ay * 256 + 128, z: az * 256 + 128, vx: r(0) * 3, vy: r(5) * 3, vz: 120 + ((h >>> 10) & 63), life: 60 + ((h >>> 16) & 63) })
       }
-      // Embers: light, fast-burning material throws sparks downwind in a breeze,
-      // so fire can jump gaps between leaf clumps, trees and tufts.
-      const strength = Math.abs(wind.x) + Math.abs(wind.y)
-      if (f.burnTicks < 40 && strength > 96) {
-        const h = hash32(this.seed, this.tick, p, 0xe3be)
-        if (chance(h, strength >> 6, 1000)) {
-          const d = 2 + ((h >>> 10) % 5)
-          this.ignite(x + ((wind.x * d) >> 8), y + ((wind.y * d) >> 8), z + ((h >>> 14) % 3) - 1)
-        }
-      }
-      if (s + 1 >= f.burnTicks) {
-        this.burning.delete(p)
-        w.set(x, y, z, f.becomes, 0)
-        if (mat(f.becomes).loose) this.loose.add(p)
-        this.touched.push(p)
-      } else {
-        w.setState(x, y, z, s + 1)
+      // Progress 1→255 over burnTicks, advanced by chance so any duration fits a byte.
+      if (!wet && chance(h, 255, fl.burnTicks)) {
+        if (s + 1 >= 255) {
+          this.burning.delete(p)
+          w.set(x, y, z, fl.becomes, 0, 0)
+          if (mat(fl.becomes).loose) this.loose.add(p)
+          this.touched.push(p)
+        } else w.setState(x, y, z, s + 1)
       }
     }
+    // 2. Fuel next to hot gas dries, and catches if dry and hot enough.
+    const hot = new Map<number, number>() // fuel cell → hottest air next to it
+    for (const [fx, fy, fz, heat] of f.cells()) {
+      if (heat < DRYING_HEAT) continue
+      for (let dz = -1; dz <= FR; dz++) for (let dy = -1; dy <= FR; dy++) for (let dx = -1; dx <= FR; dx++) {
+        const x = fx * FR + dx, y = fy * FR + dy, z = fz * FR + dz
+        const fl = mat(w.get(x, y, z)).flammable
+        if (!fl) continue
+        const p = pack(x, y, z)
+        if ((hot.get(p) ?? 0) < heat) hot.set(p, heat)
+      }
+    }
+    for (const [p, heat] of [...hot].sort((a, b) => a[0] - b[0])) {
+      const [x, y, z] = unpack(p)
+      const fl = mat(w.get(x, y, z)).flammable!
+      if (w.getState(x, y, z) > 0) continue
+      let wet = w.getMoisture(x, y, z)
+      if (wet > 0) {
+        // Drying: faster for hotter air and finer fuel. The water leaves as steam.
+        const rate = ((heat - DRYING_HEAT) * fl.fineness) >> 6
+        const h = hash32(this.seed, this.tick, p, 0xd1)
+        const loss = Math.min(wet, (rate >> 8) + (chance(h, rate & 255, 256) ? 1 : 0))
+        if (loss) {
+          wet -= loss
+          w.setMoisture(x, y, z, wet)
+          const [ax, ay, az] = this.openSide(x, y, z)
+          f.emit(ax, ay, az, 0, 0, loss * 40)
+        }
+      }
+      if (wet <= fl.extinction && heat >= fl.ignitesAt) {
+        // The hotter and finer, the likelier it lights this tick.
+        const odds = Math.min(1000, 1 + (((heat - fl.ignitesAt) * fl.fineness) >> 6))
+        if (chance(hash32(this.seed, this.tick, p, 0x1a), odds, 1000)) this.ignite(x, y, z)
+      }
+    }
+    // 3. Embers ride the gas: wind plus updraft, with drag and gravity.
+    const base = prevailing(this.seed, this.tick)
+    const kept: Ember[] = []
+    for (const e of this.embers) {
+      const wx = e.x >> 8, wy = e.y >> 8, wz = e.z >> 8
+      const heat = f.at(F.Heat, wx, wy, wz)
+      const [gx, gy, gz] = f.velocity(this.seed, this.tick, Math.floor(wx / FR), Math.floor(wy / FR), heat, base)
+      // Field velocity is per field cell; ×FR for world cells.
+      e.vx += ((gx * FR - e.vx) >> 3); e.vy += ((gy * FR - e.vy) >> 3); e.vz += ((gz * FR - e.vz) >> 3) - EMBER_GRAVITY
+      const nx = e.x + e.vx, ny = e.y + e.vy, nz = e.z + e.vz
+      e.life--
+      const tx = nx >> 8, ty = ny >> 8, tz = nz >> 8
+      if (!w.inBounds(tx, ty, tz) || e.life <= 0) continue
+      const m = mat(w.get(tx, ty, tz))
+      if (m.solid || m.flammable) {
+        // Landed: fine, dry fuel may catch.
+        const fl = m.flammable
+        if (fl && w.getState(tx, ty, tz) === 0 && w.getMoisture(tx, ty, tz) <= fl.extinction &&
+          chance(hash32(this.seed, this.tick, pack(tx, ty, tz), 0xe3), fl.fineness * 30, 1000)) {
+          this.ignite(tx, ty, tz)
+          this.note('ember-lit', 1, pack(tx, ty, tz))
+        }
+        continue
+      }
+      e.x = nx; e.y = ny; e.z = nz
+      kept.push(e)
+    }
+    this.embers = kept
+    stats.burning = this.burning.size
+  }
+
+  /** The air cell a burning cell heats: above if open, else the first open side. */
+  private openSide(x: number, y: number, z: number): [number, number, number] {
+    const w = this.world
+    for (const [dx, dy, dz] of OPEN_ORDER) if (!mat(w.get(x + dx, y + dy, z + dz)).solid) return [x + dx, y + dy, z + dz]
+    return [x, y, z + 1]
   }
 
   // ── growth ──────────────────────────────────────────────────────────────
@@ -245,16 +352,16 @@ export class Sim {
         w.set(x, y, z, M.Air)
         this.loose.delete(pack(x, y, z))
       } else if (top === M.Scorched && r < 60) {
-        w.set(x, y, z, M.Dirt)
+        w.set(x, y, z, M.Dirt, 0, 0)
       } else if (top === M.Dirt && z + 1 < w.sz) {
-        if (this.grassNear(x, y, z) && r < 300) w.set(x, y, z, M.Grass)
+        if (this.grassNear(x, y, z) && r < 300) w.set(x, y, z, M.Grass, 0, mat(M.Grass).moisture)
       } else if (top === M.Grass) {
-        if (r < 25) w.set(x, y, z + 1, M.TallGrass)
-        else if (r < 28) w.set(x, y, z + 1, M.Flower)
+        if (r < 25) w.set(x, y, z + 1, M.TallGrass, 0, mat(M.TallGrass).moisture)
+        else if (r < 28) w.set(x, y, z + 1, M.Flower, 0, mat(M.Flower).moisture)
       } else if (top === M.TallGrass && w.get(x, y, z - 1) === M.TallGrass) {
         // already two blades high
       } else if (top === M.TallGrass && r < 15 && z + 1 < w.sz) {
-        w.set(x, y, z + 1, M.TallGrass)
+        w.set(x, y, z + 1, M.TallGrass, 0, mat(M.TallGrass).moisture)
       }
     }
   }
@@ -352,8 +459,8 @@ export class Sim {
           const m = mat(w.get(x, y, z))
           const s = w.getState(x, y, z)
           if (!m.structural || !m.flammable || s === 0) continue
-          const remaining = m.flammable.burnTicks - s
-          const capacity = Math.floor((m.structural.capacity * remaining) / m.flammable.burnTicks)
+          // Burn progress is 1..255: what's left of the cell carries proportionally less.
+          const capacity = Math.floor((m.structural.capacity * (255 - s)) / 255)
           if (load > capacity) {
             w.set(x, y, z, M.Ash, 0)
             this.burning.delete(c)
@@ -373,7 +480,7 @@ export class Sim {
           const [x, y, z] = unpack(c)
           const m = mat(w.get(x, y, z))
           const s = w.getState(x, y, z)
-          if (!m.structural || !m.flammable || s === 0 || s * 2 < m.flammable.burnTicks) continue
+          if (!m.structural || !m.flammable || s < 128) continue
           w.set(x, y, z, M.Ash, 0)
           this.burning.delete(c)
           this.loose.add(c)
@@ -537,7 +644,7 @@ export class Sim {
       if (!m.structural || !this.isStructure(w.get(x, y, z))) return Infinity
       const s = w.getState(x, y, z) // burnt wood is weaker, as in the load check
       const f = m.flammable
-      return Math.floor((m.structural.capacity * IMPACT_TOUGHNESS * (f && s > 0 ? f.burnTicks - s : 1)) / (f && s > 0 ? f.burnTicks : 1))
+      return Math.floor((m.structural.capacity * IMPACT_TOUGHNESS * (f && s > 0 ? 255 - s : 255)) / 255)
     }
     const first = [...hit].sort((a, b) => a - b)
     for (const c of first) {

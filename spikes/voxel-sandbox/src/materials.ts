@@ -4,11 +4,24 @@
 
 export type Rgb = readonly [number, number, number]
 
+/**
+ * How a substance burns. Whether a particular cell *can* burn right now
+ * depends on its own moisture and on the heat around it (src/fields.ts):
+ * the same wood is a slow, wet living trunk or a quick, dry post.
+ */
 export interface Flammable {
-  /** Chance (out of 1000) per tick that a burning neighbour ignites this. */
-  readonly catchPerMille: number
-  /** Ticks this burns for before burning out. */
+  /** Gas temperature (°C above ambient) that lights it once it is dry enough. */
+  readonly ignitesAt: number
+  /** Moisture (% of dry mass) above which it cannot burn: heat must dry it first. */
+  readonly extinction: number
+  /** Surface-to-volume, 1 (solid wood) to 8 (grass blades): how fast heat dries and lights it, and how readily it throws embers. */
+  readonly fineness: number
+  /** Ticks to burn through once alight. */
   readonly burnTicks: number
+  /** Heat given to the air per tick while burning (°C, into one 20 cm field cell). */
+  readonly heat: number
+  /** Soot (dark smoke) given off per tick while burning. */
+  readonly soot: number
   /** What it becomes when burnt out. */
   readonly becomes: MaterialId
 }
@@ -32,6 +45,8 @@ export interface Material {
   readonly terrain?: true
   /** Mass per cell, in integer units (water = 10). */
   readonly density: number
+  /** Typical moisture when generated or grown (% of dry mass); cells vary from it. */
+  readonly moisture?: number
   readonly flammable?: Flammable
   readonly structural?: Structural
   /** Colour ramp: per-cell variation picks from these. */
@@ -53,7 +68,6 @@ export const M = {
   Metal: 11,
   Scorched: 12,
   Moss: 13,
-  Timber: 14,
 } as const
 export type MaterialId = (typeof M)[keyof typeof M]
 
@@ -77,29 +91,35 @@ const list: Material[] = [
   },
   {
     id: M.Grass, name: 'grass', solid: true, opaque: true, terrain: true, density: 16,
-    flammable: { catchPerMille: 60, burnTicks: 30, becomes: M.Scorched },
+    moisture: 35,
+    flammable: { ignitesAt: 260, extinction: 40, fineness: 6, burnTicks: 40, heat: 260, soot: 110, becomes: M.Scorched },
     palette: ['#3d6428', '#4b742e', '#5b8236', '#6c8a3c', '#7d8c46', '#8e9152'].map(hex),
   },
   {
     id: M.TallGrass, name: 'tall grass', solid: false, opaque: true, density: 1,
-    flammable: { catchPerMille: 220, burnTicks: 12, becomes: M.Air },
+    moisture: 18,
+    flammable: { ignitesAt: 230, extinction: 45, fineness: 8, burnTicks: 30, heat: 220, soot: 90, becomes: M.Air },
     palette: ['#56883a', '#6a9844', '#8c9a52', '#a3a462'].map(hex),
   },
   {
     id: M.Flower, name: 'flower', solid: false, opaque: true, density: 1,
-    flammable: { catchPerMille: 220, burnTicks: 10, becomes: M.Air },
+    moisture: 70,
+    flammable: { ignitesAt: 250, extinction: 45, fineness: 8, burnTicks: 20, heat: 160, soot: 15, becomes: M.Air },
     palette: ['#d9788a', '#e39aa5', '#c95f75'].map(hex),
   },
   {
-    // Living wood: full of sap, slow to catch, smoulders for minutes.
+    // Wood, living or dead: the difference is the cell's moisture (a living
+    // trunk ~100%, a seasoned post ~12%), not a different material.
     id: M.Wood, name: 'wood', solid: true, opaque: true, density: 7,
-    flammable: { catchPerMille: 6, burnTicks: 3000, becomes: M.Ash },
+    moisture: 100,
+    flammable: { ignitesAt: 320, extinction: 30, fineness: 1, burnTicks: 900, heat: 180, soot: 120, becomes: M.Ash },
     structural: { capacity: 12000 },
     palette: ['#7a5232', '#6a4529', '#86603a'].map(hex),
   },
   {
     id: M.Leaves, name: 'leaves', solid: true, opaque: true, density: 1,
-    flammable: { catchPerMille: 40, burnTicks: 200, becomes: M.Air },
+    moisture: 140,
+    flammable: { ignitesAt: 260, extinction: 120, fineness: 7, burnTicks: 160, heat: 240, soot: 160, becomes: M.Air },
     palette: ['#3d7a2c', '#2f6a27', '#4b8a33', '#58993b'].map(hex),
   },
   {
@@ -121,15 +141,9 @@ const list: Material[] = [
   },
   {
     id: M.Moss, name: 'moss', solid: false, opaque: true, density: 1,
-    flammable: { catchPerMille: 90, burnTicks: 15, becomes: M.Air },
+    moisture: 200,
+    flammable: { ignitesAt: 260, extinction: 60, fineness: 6, burnTicks: 40, heat: 120, soot: 20, becomes: M.Air },
     palette: ['#6e9a35', '#82ab3f', '#5c8a2e'].map(hex),
-  },
-  {
-    // Dead, seasoned wood (posts, beams): dry, so it catches and burns fast.
-    id: M.Timber, name: 'timber', solid: true, opaque: true, density: 6,
-    flammable: { catchPerMille: 25, burnTicks: 240, becomes: M.Ash },
-    structural: { capacity: 12000 },
-    palette: ['#7d6046', '#6c523b', '#8a6c50'].map(hex),
   },
 ]
 

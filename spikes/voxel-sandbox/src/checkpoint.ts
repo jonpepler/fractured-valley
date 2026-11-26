@@ -36,11 +36,13 @@ class Reader {
   ascending() { const n = this.uint(), out: number[] = []; let prev = 0; for (let i = 0; i < n; i++) { prev += this.uint(); out.push(prev) } return out }
 }
 
-const MAGIC = 0x46564331 // "FVC1"
+const MAGIC = 0x46564332 // "FVC2": with moisture, gas and embers
+/** Values per gas brick: 8³ field cells × (heat, soot, steam). */
+const GAS_VALUES = 8 * 8 * 8 * 3
 
-function cellsOf(g: Grid, b: number, into: Uint8Array, state: Uint8Array) {
+function cellsOf(g: Grid, b: number, into: Uint8Array, state: Uint8Array, wet: Uint8Array) {
   const brick = g.bricks[b]
-  if (brick) { into.set(brick.material); state.set(brick.state) } else { into.fill(g.uniform[b]!); state.fill(0) }
+  if (brick) { into.set(brick.material); state.set(brick.state); wet.set(brick.moisture) } else { into.fill(g.uniform[b]!); state.fill(0); wet.fill(0) }
 }
 
 function writeCommand(w: Writer, c: Command) {
@@ -59,18 +61,23 @@ export function takeCheckpoint(sim: Sim, spec: WorldSpec, fresh: Grid = generate
   w.uint(st.touched.length); for (const t of st.touched) w.uint(t)
   w.uint(st.queue.length)
   for (const s of st.queue) { w.uint(s.tick); w.uint(s.peer); w.uint(s.seq); writeCommand(w, s.command) }
+  // Embers in flight, and the gas in the air (heat, soot, steam per active brick).
+  w.uint(st.embers.length)
+  for (const e of st.embers) { w.int(e.x); w.int(e.y); w.int(e.z); w.int(e.vx); w.int(e.vy); w.int(e.vz); w.int(e.life) }
+  w.uint(st.gas.length)
+  for (const { brick, values } of st.gas) { w.uint(brick); for (const v of values) w.uint(v) }
 
   const g = sim.world
-  const a = new Uint8Array(BRICK_CELLS), as = new Uint8Array(BRICK_CELLS)
-  const f = new Uint8Array(BRICK_CELLS), fs = new Uint8Array(BRICK_CELLS)
+  const a = new Uint8Array(BRICK_CELLS), as = new Uint8Array(BRICK_CELLS), aw = new Uint8Array(BRICK_CELLS)
+  const f = new Uint8Array(BRICK_CELLS), fs = new Uint8Array(BRICK_CELLS), fw = new Uint8Array(BRICK_CELLS)
   const changed: number[] = []
   for (let b = 0; b < g.bricks.length; b++) {
-    cellsOf(g, b, a, as); cellsOf(fresh, b, f, fs)
-    for (let i = 0; i < BRICK_CELLS; i++) if (a[i] !== f[i] || as[i] !== fs[i]) { changed.push(b); break }
+    cellsOf(g, b, a, as, aw); cellsOf(fresh, b, f, fs, fw)
+    for (let i = 0; i < BRICK_CELLS; i++) if (a[i] !== f[i] || as[i] !== fs[i] || aw[i] !== fw[i]) { changed.push(b); break }
   }
   w.ascending(changed)
   for (const b of changed) {
-    cellsOf(g, b, a, as)
+    cellsOf(g, b, a, as, aw)
     // Palette: the brick's distinct materials, then 1/2/4/8 bits per cell.
     const palette = [...new Set(a)].sort((x, y) => x - y)
     const index = new Map(palette.map((m, i) => [m, i]))
@@ -83,6 +90,10 @@ export function takeCheckpoint(sim: Sim, spec: WorldSpec, fresh: Grid = generate
     const stated: number[] = []
     for (let i = 0; i < BRICK_CELLS; i++) if (as[i]) stated.push(i)
     w.ascending(stated); for (const i of stated) w.byte(as[i]!)
+    // Moisture: absent, or one byte per cell (it varies smoothly; compresses well).
+    const anyWet = aw.some(v => v !== 0)
+    w.byte(anyWet ? 1 : 0)
+    if (anyWet) w.bytes(aw)
   }
   return { data: w.done(), stats: { bytes: w.length, changedBricks: changed.length, bricks: g.bricks.length } }
 }
@@ -99,6 +110,14 @@ export function restoreCheckpoint(data: Uint8Array): { sim: Sim; spec: WorldSpec
     const t = r.uint(), peer = r.uint(), seq = r.uint(), kind = r.byte() === 0 ? 'ignite' as const : 'drop' as const
     queue.push({ tick: t, peer, seq, command: { kind, x: r.int(), y: r.int(), z: r.int() } })
   }
+  const embers: SimState['embers'] = []
+  for (let n = r.uint(); n > 0; n--) embers.push({ x: r.int(), y: r.int(), z: r.int(), vx: r.int(), vy: r.int(), vz: r.int(), life: r.int() })
+  const gas: SimState['gas'] = []
+  for (let n = r.uint(); n > 0; n--) {
+    const brick = r.uint(), values: number[] = []
+    for (let k = 0; k < GAS_VALUES; k++) values.push(r.uint())
+    gas.push({ brick, values })
+  }
   const world = generate(spec)
   const changed = r.ascending()
   for (const b of changed) {
@@ -108,16 +127,17 @@ export function restoreCheckpoint(data: Uint8Array): { sim: Sim; spec: WorldSpec
     const stated = r.ascending()
     const states = new Uint8Array(BRICK_CELLS)
     for (const i of stated) states[i] = r.byte()
+    const wet = r.byte() ? r.bytes(BRICK_CELLS) : new Uint8Array(BRICK_CELLS)
     const bxz = b % world.bx, rest = Math.floor(b / world.bx), byy = rest % world.by, bzz = Math.floor(rest / world.by)
     const mask = (1 << bits) - 1
     for (let i = 0; i < BRICK_CELLS; i++) {
       const m = packed ? palette[(packed[(i * bits) >> 3]! >> ((i * bits) & 7)) & mask]! : palette[0]!
       const x = (bxz << 4) | (i & 15), y = (byy << 4) | ((i >> 4) & 15), z = (bzz << 4) | (i >> 8)
-      world.set(x, y, z, m, states[i]!)
+      world.set(x, y, z, m, states[i]!, wet[i]!)
     }
   }
   world.compact()
   const sim = new Sim(world, spec.seed)
-  sim.importState({ tick, burning, loose, debris, touched, queue })
+  sim.importState({ tick, burning, loose, debris, touched, queue, embers, gas })
   return { sim, spec }
 }

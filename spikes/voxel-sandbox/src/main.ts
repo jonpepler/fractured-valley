@@ -136,7 +136,7 @@ function stepOnce(): boolean {
 // captureAt(tick) renders the world exactly at that tick and hashes the pixels.
 const captures = new Map<number, (c: { tick: number; pixelHash: string; png: string }) => void>()
 function captureNow() {
-  renderer.render(sim.grids, sim.tick)
+  renderer.render(sim.grids, sim.tick, sim)
   let h = 0x811c9dc5
   for (const v of new Uint32Array(renderer.image.data.buffer)) h = Math.imul(h ^ v, 0x01000193) >>> 0
   const c = document.createElement('canvas')
@@ -163,7 +163,7 @@ function frame(now: number) {
   } else acc = 0
   if (dirty) {
     const s = performance.now()
-    surfaceCells = renderer.render(sim.grids, sim.tick).surfaceCells
+    surfaceCells = renderer.render(sim.grids, sim.tick, sim).surfaceCells
     ctx.putImageData(renderer.image, 0, 0)
     renderMs = renderMs * 0.9 + (performance.now() - s) * 0.1
     dirty = false

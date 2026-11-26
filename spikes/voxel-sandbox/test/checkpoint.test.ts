@@ -8,7 +8,7 @@ import { Sim } from '../src/sim'
 beforeAll(() => initPhysics())
 const SPEC = { ...DEFAULT_SPEC, sx: 144, sy: 144 }
 
-test('a joiner restored from a checkpoint stays identical to the peer that took it', () => {
+test('a joiner restored from a checkpoint stays identical to the peer that took it', { timeout: 60_000 }, () => {
   const live = new Sim(generate(SPEC), SPEC.seed)
   const ground = (x: number, y: number) => { let z = SPEC.sz - 1; while (z > 0 && live.world.get(x, y, z) === M.Air) z--; return z }
   const px = Math.floor(SPEC.sx * 0.52), py = Math.floor(SPEC.sy * 0.56)

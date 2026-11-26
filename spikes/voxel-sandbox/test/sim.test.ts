@@ -22,9 +22,12 @@ function burnThePost() {
   const gx = POST.x - 4, gy = POST.y - 4
   sim.schedule({ tick: 1, peer: 0, seq: 0, command: { kind: 'ignite', x: gx, y: gy, z: groundAt(sim, gx, gy) } })
   sim.schedule({ tick: 5, peer: 1, seq: 0, command: { kind: 'drop', x: 30, y: 100, z: 60 } })
-  for (let i = 0; i < 400; i++) sim.step()
+  // The dry post (same wood as the trees, 12% moisture) gives way ~30 s in.
+  for (let i = 0; i < 900; i++) sim.step()
   return sim
 }
+let burnt: Sim | undefined
+const burnTheTestPost = () => (burnt ??= burnThePost())
 
 describe('determinism', () => {
   test('the same seed generates the same world', () => {
@@ -32,11 +35,11 @@ describe('determinism', () => {
   })
 
   test('the same commands give the same world, tick for tick', () => {
-    const a = burnThePost()
+    const a = burnTheTestPost()
     const b = burnThePost()
     expect(a.hash()).toBe(b.hash())
     expect(a.events).toEqual(b.events)
-  })
+  }, 60_000)
 
   test('the hash describes content, not how compactly it is stored', () => {
     const g = new Grid(32, 32, 32)
@@ -49,7 +52,7 @@ describe('determinism', () => {
     expect(before).not.toBe(hashGrids([empty]))
   })
 
-  test('cached brick hashes never go stale', () => {
+  test('cached brick hashes never go stale', { timeout: 60_000 }, () => {
     const sim = new Sim(generate(SPEC), SPEC.seed)
     const gx = POST.x - 4, gy = POST.y - 4
     sim.schedule({ tick: 1, peer: 0, seq: 0, command: { kind: 'ignite', x: gx, y: gy, z: groundAt(sim, gx, gy) } })
@@ -71,7 +74,7 @@ describe('determinism', () => {
 
 describe('the burning post', () => {
   test('the post gives way under the metal block, which topples and lands', () => {
-    const sim = burnThePost()
+    const sim = burnTheTestPost()
     const kinds = sim.events.map(e => e.kind)
     expect(kinds).toContain('gave-way')
     expect(kinds).toContain('detached')
@@ -84,7 +87,7 @@ describe('the burning post', () => {
     expect(metal).toBe(216 + 216) // this block and the one peer 1 dropped
     const ground = groundAt(sim, POST.x - 5, POST.y - 5)
     expect(top).toBeLessThan(ground + 16 + 6)
-  })
+  }, 60_000)
 })
 
 describe('storage', () => {

@@ -21,7 +21,8 @@ import type { Grid } from './grid'
 import { M, MATERIALS, mat } from './materials'
 import { cellCentre } from './physics'
 import { hash32, valueNoise2 } from './rng'
-import { prevailing, windAt, type Wind } from './wind'
+import { FR, type Fields } from './fields'
+import type { Ember } from './sim'
 
 /**
  * The colour grade: one place to tune the overall look.
@@ -85,7 +86,10 @@ const FIRE_PX = FIRE.map(packed)
 const FLAME_PX = [[0xff, 0xf6, 0xc8], [0xff, 0xdc, 0x60], [0xff, 0xb0, 0x34], [0xf4, 0x7a, 0x22], [0xd2, 0x48, 0x1a], [0x8a, 0x2c, 0x16]].map(packed)
 const CHAR_PX = rgb(0x26, 0x1d, 0x1a)
 const EMBER_PX = [[0xff, 0x8a, 0x24], [0xe8, 0x52, 0x18], [0xff, 0xc0, 0x50]].map(packed)
-const SMOKE = rgb(0x4e, 0x4a, 0x48)
+// Smoke from steam (light) to soot (dark).
+const SMOKE_PX = [[0xd6, 0xd2, 0xc8], [0xa8, 0xa3, 0x9c], [0x6e, 0x6a, 0x66], [0x3c, 0x38, 0x36]].map(packed)
+/** Gas hotter than this (°C) is drawn as flame. */
+const FLAME_HEAT = 640
 // The 14 pixels of a cube sprite: [dx, dy, face] with face 0 top, 1 left, 2 right.
 const SPRITE: readonly (readonly [number, number, number])[] = [
   [1, 0, 0], [2, 0, 0], [0, 1, 0], [1, 1, 0], [2, 1, 0], [3, 1, 0],
@@ -151,13 +155,9 @@ export class IsoRenderer {
   bodyStyle: 'snap' | 'splat' | 'quarter' = 'quarter'
   /** World seed, so flames can lean with the (pure-function) wind. */
   seed = 0
-  private windBase: Wind = { x: 0, y: 0 }
-  /** Smoke puffs queued during the frame: x, y, depth, alpha. */
-  private smoke: number[] = []
 
-  render(grids: readonly Grid[], tick: number): { surfaceCells: number } {
+  render(grids: readonly Grid[], tick: number, air?: { fields: Fields; embers: readonly Ember[] }): { surfaceCells: number } {
     const world = grids[0]!
-    this.windBase = prevailing(this.seed, tick)
     this.applyChanges(world)
     const { px, depth, pick } = this
     px.fill(BG)
@@ -195,8 +195,8 @@ export class IsoRenderer {
       }
     }
     this.outline()
-    for (let i = 0; i < this.smoke.length; i += 4) this.putBlend(this.smoke[i]!, this.smoke[i + 1]!, this.smoke[i + 2]!, SMOKE, this.smoke[i + 3]!)
-    this.smoke.length = 0
+    // Gas and embers after the outline pass, which would ring them in black.
+    if (air) { this.drawGas(air.fields, tick); this.drawEmbers(air.embers, tick) }
     return { surfaceCells }
   }
 
@@ -290,7 +290,6 @@ export class IsoRenderer {
       this.put(ax + ox, ay + 1, d, c, id)
       if (m !== M.Moss && (h & 6) !== 0) this.put(ax + ox + ((h >> 4) & 1 ? 1 : -1), ay + ((h >> 5) & 1), d, c, id)
       if (m === M.Flower) this.put(ax + ox, ay, d, lut(m, n - 1, TOP_EDGE), id)
-      if (burning) this.flames(x, y, z, ax, ay + 1, d, g.getState(x, y, z), material.flammable!.burnTicks, tick, id, true)
       return
     }
 
@@ -316,54 +315,105 @@ export class IsoRenderer {
     }
     // Burning: the material chars as it burns, with embers glowing in it.
     // The flames themselves rise *above* it (flames()).
-    const s = g.getState(x, y, z), burnTicks = material.flammable!.burnTicks
-    const progress = Math.min(255, Math.floor((s * 256) / burnTicks))
+    const progress = g.getState(x, y, z) // 1..255 through burning
+    const fine = material.flammable!.fineness
     const charA = Math.min(235, 70 + ((progress * 180) >> 8))
     const faces = [blend(top, CHAR_PX, charA), blend(left, CHAR_PX, charA), blend(right, CHAR_PX, charA)]
     // Quick-burning stuff (leaves, grass) is mostly glowing; wood glows more as it burns through.
-    const emberPct = burnTicks < 40 ? 45 : 6 + (progress >> 4)
+    const emberPct = fine >= 5 ? 45 : 6 + (progress >> 4)
     for (let i = 0; i < SPRITE.length; i++) {
       const [dx, dy, face] = SPRITE[i]!
       const e = hash32(x * 31 + i, y, z, tick >> 2)
       this.put(ax + dx, ay + dy, d, e % 100 < emberPct ? EMBER_PX[(e >>> 8) % 3]! : faces[face]!, id)
     }
-    const sideClear = isClear(g, x + 1, y, z) || isClear(g, x, y + 1, z)
-    if (topClear || sideClear) this.flames(x, y, z, ax, ay, d, s, burnTicks, tick, id, topClear)
   }
 
   /**
-   * Flame tongues rising from a burning cell: taller for quick, bright fuel,
-   * growing as it catches and dying as it burns out, leaning with the wind,
-   * flickering every tick. Smoke drifts off some of them. View-only.
+   * Gas, drawn from the simulation's fields: each 20 cm field cell with gas is
+   * a dithered blob (pixel art has no alpha). Smoke shades from light (steam)
+   * to dark (soot) and is lit orange where it is hot; hot enough, it is flame,
+   * coloured by temperature, with streaks rising through it.
    */
-  private flames(x: number, y: number, z: number, ax: number, ay: number, d: number, s: number, burnTicks: number, tick: number, id: number, fromTop: boolean) {
-    const h = hash32(x, y, z, tick)
-    const progress = Math.min(255, Math.floor((s * 256) / burnTicks))
-    // Envelope: catch (first 15%), full, dying (last 25%).
-    const env = progress < 38 ? 96 + progress * 4 : progress > 192 ? Math.max(32, (255 - progress) * 4) : 256
-    const tall = burnTicks < 40 ? 4 + (h % 6) : 3 + (h % 4)
-    const H = Math.max(1, ((fromTop ? tall : 2 + (h & 1)) * env) >> 8)
-    const wind = windAt(this.seed, tick, x, y, this.windBase)
-    const leanX = wind.x - wind.y // screen-horizontal component: +x drifts right, +y left
-    const x0 = ax + 1 + (h & 1), y0 = fromTop ? ay : ay + 2
-    for (let k = 0; k < H; k++) {
-      const wobble = k > 1 ? (hash32(x, y, z, tick * 8 + k) % 3) - 1 : 0
-      const sx = x0 + ((leanX * k) >> 8) + wobble
-      const c = FLAME_PX[Math.min(5, Math.floor((k * 6) / (H + 1)) + ((h >>> (k + 4)) & 1))]!
-      const dk = d + 1 + (k >> 1)
-      this.put(sx, y0 - k, dk, c, id)
-      if (k < H >> 1) this.put(sx + 1, y0 - k, dk, c, id)
+  private drawGas(fields: Fields, tick: number) {
+    const W = this.width, H = this.height
+    if (this.gasSmoke.length !== W * H) {
+      this.gasSmoke = new Uint32Array(W * H); this.gasSoot = new Uint32Array(W * H)
+      this.gasHeat = new Uint16Array(W * H); this.gasMark = new Uint8Array(W * H)
     }
-    // Smoke: a puff every so often, rising and drifting downwind, fading out.
-    if (fromTop && hash32(x, y, z, 0x5e0c) % 3 === 0) {
-      const phase = (tick + (hash32(x, y, z, 1) % 48)) % 48
-      const rise = H + phase
-      const alpha = 150 - phase * 3
-      const sx = x0 + ((leanX * rise) >> 8) + ((hash32(x, y, z, phase >> 3) % 3) - 1)
-      // Deferred until after the outline pass, which would ring each puff in black.
-      this.smoke.push(sx, y0 - rise, d + 2 + (rise >> 1), alpha)
-      if (phase > 8) this.smoke.push(sx + 1, y0 - rise, d + 2 + (rise >> 1), alpha >> 1)
+    const { gasSmoke, gasSoot, gasHeat, gasMark } = this
+    const touched: number[] = []
+    // Pass 1: add up the gas over every pixel, each field cell spreading as a
+    // soft blob (stronger at its centre). Gas behind the world is hidden.
+    for (const [fx, fy, fz, heat, soot, steam] of fields.cells()) {
+      const [cx, cy] = this.anchor(fx * FR + 1, fy * FR + 1, fz * FR + 1)
+      const d = (fx + fy + fz) * FR + 3
+      const smoke = soot + steam
+      for (let dy = -5; dy <= 5; dy++) for (let dx = -5; dx <= 6; dx++) {
+        const r = Math.abs(dx - 0.5) + Math.abs(dy)
+        if (r > 7) continue
+        const px = cx + 2 + dx, py = cy + 2 + dy
+        if (px < 0 || py < 0 || px >= W || py >= H) continue
+        const i = py * W + px
+        if (d < this.depth[i]!) continue
+        const wt = 8 - r // 1..8
+        if (!gasMark[i]) { gasMark[i] = 1; touched.push(i) }
+        gasSmoke[i]! += (smoke * wt) >> 3
+        gasSoot[i]! += (soot * wt) >> 3
+        const h = heat - r * 40
+        if (h > gasHeat[i]!) gasHeat[i] = h
+      }
     }
+    // Pass 2: decide each pixel once. Flame where it's hot enough, as solid
+    // tongues scrolling upward; otherwise dithered smoke, light (steam) to
+    // dark (soot), lit orange by heat beneath.
+    for (const i of touched) {
+      const px = i % W, py = (i / W) | 0
+      const heat = gasHeat[i]!, smoke = gasSmoke[i]!, soot = gasSoot[i]!
+      gasMark[i] = 0; gasSmoke[i] = 0; gasSoot[i] = 0; gasHeat[i] = 0
+      if (heat > FLAME_HEAT) {
+        const cover = Math.min(255, (heat - FLAME_HEAT) >> 1)
+        const streak = hash32(px >> 1, (py + tick * 3) >> 3, tick >> 3) & 255
+        if (cover > streak) {
+          const band = heat > 950 ? 0 : heat > 820 ? 1 : heat > 700 ? 2 : heat > 620 ? 3 : 4
+          this.px[i] = FLAME_PX[cover - streak > 120 ? Math.max(0, band - 1) : band]!
+          continue
+        }
+      }
+      const cover = Math.min(200, smoke >> 3)
+      if (cover < 6) continue
+      const churn = hash32(px >> 1, (py + (tick >> 1)) >> 1) & 63
+      if (cover <= BAYER[(px & 3) + ((py & 3) << 2)]! * 14 + churn - 32) continue
+      const dark = smoke ? Math.min(3, Math.floor((soot * 4) / smoke)) : 0
+      const col = SMOKE_PX[dark]!
+      const lit = heat > 450 ? Math.min(140, (heat - 450) >> 2) : 0
+      this.px[i] = lit ? blend(col, FLAME_PX[3]!, lit) : col
+    }
+  }
+
+  private gasSmoke = new Uint32Array(0)
+  private gasSoot = new Uint32Array(0)
+  private gasHeat = new Uint16Array(0)
+  private gasMark = new Uint8Array(0)
+
+  /** Embers in flight: a bright pixel with a short dim trail. */
+  private drawEmbers(embers: readonly Ember[], tick: number) {
+    for (const e of embers) {
+      const x = e.x / 256, y = e.y / 256, z = e.z / 256
+      const [bx, by] = this.anchor(0, 0, 0)
+      const px = Math.round(bx + 2 * (x - y)) + 2, py = Math.round(by + x + y - 2 * z) + 1
+      const d = Math.round(x + y + z) + 1
+      const c = EMBER_PX[(e.life + tick) % 3]!
+      this.putPixel(px, py, d, c)
+      if (e.life & 1) this.putPixel(px - Math.sign(e.vx - e.vy), py + 1, d, EMBER_PX[1]!)
+    }
+  }
+
+  private putPixel(px: number, py: number, d: number, c: number) {
+    if (px < 0 || py < 0 || px >= this.width || py >= this.height) return
+    const i = py * this.width + px
+    if (d < this.depth[i]!) return
+    this.px[i] = c
+    this.depth[i] = d
   }
 
   private putBlend(sx: number, sy: number, d: number, color: number, alpha: number) {
