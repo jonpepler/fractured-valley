@@ -1,0 +1,11 @@
+[package]
+name = "fv-brains-appetite"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: one person whose appetite habit lags their activity"
+
+[dependencies]
+
+[profile.test]
+opt-level = 3
