@@ -18,9 +18,10 @@ pub const VOLATILE: usize = 0;
 pub const CHAR: usize = 1;
 pub const MINERAL: usize = 2;
 
-/// An opaque cell's surface layer, per mille of its solid (its outer
-/// centimetre: about how deep heat reaches into wood in a few minutes).
-pub const SKIN_PERMILLE: i64 = 100;
+/// An opaque cell's surface layer, per mille of its solid: a tenth of a
+/// 10 cm cell, its outer centimetre (about how deep heat reaches into wood in
+/// a few minutes); the same centimetre is a larger share of a smaller cell.
+pub const SKIN_PERMILLE: i64 = 10_000 / CELL_MM;
 
 /// Which of this cell's + faces are bonded to the neighbour there.
 pub const BOND_X: u8 = 1;
@@ -172,8 +173,8 @@ impl Cell {
     /// volume): grass ~14 000 mm² per tuft.
     pub fn inner_surface_mm2(&self, subs: &[Substance]) -> i64 {
         let s = &subs[self.substance as usize];
-        // σ [1/m] × share × 0.001 m³ = σ·share·0.001 m² = σ·share·1000 mm²
-        s.surface_per_volume * self.solid_share(subs).of(1_000)
+        // σ [1/m] × share × V: with V in mL (10⁻⁶ m³), σ·share·V mm².
+        s.surface_per_volume * self.solid_share(subs).of(CELL_VOLUME_ML)
     }
 
     /// How intact the solid is, out of 1000: what's left of the part that

@@ -49,7 +49,7 @@ impl Sim {
         let flow = Flow::new(&world);
         let books = Books::open(&world);
         let light = Light::new(world.cells.len());
-        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: 2, diffuse_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default() }
+        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: crate::flow::ADVECT_STEPS, diffuse_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default() }
     }
 
     pub fn schedule(&mut self, s: Scheduled) {

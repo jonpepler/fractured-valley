@@ -72,8 +72,8 @@ impl Viewer {
     pub fn view(&mut self, w: &World, light: &Light) -> View {
         let n = w.nx * w.ny * w.nz;
         if self.light.len() != n { self.light = vec![[0.0; 3]; n]; self.glow = vec![[0.0; 3]; n] }
-        // µJ per tick on a 0.01 m² face → W/m²: ×10⁻⁶ / 0.05 s / 0.01 m² = ×0.002
-        const TO_W_M2: f32 = 0.002;
+        // µJ per tick on one face → W/m²: ×10⁻⁶ / 0.05 s / face (0.002 at 10 cm)
+        const TO_W_M2: f32 = 2e-5 * 1e6 / crate::substance::FACE_MM2 as f32;
         // µJ per tick → W: ×10⁻⁶ / 0.05 s = ×2×10⁻⁵
         const TO_W: f32 = 2e-5;
         let mut cells = vec![ViewCell::default(); n];

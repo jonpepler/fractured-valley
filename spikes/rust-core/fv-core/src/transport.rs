@@ -17,7 +17,7 @@
 //!   (hot air, or gas just given off by burning wood) pushes the excess out;
 //! - **flame contact**: flames lean and flicker sideways and touch the fuel
 //!   beside them (Finney et al. 2015: fine fuel ignites by this contact, not
-//!   by radiation, which convective cooling defeats). A 10 cm cell can't
+//!   by radiation, which convective cooling defeats). A cell can't
 //!   hold the flame's shape, so its hot gas heats the neighbour's fuel
 //!   across the face for the share of the time a flame leans that way;
 //! - **carrying** (in [`advect`]): moving air takes a share of its contents
@@ -59,7 +59,22 @@ pub struct Side {
 /// Share of the time a flame leans over the fuel beside it (flame fingers
 /// flicker at a few hertz and touch the fuel ahead intermittently: Finney
 /// et al. 2015).
-const FLAME_LEAN_PERMILLE: i64 = 500;
+/// Experiments can set it at build time: `FV_FLAME_LEAN_PERMILLE=300`.
+const FLAME_LEAN_PERMILLE: i64 = parse_permille(option_env!("FV_FLAME_LEAN_PERMILLE"), 500);
+
+/// A build-time number, or the default when it's unset.
+const fn parse_permille(v: Option<&str>, default: i64) -> i64 {
+    let Some(v) = v else { return default };
+    let b = v.as_bytes();
+    let (mut i, mut n) = (0, 0i64);
+    while i < b.len() {
+        assert!(b[i] >= b'0' && b[i] <= b'9', "FV_FLAME_LEAN_PERMILLE must be a whole number");
+        n = n * 10 + (b[i] - b'0') as i64;
+        i += 1;
+    }
+    assert!(n <= 1_000, "FV_FLAME_LEAN_PERMILLE is out of 1000");
+    n
+}
 /// Mean temperature of a flame's continuous region (McCaffrey 1979).
 const FLAME_CONTACT: Temperature = Temperature(1_173_000);
 /// A solid face inside a flame takes ~50–150 kW/m² (its convection plus the
@@ -69,13 +84,18 @@ const FLAME_ON_FACE: i64 = 80_000;
 
 /// Thermal conductivity of still air, mW/(m·K).
 const AIR_CONDUCTIVITY: i64 = 26;
-/// Film coefficient where a solid surface meets air: ~15 W/(m²·K) on a 10 cm face.
-const FILM: Conductance = Conductance(150_000);
-/// Exchange of gas across a face per tick in still air, in mL (eddies of a
-/// few mm/s: effective diffusivity ~1×10⁻³ m²/s).
-const STILL_MIX_ML: i64 = 5;
-/// Extra exchange per mm/s of air speed at the face, in µL (turbulent eddies ≈ 10 % of the flow).
-const TURBULENT_MIX_UL_PER_MM_S: i64 = 50;
+/// Film coefficient where a solid surface meets air: ~15 W/(m²·K) over one
+/// face (W/(m²·K) × mm² = µW/K).
+const FILM: Conductance = Conductance(15 * FACE_MM2);
+/// Exchange of gas across a face per tick in still air, in µL: eddies of a
+/// few mm/s, effective diffusivity D ~1×10⁻³ m²/s, so D·A/L·dt, which grows
+/// with the cell's edge (5 mL at 10 cm).
+const STILL_MIX_UL: i64 = 50 * CELL_MM;
+/// Extra exchange per mm/s of air speed at the face, in nL: turbulent eddies
+/// carry ≈ 10 % of the flow through the face's area (50 µL at 10 cm).
+const TURBULENT_MIX_NL_PER_MM_S: i64 = 50_000 * FACE_MM2 / 10_000;
+/// Mixed volumes are counted in thousandths of a cell (1 mL at 10 cm).
+const MIX_QUANTUM_UL: i64 = CELL_VOLUME_ML;
 /// Gas seeps through non-permeable porous solids this many times slower.
 const SEEP_DIVISOR: i64 = 20;
 
@@ -98,7 +118,7 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
     let flame_heat = if flaming { Energy(((c.energy - c.latent()).0 - (c.gas_capacity() * ambient).0).max(0) / 6) } else { Energy::ZERO };
     let sigma = s.surface_per_volume;
     let fuel_g = if volatile && sigma > 0 {
-        let area = if c.permeable(subs) { c.inner_surface_mm2(subs) } else { 10_000 };
+        let area = if c.permeable(subs) { c.inner_surface_mm2(subs) } else { FACE_MM2 };
         // h [mW/(m²·K)] × A [mm²] = 10⁻⁹ W/K = 10⁻³ µW/K
         let h = if c.permeable(subs) { crate::chem::surface_h(sigma, t, ambient) * sigma } else { FLAME_ON_FACE };
         (h as i128 * area as i128 / 1_000) as i64
@@ -106,8 +126,9 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
     Side {
         flame_t, flame_heat, fuel_g,
         t, t_cond, t_skin, gas_ml, permeable: c.permeable(subs),
-        // k [mW/(m·K)] × 0.01 m² / 0.05 m = 0.2·k mW/K = 200·k µW/K
-        half: Conductance(k * 200),
+        // k × face / half an edge = k·L²/(L/2) = 2·k·L: k [mW/(m·K)] × L [mm]
+        // is µW/K (200·k at 10 cm).
+        half: Conductance(k * 2 * CELL_MM),
         excess: Mass((c.gas_mass().0 - fits).max(0)),
         ambient,
     }
@@ -117,13 +138,14 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
 #[inline]
 fn ambient_of(a: &Side, _b: &Side) -> Temperature { a.ambient }
 
-/// Speed of the eddies hot gas makes, mm/s: √(g·l·ΔT/T) with l = 0.1 m.
+/// Speed of the eddies hot gas makes, mm/s: √(g·l·ΔT/T) with l one cell's edge
+/// (the largest eddy a cell holds).
 #[inline]
 pub fn buoyant_churn(t: Temperature, ambient: Temperature) -> i64 {
     let dt = (t.0 - ambient.0).max(0) as i128;
     if dt == 0 { return 0 }
-    // g·l = 9.807 m/s² × 0.1 m = 0.9807 m²/s² = 980_700 mm²/s² ... ×ΔT/T
-    let v2 = 980_700i128 * dt / ambient.0.max(1) as i128;
+    // g·l = 9 807 mm/s² × l [mm] (980 700 mm²/s² at 10 cm) ... ×ΔT/T
+    let v2 = 9_807i128 * CELL_MM as i128 * dt / ambient.0.max(1) as i128;
     (v2 as f64).sqrt() as i64
 }
 
@@ -185,16 +207,17 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: 
 
     // Mixing: each side sends a share of its gas, by concentration. Eddies
     // come from the wind and from heat itself: hot gas churns at about
-    // √(g·l·ΔT/T) (buoyant turbulence, l = 10 cm), metres a second in a flame.
+    // √(g·l·ΔT/T) (buoyant turbulence, l = a cell), metres a second in a flame.
     let both_gas = a.gas_ml > 0 && b.gas_ml > 0;
     if both_gas {
         let churn = buoyant_churn(a.t.max(b.t), ambient_of(a, b));
-        let mut ml = STILL_MIX_ML + (speed + churn) * TURBULENT_MIX_UL_PER_MM_S / 1_000;
-        if !(a.permeable && b.permeable) { ml /= SEEP_DIVISOR }
-        let ml = ml.min(a.gas_ml.min(b.gas_ml) / 8);
+        let q = MIX_QUANTUM_UL;
+        let mut ul = (STILL_MIX_UL + (speed + churn) * TURBULENT_MIX_NL_PER_MM_S / 1_000) / q * q;
+        if !(a.permeable && b.permeable) { ul = ul / SEEP_DIVISOR / q * q }
+        let ul = ul.min(a.gas_ml.min(b.gas_ml) * 1_000 / 8 / q * q) as i128;
         for k in 0..GASES {
-            let out_a = Mass(lo.gas[k].0 * ml / a.gas_ml);
-            let out_b = Mass(hi.gas[k].0 * ml / b.gas_ml);
+            let out_a = Mass((lo.gas[k].0 as i128 * ul / (a.gas_ml as i128 * 1_000)) as i64);
+            let out_b = Mass((hi.gas[k].0 as i128 * ul / (b.gas_ml as i128 * 1_000)) as i64);
             f.gas[k] += out_a - out_b;
             f.carried += carried(k, out_a, a.t) - carried(k, out_b, b.t);
         }

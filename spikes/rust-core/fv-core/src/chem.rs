@@ -48,8 +48,13 @@ pub const RADIATIVE_FRACTION: Fraction = Fraction(1_503_238_554); // 0.35
 /// 1 400 K in wood and other sooty flames.
 pub const FLAME_GLOW: Temperature = Temperature(1_400_000);
 /// Share of a flammable mix that burns per tick when the flame holds: fuel
-/// and air mix in ~0.1 s at this scale (1 − e^(−0.5)).
+/// and air mix in ~0.1 s across a 10 cm cell (1 − e^(−0.5)). The mixing time
+/// is a cell's edge over its eddy speed √(g·l·ΔT/T), so it goes as √l: about
+/// 0.07 s across 5 cm (1 − e^(−0.71)).
+#[cfg(not(feature = "cell-5cm"))]
 const MIXING: Fraction = Fraction(1_690_000_000);
+#[cfg(feature = "cell-5cm")]
+const MIXING: Fraction = Fraction(2_177_253_391);
 /// Anderson's flame residence time: τ [s] = this / σ [1/m].
 const RESIDENCE_S_PER_SIGMA: i64 = 75_600;
 /// Charring rate of a dense solid's exposed face, µm per minute.
@@ -57,13 +62,15 @@ const CHAR_UM_PER_MIN: i64 = 1_500;
 /// Heat released at the surface when carbon burns to carbon monoxide:
 /// 110.5 kJ/mol over 12 g.
 const CHAR_TO_CO_HEAT: SpecificEnergy = kj_per_kg(9_200);
-/// The outer surface oxygen reaches on a dense solid: one 10 cm face.
-const OUTER_FACE_MM2: i64 = 10_000;
+/// The outer surface oxygen reaches on a dense solid: one face.
+const OUTER_FACE_MM2: i64 = FACE_MM2;
 /// Most of a flame's heat that can go straight into the fuel it wraps, and
-/// the fuel surface (mm² per cell) at which it's half that: a grass tuft
-/// (~14 000 mm²) gets ~30 %, open air none.
+/// the fuel surface (mm² per cell) at which it's half that: a 10 cm grass
+/// tuft (~14 000 mm²) gets ~30 %, open air none. The half-point is a surface
+/// per volume (10 000 mm² per litre), so the same fuel gets the same share
+/// whatever the cell's size.
 const FEEDBACK_MAX: Fraction = Fraction(1_288_490_189); // 30 %
-const FEEDBACK_HALF_MM2: i128 = 10_000;
+const FEEDBACK_HALF_MM2: i128 = 10 * CELL_VOLUME_ML as i128;
 /// Heat transfer between a solid's surface and the gas around it, in
 /// mW/(m²·K) per 1/m of σ: h = Nu·k/d with d = 4/σ, Nu ≈ 2, k ≈ 0.05 W/(m·K).
 const SURFACE_H_PER_SIGMA: i64 = 25;
@@ -139,8 +146,8 @@ pub fn pyrolysis_rate(c: &Cell, subs: &[Substance], t: &Tables) -> Mass {
     let cap = if c.permeable(subs) {
         (full as i128 * s.surface_per_volume.max(1) as i128 * TICK.0 as i128 / (RESIDENCE_S_PER_SIGMA as i128 * 1_000)) as i64
     } else {
-        // ρ × face area × depth charred per tick: full mass × (β·dt / 100 mm)
-        (full as i128 * CHAR_UM_PER_MIN as i128 * TICK.0 as i128 / (60_000i128 * 100_000)) as i64
+        // ρ × face area × depth charred per tick: full mass × (β·dt / edge)
+        (full as i128 * CHAR_UM_PER_MIN as i128 * TICK.0 as i128 / (60_000i128 * CELL_MM as i128 * 1_000)) as i64
     };
     t.pyrolysis[k_index(c.surface_temperature(subs).0)].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)))
 }
@@ -196,7 +203,7 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     // (0.15 W/(m·K)) a hot surface warms the core over many minutes.
     if c.skin_capacity(subs).0 > 0 && c.core_capacity(subs).0 > 0 {
         let g = if c.opaque(subs) {
-            Conductance(s.conductivity * 200) // k × 0.01 m² / 0.05 m
+            Conductance(s.conductivity * 2 * CELL_MM) // k × face / half an edge
         } else {
             // Into a twig from its surface, set by how long heat takes to
             // soak through it (r²/α, r = 2/σ): g = C_core·α/r², which is
@@ -246,7 +253,7 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     // Below boiling, water evaporates while the vapour the wet surface holds
     // (at the surface's own temperature) is more than the air around it
     // already has; faster for fine fuel (more surface).
-    let sat = t.saturated_ug_per_l[k_index(ts.0)].saturating_mul(ml) / CELL_VOLUME_ML;
+    let sat = t.saturated_ug_per_l[k_index(ts.0)].saturating_mul(ml) / 1_000;
     // (At or above boiling, the boiling step above has already done this.)
     if c.water.0 > 0 && ts < BOIL && c.gas[vap].0 < sat {
         let room = sat - c.gas[vap].0;
@@ -259,7 +266,7 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     }
     // Vapour beyond what the air holds condenses into drops (mist, white
     // smoke); drops in unsaturated air evaporate. Both stay in the gas.
-    let sat = t.saturated_ug_per_l[k_index(c.gas_temperature().0)].saturating_mul(ml) / CELL_VOLUME_ML;
+    let sat = t.saturated_ug_per_l[k_index(c.gas_temperature().0)].saturating_mul(ml) / 1_000;
     if c.gas[vap].0 > sat {
         let dm = Mass((c.gas[vap].0 - sat) / 2);
         c.gas[vap] -= dm;

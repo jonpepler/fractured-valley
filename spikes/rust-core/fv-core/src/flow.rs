@@ -1,5 +1,5 @@
 //! Moving air: buoyancy, wind and a pressure solve (Stam's stable fluids),
-//! on a grid of 20 cm blocks (2×2×2 cells).
+//! on a grid of blocks of 2×2×2 cells (20 cm at 10 cm cells).
 //!
 //! The flow carries no energy of its own in the books (brief 06, decision 2):
 //! air at 1 m/s in a cell has ~0.6 mJ of motion against ~300 J of heat, and a
@@ -17,13 +17,19 @@ use crate::transport::FaceVelocity;
 use crate::world::{World, TICK};
 
 pub const FR: usize = 2;
+/// A block's face, mm².
+const BLOCK_FACE_MM2: i64 = (FR * FR) as i64 * crate::substance::FACE_MM2;
 /// Gravity, mm/s².
 const G: i64 = 9_807;
 /// Share of motion kept each tick (eddy viscosity), out of 256.
 const KEEP: i64 = 245;
 const PRESSURE_ROUNDS: usize = 30;
-/// The fastest the transport can carry (two sub-steps of one cell each).
+/// The fastest the transport can carry: [`ADVECT_STEPS`] sub-steps of one
+/// cell each are 4 m/s at any cell size; a little under it.
 pub const MAX_SPEED: i64 = 3_800;
+/// Sub-steps of air motion per tick: two of 10 cm, so a smaller cell takes
+/// more (each carries at most one cell's worth: speed·dt/dx ≤ 1).
+pub const ADVECT_STEPS: i64 = 2 * 100 / crate::substance::CELL_MM;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Flow {
@@ -132,8 +138,9 @@ impl Flow {
                 + self.block_face(xi, yi, zi, 2) - self.block_face(xi, yi, zi - 1, 2);
             // A block holding more gas than fits should send the extra out
             // over the next couple of ticks: ask for that much net outflow.
-            // (mL per tick through 0.04 m² faces: 1 mL/tick = 0.5 mm/s.)
-            div[i] -= over_ml[i] / 4;
+            // Half of it each tick, through a block face of (2 cells)²:
+            // v [mm/s] = mL × 10³ mm³ / (2 × dt [s] × A [mm²]) (over/4 at 10 cm).
+            div[i] -= over_ml[i] * 1_000_000 / (2 * TICK.0 * BLOCK_FACE_MM2);
         }}}
         let mut q = vec![0i64; n];
         for _ in 0..PRESSURE_ROUNDS {
@@ -183,10 +190,12 @@ impl Flow {
 
     /// Kinetic energy of all the moving air, µJ (for the negligibility test).
     pub fn kinetic(&self) -> i64 {
-        // ½·m·v² per block face, with ~9.6 g of air per 8 L block.
+        // ½·m·v² per block face, with ~1.2 mg of air per mL of block
+        // (9.6 g in a 10 cm-cell block of 8 L).
         let mut e: i128 = 0;
         for v in &self.vel { for a in v { e += (*a as i128) * (*a as i128) } }
-        (e * 9_600 / 2 / 1_000_000) as i64 // mg·(mm/s)² = 10⁻¹² J → µJ
+        let block_mg = 1_200 * 8 * crate::substance::CELL_VOLUME_ML as i128 / 1_000;
+        (e * block_mg / 2 / 1_000_000) as i64 // mg·(mm/s)² = 10⁻¹² J → µJ
     }
 }
 

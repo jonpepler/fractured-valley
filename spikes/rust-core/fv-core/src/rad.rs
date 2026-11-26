@@ -199,7 +199,7 @@ pub fn band_albedo(s: &Substance, band: usize) -> u64 {
 /// about 60 % of infrared.
 pub(crate) fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 * 2 / 5 } else { Fraction::ONE.0 * 99 / 100 } }
 
-/// One part of a cell that radiates: its area (faces of 0.01 m², Q16), its
+/// One part of a cell that radiates: its area (in cell faces, Q16), its
 /// temperature, its albedo per band, and which store it draws from.
 /// `most`: the most it may send this tick (µJ): half the heat its store holds
 /// above the surroundings. A thin hot layer radiating for a whole tick at its
@@ -227,15 +227,16 @@ pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temper
     let share = c.solid_share(subs).0 as i128;
     let mut out = Vec::new();
     if c.has_solid() {
-        // 4κV = σ·share·0.001 m³ = σ·share·0.1 faces.
-        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 / 10).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most });
+        // 4κV = σ·share·L³ = σ·share·L faces (L in m: 0.1 at 10 cm).
+        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 * CELL_MM as i128 / 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most });
     }
     let tg = c.gas_temperature();
-    // Soot: 4κV = 4 × (mg/L per m) × 0.001 m³ = 0.4 faces per mg = µg/2500.
-    let soot = c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / 2_500;
+    // Soot: 4κV = 4 × (1 per m per mg/L) × mg/V × V = 0.004 m² per mg,
+    // whatever the cell: 0.4 faces of 0.01 m² per mg = µg/2500 at 10 cm.
+    let soot = c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / (2_500 * FACE_MM2 as i128 / 10_000);
     if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most }) }
-    // Drops: 4 × 0.15 × mg × 0.001 m³ = 0.06 faces per mg = µg/16 667.
-    let drops = c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128 / 16_667;
+    // Drops: 4 × 0.15 per m per mg/L: 0.0006 m² per mg = µg/16 667 faces at 10 cm.
+    let drops = c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128 / (16_667 * FACE_MM2 as i128 / 10_000);
     if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most }) }
     out
 }
@@ -265,8 +266,8 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
     for e in emitters(c, subs, faces, w.ambient) {
         let net = net_sigma(e.t, w.ambient) as i128;
         if net <= 0 { continue }
-        // Blackbody power over this area (µW): net µW/m² × faces × 0.01 m².
-        let power = (net * e.area_q16 / ONE as i128 / 100) as i64;
+        // Blackbody power over this area (µW): net µW/m² × faces × face area.
+        let power = (net * e.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000) as i64;
         let energy = (Power(power) * TICK).0.min(e.most);
         let from_face = opaque && !e.from_gas;
         let sent = send(w, x, y, z, from_face, energy, e.t, e.albedo, &mut stream, &mut glow, out);
@@ -364,15 +365,15 @@ enum Meets { Solid, Gas }
 fn volume_optics(c: &Cell, subs: &[Substance], band: usize, s: &mut Stream) -> (i64, Meets, u64) {
     let sub = &subs[c.substance as usize];
     if band == IONISING {
-        // Mass attenuation: κ = μ·ρ. (per-mille cm²/g) × (mg in 1 L) → per metre.
-        let mass = (c.solid_mass().0 + c.water.0 + c.gas_mass().0) / 1_000;
+        // Mass attenuation: κ = μ·ρ. (per-mille cm²/g) × (mg per L) → per metre.
+        let mass = (c.solid_mass().0 + c.water.0 + c.gas_mass().0) / CELL_VOLUME_ML;
         let mu = if c.substance == NONE { 60 } else { sub.optics.ionising_cm2_per_g };
         return (mu * mass / 1_000 * ONE / 10_000, if c.has_solid() { Meets::Solid } else { Meets::Gas }, 0);
     }
     let share = c.solid_share(subs).0 as i64;
     let k_solid = sub.surface_per_volume * share / Fraction::ONE.0 as i64 * ONE / 4;
-    let k_soot = c.gas[Gas::Soot as usize].0 * ONE / 1_000; // κ = 1 per metre per mg/L
-    let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / 100_000; // 0.15 per metre per mg/L
+    let k_soot = c.gas[Gas::Soot as usize].0 * ONE / CELL_VOLUME_ML; // κ = 1 per metre per mg/L
+    let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / (100 * CELL_VOLUME_ML); // 0.15 per metre per mg/L
     let total = k_solid + k_soot + k_drop;
     if total == 0 { return (0, Meets::Gas, 0) }
     // Which of them does it meet? In proportion to each one's attenuation.
@@ -403,7 +404,7 @@ fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
         // Does it interact inside this cell?
         let (k, meets, albedo) = volume_optics(c, subs, p.band as usize, &mut p.stream);
         if k > 0 {
-            let tau = (k as i128 * t_exit as i128 / ONE as i128 / 10) as i64; // κ (Q16 /m) × length (cells × 0.1 m)
+            let tau = (k as i128 * t_exit as i128 / ONE as i128 * CELL_MM as i128 / 1_000) as i64; // κ (Q16 /m) × length (cells × edge in m)
             let prob = tab[((tau >> 8) as usize).min(4095)];
             if p.stream.chance(prob) {
                 if (1..=3).contains(&(p.band as usize)) { dep.light[i][p.band as usize - 1].fetch_add(p.energy, Relaxed); }
@@ -466,9 +467,9 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
     let top = w.nz as i64 * ONE - 1;
     let pos = [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, top];
     let mut total = 0;
-    // Sunlight per column: irradiance on a horizontal 10 cm square = W/m² × 0.01 m² × cos(zenith).
+    // Sunlight per column: irradiance on a horizontal cell face = W/m² × face × cos(zenith).
     let cos_z = (-sky.sun_dir[2]).max(0);
-    let sun_mj = (Power(sky.sun_w_m2 * 10_000 * cos_z / ONE) * TICK).0;
+    let sun_mj = (Power(sky.sun_w_m2 * FACE_MM2 * cos_z / ONE) * TICK).0;
     let bands = tables().bands[5_778];
     for (b, share) in bands.iter().enumerate() {
         let e = Fraction(*share).of(sun_mj);
@@ -477,7 +478,7 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
         total += e;
     }
     // Skylight: bluer, from a random direction across the sky.
-    let sky_mj = (Power(sky.sky_w_m2 * 10_000) * TICK).0;
+    let sky_mj = (Power(sky.sky_w_m2 * FACE_MM2) * TICK).0;
     if sky_mj > 0 {
         let r = stream.below(100);
         let band = if r < 45 { IR } else if r < 60 { RED } else if r < 77 { GREEN } else { BLUE };
@@ -489,12 +490,12 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
 }
 
 /// Direct sunlight entering through a side face of the box (an open-air
-/// cell on the sunward edge): W/m² × 0.01 m² × the sun's angle to that face.
+/// cell on the sunward edge): W/m² × face × the sun's angle to that face.
 fn side_sun(w: &World, sky: &Sky, x: usize, y: usize, z: usize, axis: usize, out: &mut Vec<Packet>) -> i64 {
     if sky.sun_w_m2 == 0 { return 0 }
     let mut stream = Stream(hash(w.seed, w.tick, w.idx(x, y, z) as u64, 0x5ce + axis as u64));
     let cos = sky.sun_dir[axis].abs();
-    let e_total = (Power(sky.sun_w_m2 * 10_000 * cos / ONE) * TICK).0;
+    let e_total = (Power(sky.sun_w_m2 * FACE_MM2 * cos / ONE) * TICK).0;
     let mut pos = [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, z as i64 * ONE + stream.below(ONE as u64) as i64];
     pos[axis] = if sky.sun_dir[axis] > 0 { 1 } else { [w.nx, w.ny][axis] as i64 * ONE - 2 };
     let bands = tables().bands[5_778];

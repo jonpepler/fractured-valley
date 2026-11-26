@@ -55,15 +55,31 @@ pub const LATENT_HEAT_VAPOUR: SpecificEnergy = kj_per_kg(2257);
 pub const CHAR_SPECIFIC_HEAT: SpecificHeat = j_per_kg_k(1000);
 pub const CHAR_CHEMICAL: SpecificEnergy = kj_per_kg(32_800);
 
-/// A cell is a 10 cm cube.
-pub const CELL_VOLUME_ML: i64 = 1_000;
+/// A cell's edge, in mm: 10 cm, or 5 cm with the `cell-5cm` feature. Every
+/// per-cell amount below (volume, face, masses) follows from it.
+#[cfg(not(feature = "cell-5cm"))]
+pub const CELL_MM: i64 = 100;
+#[cfg(feature = "cell-5cm")]
+pub const CELL_MM: i64 = 50;
+/// The area of one face of a cell, mm² (0.01 m² at 10 cm).
+pub const FACE_MM2: i64 = CELL_MM * CELL_MM;
+/// A cell's volume, mL (1 L at 10 cm, 125 mL at 5 cm).
+pub const CELL_VOLUME_ML: i64 = CELL_MM * CELL_MM * CELL_MM / 1_000;
+/// An amount per litre scaled to one cell's volume.
+pub const fn per_cell(per_litre: Mass) -> Mass { Mass(per_litre.0 * CELL_VOLUME_ML / 1_000) }
 /// Fresh air at sea level, by mass in one litre at 20 °C (1.204 g/L), in µg.
-pub const FRESH_AIR: [Mass; GASES] = [
+pub const FRESH_AIR_PER_L: [Mass; GASES] = [
     Mass(279_300), // O₂, 23.2 %
     Mass(909_000), // N₂, 75.5 % (with argon folded in)
     Mass(600),     // CO₂
     Mass(8_600),   // vapour: ~50 % humidity at 20 °C
     Mass(0), Mass(0), Mass(0),
+];
+/// Fresh air filling one cell, in µg.
+pub const FRESH_AIR: [Mass; GASES] = [
+    per_cell(FRESH_AIR_PER_L[0]), per_cell(FRESH_AIR_PER_L[1]), per_cell(FRESH_AIR_PER_L[2]),
+    per_cell(FRESH_AIR_PER_L[3]), per_cell(FRESH_AIR_PER_L[4]), per_cell(FRESH_AIR_PER_L[5]),
+    per_cell(FRESH_AIR_PER_L[6]),
 ];
 
 /// How a substance treats each band of radiation.
@@ -93,7 +109,8 @@ pub struct Strength {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Substance {
     pub name: &'static str,
-    /// Mass of solid in a full cell (bulk density × 1 L): a log is dense, a
+    /// Mass of solid in a full cell (bulk density × the cell's volume; the
+    /// table gives it per litre): a log is dense, a
     /// tuft of grass is mostly air.
     pub full_mass: Mass,
     /// Share of the cell's volume that's open pore space (gas lives here).
@@ -154,7 +171,7 @@ pub fn table() -> Vec<Substance> {
             strength: organic, nuclear: kj_per_kg(0), decay_per_tick: 0, penetrating: Fraction::ZERO, colour: [0, 0, 0],
         },
         Substance {
-            name: "stone", full_mass: grams(2_650), porosity: f(10), permeable: false, surface_per_volume: 60,
+            name: "stone", full_mass: per_cell(grams(2_650)), porosity: f(10), permeable: false, surface_per_volume: 60,
             composition: [0, 0, 1000], typical_moisture: 2, specific_heat: j_per_kg_k(790), conductivity: 2_800,
             volatile_chemical: kj_per_kg(0),
             optics: Optics { albedo: [f(300), f(420), f(390), f(330)], emissivity: f(900), ionising_cm2_per_g: 60 },
@@ -162,7 +179,7 @@ pub fn table() -> Vec<Substance> {
             nuclear: kj_per_kg(0), decay_per_tick: 0, penetrating: Fraction::ZERO, colour: [168, 155, 124],
         },
         Substance {
-            name: "soil", full_mass: grams(1_400), porosity: f(450), permeable: false, surface_per_volume: 60,
+            name: "soil", full_mass: per_cell(grams(1_400)), porosity: f(450), permeable: false, surface_per_volume: 60,
             composition: [40, 20, 940], typical_moisture: 150, specific_heat: j_per_kg_k(800), conductivity: 600,
             volatile_chemical: kj_per_kg(15_600),
             optics: Optics { albedo: [f(250), f(200), f(160), f(120)], emissivity: f(930), ionising_cm2_per_g: 60 },
@@ -171,7 +188,7 @@ pub fn table() -> Vec<Substance> {
         },
         Substance {
             // Grass blades: ~0.5 kg/m² of fuel over 10 cm of height.
-            name: "grass", full_mass: grams(5), porosity: f(996), permeable: true, surface_per_volume: 11_500,
+            name: "grass", full_mass: per_cell(grams(5)), porosity: f(996), permeable: true, surface_per_volume: 11_500,
             composition: [760, 200, 40], typical_moisture: 1_200, specific_heat: j_per_kg_k(1_700), conductivity: 150,
             volatile_chemical: kj_per_kg(15_600),
             optics: Optics { albedo: [f(500), f(180), f(330), f(90)], emissivity: f(950), ionising_cm2_per_g: 60 },
@@ -179,7 +196,7 @@ pub fn table() -> Vec<Substance> {
         },
         Substance {
             // Leaves in a crown: ~3 kg/m³ of foliage.
-            name: "leaves", full_mass: grams(3), porosity: f(997), permeable: true, surface_per_volume: 6_000,
+            name: "leaves", full_mass: per_cell(grams(3)), porosity: f(997), permeable: true, surface_per_volume: 6_000,
             composition: [760, 200, 40], typical_moisture: 1_400, specific_heat: j_per_kg_k(1_700), conductivity: 150,
             volatile_chemical: kj_per_kg(15_600),
             optics: Optics { albedo: [f(450), f(120), f(300), f(70)], emissivity: f(950), ionising_cm2_per_g: 60 },
@@ -187,7 +204,7 @@ pub fn table() -> Vec<Substance> {
             nuclear: kj_per_kg(0), decay_per_tick: 0, penetrating: Fraction::ZERO, colour: [72, 110, 52],
         },
         Substance {
-            name: "wood", full_mass: grams(500), porosity: f(600), permeable: false, surface_per_volume: 60,
+            name: "wood", full_mass: per_cell(grams(500)), porosity: f(600), permeable: false, surface_per_volume: 60,
             composition: [800, 180, 20], typical_moisture: 900, specific_heat: j_per_kg_k(1_700), conductivity: 150,
             volatile_chemical: kj_per_kg(15_600),
             optics: Optics { albedo: [f(400), f(450), f(300), f(190)], emissivity: f(900), ionising_cm2_per_g: 60 },
@@ -195,7 +212,7 @@ pub fn table() -> Vec<Substance> {
             nuclear: kj_per_kg(0), decay_per_tick: 0, penetrating: Fraction::ZERO, colour: [110, 76, 46],
         },
         Substance {
-            name: "brick", full_mass: grams(1_900), porosity: f(250), permeable: false, surface_per_volume: 60,
+            name: "brick", full_mass: per_cell(grams(1_900)), porosity: f(250), permeable: false, surface_per_volume: 60,
             composition: [0, 0, 1000], typical_moisture: 10, specific_heat: j_per_kg_k(840), conductivity: 700,
             volatile_chemical: kj_per_kg(0),
             optics: Optics { albedo: [f(350), f(520), f(300), f(230)], emissivity: f(930), ionising_cm2_per_g: 60 },
@@ -204,7 +221,7 @@ pub fn table() -> Vec<Substance> {
         },
         Substance {
             // Lime mortar: weak in tension, so masonry breaks along its joints.
-            name: "mortar", full_mass: grams(1_700), porosity: f(300), permeable: false, surface_per_volume: 60,
+            name: "mortar", full_mass: per_cell(grams(1_700)), porosity: f(300), permeable: false, surface_per_volume: 60,
             composition: [0, 0, 1000], typical_moisture: 20, specific_heat: j_per_kg_k(900), conductivity: 800,
             volatile_chemical: kj_per_kg(0),
             optics: Optics { albedo: [f(400), f(560), f(540), f(500)], emissivity: f(920), ionising_cm2_per_g: 60 },
@@ -212,7 +229,7 @@ pub fn table() -> Vec<Substance> {
             nuclear: kj_per_kg(0), decay_per_tick: 0, penetrating: Fraction::ZERO, colour: [196, 190, 176],
         },
         Substance {
-            name: "iron", full_mass: grams(7_870), porosity: Fraction::ZERO, permeable: false, surface_per_volume: 60,
+            name: "iron", full_mass: per_cell(grams(7_870)), porosity: Fraction::ZERO, permeable: false, surface_per_volume: 60,
             composition: [0, 0, 1000], typical_moisture: 0, specific_heat: j_per_kg_k(450), conductivity: 50_000,
             volatile_chemical: kj_per_kg(0),
             optics: Optics { albedo: [f(700), f(560), f(560), f(560)], emissivity: f(300), ionising_cm2_per_g: 60 },
@@ -224,7 +241,7 @@ pub fn table() -> Vec<Substance> {
             // ~40 W per kilogram (like a weak radioisotope heater; real ore
             // gives ~10⁻⁴ W/kg). Half-life ~88 years, as plutonium-238.
             // Decay energy left: 40 W/kg × 88 y / ln 2 ≈ 1.6×10¹¹ J/kg.
-            name: "radioactive ore", full_mass: grams(2_900), porosity: f(10), permeable: false, surface_per_volume: 60,
+            name: "radioactive ore", full_mass: per_cell(grams(2_900)), porosity: f(10), permeable: false, surface_per_volume: 60,
             composition: [0, 0, 1000], typical_moisture: 0, specific_heat: j_per_kg_k(700), conductivity: 2_500,
             volatile_chemical: kj_per_kg(0),
             optics: Optics { albedo: [f(250), f(300), f(330), f(250)], emissivity: f(900), ionising_cm2_per_g: 70 },
@@ -237,7 +254,7 @@ pub fn table() -> Vec<Substance> {
         Substance {
             // Dry twigs and sticks (~6 mm across, σ = 4/d ≈ 700 /m), loosely
             // piled: ~50 kg/m³ of fuel with air through it. Fires start here.
-            name: "kindling", full_mass: grams(50), porosity: f(960), permeable: true, surface_per_volume: 700,
+            name: "kindling", full_mass: per_cell(grams(50)), porosity: f(960), permeable: true, surface_per_volume: 700,
             composition: [800, 180, 20], typical_moisture: 100, specific_heat: j_per_kg_k(1_700), conductivity: 150,
             volatile_chemical: kj_per_kg(15_600),
             optics: Optics { albedo: [f(400), f(420), f(300), f(190)], emissivity: f(900), ionising_cm2_per_g: 60 },

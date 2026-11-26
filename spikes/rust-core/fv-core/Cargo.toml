@@ -15,3 +15,7 @@ default = ["parallel"]
 parallel = ["dep:rayon"]
 # Make the radiation field the default way light travels (instead of packets).
 field-light = []
+# Cells 5 cm on a side instead of 10 cm (every per-cell quantity is derived
+# from `substance::CELL_MM`). Structure, falling bodies and rendering still
+# assume 10 cm.
+cell-5cm = []

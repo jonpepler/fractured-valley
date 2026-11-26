@@ -271,22 +271,22 @@ fn kappas(c: &crate::cell::Cell, subs: &[Substance]) -> (i64, i64, i64) {
     let sub = &subs[c.substance as usize];
     let share = c.solid_share(subs).0 as i64;
     let k_solid = sub.surface_per_volume * share / Fraction::ONE.0 as i64 * ONE / 4;
-    let k_soot = c.gas[Gas::Soot as usize].0 * ONE / 1_000;
-    let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / 100_000;
+    let k_soot = c.gas[Gas::Soot as usize].0 * ONE / CELL_VOLUME_ML;
+    let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / (100 * CELL_VOLUME_ML);
     (k_solid, k_soot, k_drop)
 }
 
 fn ionising_kappa(c: &crate::cell::Cell, subs: &[Substance]) -> i64 {
     let sub = &subs[c.substance as usize];
-    let mass = (c.solid_mass().0 + c.water.0 + c.gas_mass().0) / 1_000;
+    let mass = (c.solid_mass().0 + c.water.0 + c.gas_mass().0) / CELL_VOLUME_ML;
     let mu = if c.substance == NONE { 60 } else { sub.optics.ionising_cm2_per_g };
     mu * mass / 1_000 * ONE / 10_000
 }
 
 #[inline]
 fn caught_fraction(kappa: i64, len_q16: i64) -> u64 {
-    // τ (Q16) = κ (Q16 per metre) × length (cells, Q16) × 0.1 m.
-    let tau = (kappa as i128 * len_q16 as i128 / ONE as i128 / 10) as i64;
+    // τ (Q16) = κ (Q16 per metre) × length (cells, Q16) × edge (m).
+    let tau = (kappa as i128 * len_q16 as i128 / ONE as i128 * CELL_MM as i128 / 1_000) as i64;
     absorb_table()[((tau >> 8) as usize).min(4095)]
 }
 
@@ -485,7 +485,7 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize) -> Option<Emission> {
     for e in emitters(c, subs, faces, w.ambient) {
         let net = net_sigma(e.t, w.ambient) as i128;
         if net <= 0 { continue }
-        let power = (net * e.area_q16 / ONE as i128 / 100) as i64;
+        let power = (net * e.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000) as i64;
         let energy = (Power(power) * TICK).0.min(e.most);
         let sent = bands_of(energy, e.t, e.albedo);
         let total: i64 = sent.iter().sum();
@@ -588,8 +588,8 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
     if sky.sun_w_m2 > 0 || sky.sky_w_m2 > 0 {
         let sun_bands = tables().bands[5_778];
         let cos_z = (-sky.sun_dir[2]).max(0);
-        let sun_col = (Power(sky.sun_w_m2 * 10_000 * cos_z / ONE) * TICK).0;
-        let sky_col = (Power(sky.sky_w_m2 * 10_000) * TICK).0;
+        let sun_col = (Power(sky.sun_w_m2 * FACE_MM2 * cos_z / ONE) * TICK).0;
+        let sky_col = (Power(sky.sky_w_m2 * FACE_MM2) * TICK).0;
         // Skylight: bluer than the sun (the packets' average: 45 % infrared,
         // 15 % red, 17 % green, 23 % blue).
         let sky_split = { let r = sky_col * 15 / 100; let gr = sky_col * 17 / 100; let bl = sky_col * 23 / 100; [sky_col - r - gr - bl, r, gr, bl] };
@@ -613,7 +613,7 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
             for axis in 0..2 {
                 let toward = sky.sun_dir[axis];
                 if toward == 0 { continue }
-                let e_face = (Power(sky.sun_w_m2 * 10_000 * toward.abs() / ONE) * TICK).0;
+                let e_face = (Power(sky.sun_w_m2 * FACE_MM2 * toward.abs() / ONE) * TICK).0;
                 let e: [i64; 4] = core::array::from_fn(|b| Fraction(sun_bands[b]).of(e_face));
                 let edge = if toward > 0 { 0 } else { g.dims[axis] - 1 };
                 let other = 1 - axis;
