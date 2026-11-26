@@ -1,0 +1,19 @@
+[package]
+name = "fv-render"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Spike: a wgpu pixel-art renderer for fv-core views"
+
+[dependencies]
+# The simulation, without its thread pool, so this crate also builds for the web.
+fv-core = { path = "../fv-core", default-features = false }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12", "gles", "webgpu", "webgl", "std"] }
+bytemuck = { version = "1", features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4"
+
+[dev-dependencies]
+fv-core = { path = "../fv-core" }
+png = "0.17"
