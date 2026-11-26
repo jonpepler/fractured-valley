@@ -1,0 +1,8 @@
+error[E0308]: mismatched types
+ --> tests/refused/length_plus_time.rs:2:35
+  |
+2 | fn main() { let _ = metres(1.0) + seconds(1.0); }
+  |                                   ^^^^^^^^^^^^ expected `Quantity<Dim<PInt<...>, ..., ..., ...>>`, found `Quantity<Dim<Z0, Z0, PInt<...>, ...>>`
+  |
+  = note: expected struct `Quantity<Dim<typenum::int::PInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>>, typenum::int::Z0, typenum::int::Z0, typenum::int::Z0>>`
+             found struct `Quantity<Dim<typenum::int::Z0, typenum::int::Z0, typenum::int::PInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>>, typenum::int::Z0>>`

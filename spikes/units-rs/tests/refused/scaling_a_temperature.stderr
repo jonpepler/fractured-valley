@@ -1,0 +1,13 @@
+error[E0369]: cannot multiply `Temperature` by `{integer}`
+ --> tests/refused/scaling_a_temperature.rs:2:35
+  |
+2 | fn main() { let _ = celsius(20.0) * 2; }
+  |                     ------------- ^ - {integer}
+  |                     |
+  |                     Temperature
+  |
+note: `Temperature` does not implement `Mul<{integer}>`
+ --> src/lib.rs
+  |
+  | pub struct Temperature(TempDelta); // stored as kelvin above absolute zero
+  | ^^^^^^^^^^^^^^^^^^^^^^ `Temperature` is defined in another crate

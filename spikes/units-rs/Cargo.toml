@@ -1,0 +1,12 @@
+[package]
+name = "fv-units"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: dimension-checked fixed-point quantities for the simulation core"
+
+[dependencies]
+typenum = "1.17"
+
+[dev-dependencies]
+trybuild = "1"

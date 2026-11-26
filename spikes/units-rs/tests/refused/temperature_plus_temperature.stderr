@@ -1,0 +1,8 @@
+error[E0308]: mismatched types
+ --> tests/refused/temperature_plus_temperature.rs:2:37
+  |
+2 | fn main() { let _ = celsius(20.0) + celsius(30.0); }
+  |                                     ^^^^^^^^^^^^^ expected `Quantity<Dim<Z0, Z0, Z0, PInt<...>>>`, found `Temperature`
+  |
+  = note: expected struct `Quantity<Dim<typenum::int::Z0, typenum::int::Z0, typenum::int::Z0, typenum::int::PInt<typenum::uint::UInt<typenum::uint::UTerm, typenum::bit::B1>>>>`
+             found struct `Temperature`
