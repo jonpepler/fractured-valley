@@ -1,0 +1,12 @@
+// No `else`: return (or continue) early instead. One flat path per branch
+// keeps rules readable and stops if/else chains growing in simulation code.
+// Matches the else-clause node itself, so every shape is caught (a code
+// snippet pattern caught 3 of 25 — see tools/lint/selftest.mjs).
+`$clause` where {
+  $clause <: JsElseClause(),
+  register_diagnostic(
+    span = $clause,
+    message = "No else: return or continue early instead.",
+    severity = "error"
+  )
+}

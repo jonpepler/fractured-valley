@@ -6,6 +6,11 @@
   "scripts": {
     "dev": "pnpm --filter voxel-sandbox dev",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "lint": "biome lint",
+    "lint:selftest": "node tools/lint/selftest.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.9"
   }
 }

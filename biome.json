@@ -1,0 +1,38 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.9/schema.json",
+	"files": {
+		"includes": [
+			"spikes/voxel-sandbox/src/**",
+			"spikes/voxel-sandbox/test/**",
+			"spikes/voxel-sandbox/scripts/**",
+			"ci/**",
+			"tools/lint/fixtures/**"
+		]
+	},
+	"formatter": {
+		"enabled": false
+	},
+	"plugins": [
+		"./tools/lint/no-else.grit"
+	],
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"style": {
+				"noUselessElse": "error",
+				"noNestedTernary": "error",
+				"noMagicNumbers": "error",
+				"useBlockStatements": "off"
+			},
+			"complexity": {
+				"noExcessiveCognitiveComplexity": {
+					"level": "error",
+					"options": {
+						"maxAllowedComplexity": 10
+					}
+				}
+			}
+		}
+	}
+}
