@@ -51,6 +51,8 @@ pub fn natural_bonds(a: u8, b: u8) -> bool {
     (ground(a) && ground(b))
         || (wood(a) && wood(b))
         || (wood(a) && b == LEAVES) || (a == LEAVES && wood(b))
+        // A 10 cm cell of foliage holds its twigs: the crown hangs together.
+        || (a == LEAVES && b == LEAVES)
         || ((a == BRICK || a == MORTAR) && (b == BRICK || b == MORTAR) && (a == MORTAR || b == MORTAR || a == b))
         || (a == IRON && b == IRON)
 }
@@ -151,4 +153,54 @@ pub fn valley(seed: u64, n: usize, nz: usize, grass_moisture: i64) -> Valley {
     for z in ob - 1..ob + 2 { for y in ore.1..ore.1 + 3 { for x in ore.0..ore.0 + 3 { put(&mut w, x, y, z, ore_cell) } } }
     bond_all(&mut w, natural_bonds);
     Valley { world: w, ground, post, tree, crib, ore, wall }
+}
+
+/// A crib of dry logs over a bed of kindling, at the foot of a tree, on
+/// bonded rock and soil. `dead` dries the tree out (a drought-killed tree).
+/// Returns the world and where to hold a torch (kindling cells).
+pub fn crib_and_tree(seed: u64, n: usize, nz: usize, dead: bool) -> (World, Vec<[usize; 3]>) {
+    let mut w = World::new(n, n, nz, seed, celsius(18));
+    let subs = w.subs.clone();
+    let t = celsius(18);
+    let stone = Cell::solid_of(STONE, 1000, 2, t, &subs);
+    let soil = Cell::solid_of(SOIL, 1000, 150, t, &subs);
+    let grass = Cell::solid_of(GRASS, 1000, 600, t, &subs);
+    let g = 6;
+    for y in 0..n { for x in 0..n {
+        for z in 0..g { put(&mut w, x, y, z, if z < 3 { stone } else { soil }) }
+        put(&mut w, x, y, g, grass);
+    }}
+    let (tx, ty) = (n / 2, n / 2 + 3);
+    let wood_moist = if dead { 100 } else { 900 };
+    let leaf_moist = if dead { 80 } else { 1400 };
+    let trunk = Cell::solid_of(WOOD, 1000, wood_moist, t, &subs);
+    let leaves = Cell::solid_of(LEAVES, 1000, leaf_moist, t, &subs);
+    let top = (g + 26).min(nz - 6);
+    for z in g + 1..top { for dy in 0..2 { for dx in 0..2 { put(&mut w, tx + dx, ty + dy, z, trunk) } } }
+    let c = (tx as i64, ty as i64, (top + 1) as i64);
+    for z in (g + 12)..nz { for y in 0..n { for x in 0..n {
+        let (dx, dy, dz) = (x as i64 - c.0, y as i64 - c.1, (z as i64 - c.2) * 3 / 2);
+        let wobble = noise(seed ^ 9, x as i64 * 3 + z as i64, y as i64 * 3, 4) * 30 / 1000;
+        if dx * dx + dy * dy + dz * dz < 50 + wobble && w.get(x, y, z).substance == NONE && hash(seed, x as u64, y as u64, z as u64) % 5 != 0 { put(&mut w, x, y, z, leaves) }
+    }}}
+    for (bx, by) in [(1i64, 0i64), (-1, 1), (0, -1), (1, 1), (-1, -1)] {
+        for k in 1..6i64 { put(&mut w, (c.0 + bx * k) as usize, (c.1 + by * k) as usize, (c.2 - 5 + k / 2) as usize, trunk) }
+    }
+    // The crib: kindling below, 2×2 dry logs with 2-cell gaps in alternating layers.
+    let dry = Cell::solid_of(WOOD, 1000, 100, t, &subs);
+    let kindling = Cell::solid_of(KINDLING, 1000, 80, t, &subs);
+    let (cx, cy) = (tx - 4, ty - 8);
+    let mut torch = Vec::new();
+    for y in cy..cy + 8 { for x in cx..cx + 10 { put(&mut w, x, y, g + 1, kindling); if (x + y) % 3 == 0 { torch.push([x, y, g + 1]) } } }
+    for layer in 0..4 {
+        let z = g + 2 + layer * 2;
+        for k in 0..3 { for a in 0..10 { for t2 in 0..2 { for dz in 0..2 {
+            let (x, y) = if layer % 2 == 0 { (cx + a, cy + k * 3 + t2) } else { (cx + k * 4 + t2, cy + a.min(7)) };
+            put(&mut w, x, y, z + dz, dry);
+        }}}}
+        // Kindling in the gaps of each layer, as a fire is laid.
+        for y in cy..cy + 8 { for x in cx..cx + 10 { if w.get(x, y, z).substance == NONE && (x + y + layer) % 2 == 0 { put(&mut w, x, y, z, kindling) } } }
+    }
+    bond_all(&mut w, natural_bonds);
+    (w, torch)
 }

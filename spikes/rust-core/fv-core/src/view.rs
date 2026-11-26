@@ -52,6 +52,9 @@ pub struct View {
     /// Display colour per substance id (sRGB 0–255).
     pub colours: Vec<[u8; 3]>,
     pub tick: u64,
+    /// Cells riding falling pieces: where each cell's centre is (in cells,
+    /// so (x + 0.5, y + 0.5, z + 0.5) is the middle of grid cell x, y, z).
+    pub bodies: Vec<([f32; 3], ViewCell)>,
 }
 
 /// Keeps the smoothed light between frames (view only).
@@ -87,7 +90,17 @@ impl Viewer {
             }
             cells[o] = view_cell(c, &w.subs, self.light[o], self.glow[o]);
         }}}
-        View { nx: w.nx, ny: w.ny, nz: w.nz, cells, colours: w.subs.iter().map(|s| s.colour).collect(), tick: w.tick }
+        View { nx: w.nx, ny: w.ny, nz: w.nz, cells, colours: w.subs.iter().map(|s| s.colour).collect(), tick: w.tick, bodies: Vec::new() }
+    }
+
+    /// The same, with the pieces that are falling.
+    pub fn view_sim(&mut self, sim: &crate::sim::Sim) -> View {
+        let mut v = self.view(&sim.world, &sim.light);
+        for (pos, _rot, c) in sim.bodies.cells() {
+            let vc = view_cell(c, &sim.world.subs, [0.0; 3], [0.0; 3]);
+            v.bodies.push(([pos[0] * 10.0, pos[1] * 10.0, pos[2] * 10.0], vc));
+        }
+        v
     }
 }
 

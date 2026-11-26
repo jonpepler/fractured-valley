@@ -78,6 +78,7 @@ pub fn export(sim: &Sim) -> Vec<u8> {
         for m in c.gas { w.i64(m.0) }
         w.i64(c.energy.0);
         w.i64(c.solid_energy.0);
+        w.i64(c.skin.0);
         w.i64(c.nuclear.0);
     }
     w.0
@@ -122,6 +123,7 @@ pub fn import(bytes: &[u8]) -> Sim {
         for m in n.gas.iter_mut() { *m = Mass(r.i64()) }
         n.energy = Energy(r.i64());
         n.solid_energy = Energy(r.i64());
+        n.skin = Energy(r.i64());
         n.nuclear = Energy(r.i64());
         *c = n;
     }

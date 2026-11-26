@@ -54,7 +54,7 @@ fn at_night_a_fire_lights_only_what_is_near_it() {
 }
 
 #[test]
-fn a_wall_beside_a_fire_gets_hot_on_its_other_side() {
+fn a_wall_beside_a_fire_gets_hot_and_the_heat_soaks_in() {
     let mut w = ground(32, 32, 4);
     let subs = w.subs.clone();
     let stone = Cell::solid_of(STONE, 1000, 2, celsius(15), &subs);
@@ -66,13 +66,19 @@ fn a_wall_beside_a_fire_gets_hot_on_its_other_side() {
     campfire(&mut w, 17, 15, 4);
     let mut sim = Sim::new(w, Sky::NIGHT);
     for (x, y) in [(13, 15), (15, 16), (17, 15), (19, 16)] { light_torch(&mut sim, x, y, 4, 100) }
-    let outside = |s: &Sim| (14..20).map(|x| s.world.get(x, 14, 5).solid_temperature(&s.world.subs).celsius_f64()).fold(f64::MIN, f64::max);
-    let before = outside(&sim);
-    // Stone warms slowly (2 kJ/K in a 10 cm cell): two minutes of fire.
+    let hottest = |s: &Sim, f: &dyn Fn(&Cell) -> f64| (14..20).map(|x| f(s.world.get(x, 14, 5))).fold(f64::MIN, f64::max);
+    let subs = sim.world.subs.clone();
+    let face = |c: &Cell| c.surface_temperature(&subs).celsius_f64();
+    let core = |c: &Cell| c.solid_temperature(&subs).celsius_f64();
+    let (face0, core0) = (hottest(&sim, &face), hottest(&sim, &core));
+    // Two minutes of fire.
     for _ in 0..2400 { sim.step() }
     assert_eq!(sim.energy_gap(), 0);
-    let after = outside(&sim);
-    assert!(after > before + 2.0, "the wall's other side warmed from {before:.1} to {after:.1} °C");
+    let (face1, core1) = (hottest(&sim, &face), hottest(&sim, &core));
+    // Stone's face (its outer centimetre) heats within minutes; the heat
+    // soaks into the rest over tens of minutes (10 cm of stone: L²/α ≈ 40 min).
+    assert!(face1 > face0 + 15.0, "the wall's face warmed from {face0:.1} to {face1:.1} °C");
+    assert!(core1 > core0 + 0.3, "and heat soaked into it: {core0:.2} → {core1:.2} °C");
 }
 
 #[test]

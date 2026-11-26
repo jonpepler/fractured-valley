@@ -162,26 +162,49 @@ fn net_sigma(t: Temperature, ambient: Temperature) -> i64 {
     (tab.sigma_t4[k_index(t.0)] - tab.sigma_t4[k_index(ambient.0)]).max(0)
 }
 
-/// Thermal power radiated in excess of the surroundings, µW, as
-/// (from the solid, from the gas's soot).
-fn thermal_power(c: &Cell, subs: &[Substance], ambient: Temperature, faces: i64) -> (i64, i64) {
+/// How much of a band a material reflects or scatters (the rest it
+/// absorbs). Infrared follows the material's emissivity, so by Kirchhoff's
+/// law it emits exactly as well as it absorbs: matter that soaked up more
+/// heat radiation than it could give off would heat without limit.
+pub fn band_albedo(s: &Substance, band: usize) -> u64 {
+    if band == IR { return Fraction::ONE.0 - s.optics.emissivity.0 }
+    s.optics.albedo[band].0
+}
+
+/// Albedo of water drops: they scatter light almost entirely and absorb
+/// about 60 % of infrared.
+fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 * 2 / 5 } else { Fraction::ONE.0 * 99 / 100 } }
+
+/// One part of a cell that radiates: its area (faces of 0.01 m², Q16), its
+/// temperature, its albedo per band, and which store it draws from.
+struct Emitter { area_q16: i128, t: Temperature, albedo: [u64; 4], from_gas: bool }
+
+/// The radiating parts of a cell. A surface radiates from its exposed
+/// faces; airy matter radiates from 4κV (the same κ light is stopped by):
+/// blades (σ·share/4 per metre), soot (1 per metre per mg/L) and water drops
+/// (0.15 per metre per mg/L), none more than a black cube (six faces).
+fn emitters(c: &Cell, subs: &[Substance], faces: i64) -> Vec<Emitter> {
     let s = &subs[c.substance as usize];
-    let eps = s.optics.emissivity.0 as i128;
     let one = Fraction::ONE.0 as i128;
+    let solid_albedo = [0, 1, 2, 3].map(|b| band_albedo(s, b));
     if c.opaque(subs) {
-        // A surface: its exposed faces (each 0.01 m²) at the solid's temperature.
-        let net = net_sigma(c.solid_temperature(subs), ambient) as i128;
-        return ((net * faces as i128 * eps / one / 100) as i64, 0);
+        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false }];
     }
-    // Thin fuel radiates from its pieces' whole surface (σ·V, the same as
-    // 4κV with κ = σ·share/4); soot: 4κV, optically thin. Neither more than
-    // a black cube (six faces of 0.01 m²).
+    let cap = 6 * ONE as i128;
     let share = c.solid_share(subs).0 as i128;
-    let solid_faces_q16 = (s.surface_per_volume as i128 * share / one * ONE as i128 / 10).min(6 * ONE as i128);
-    let soot_faces_q16 = (c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / 25_000).min(6 * ONE as i128);
-    let solid = if c.has_solid() { net_sigma(c.solid_temperature(subs), ambient) as i128 * solid_faces_q16 * eps / one / ONE as i128 / 100 } else { 0 };
-    let soot = net_sigma(c.gas_temperature(), ambient) as i128 * soot_faces_q16 / ONE as i128 / 100;
-    (solid as i64, soot as i64)
+    let mut out = Vec::new();
+    if c.has_solid() {
+        // 4κV = σ·share·0.001 m³ = σ·share·0.1 faces.
+        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 / 10).min(cap), t: c.solid_temperature(subs), albedo: solid_albedo, from_gas: false });
+    }
+    let tg = c.gas_temperature();
+    // Soot: 4κV = 4 × (mg/L per m) × 0.001 m³ = 0.4 faces per mg = µg/2500.
+    let soot = c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / 2_500;
+    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true }) }
+    // Drops: 4 × 0.15 × mg × 0.001 m³ = 0.06 faces per mg = µg/16 667.
+    let drops = c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128 / 16_667;
+    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true }) }
+    out
 }
 
 /// A cell's emission this tick. Returns (energy the solid sends, energy the
@@ -205,29 +228,36 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
         push_split(out, pen, IONISING as u8, &mut stream, |s| (centre(x, y, z, s), isotropic(s)));
     }
     if faces == 0 { return (0, 0, glow, local_decay) }
-    let (p_solid, p_gas) = thermal_power(c, subs, w.ambient, faces);
-    let from_solid = send(w, x, y, z, opaque, (Power(p_solid) * TICK).0, c.solid_temperature(subs), &mut stream, &mut glow, out);
-    let from_gas = send(w, x, y, z, false, (Power(p_gas) * TICK).0, c.gas_temperature(), &mut stream, &mut glow, out);
+    let (mut from_solid, mut from_gas) = (0, 0);
+    for e in emitters(c, subs, faces) {
+        let net = net_sigma(e.t, w.ambient) as i128;
+        if net <= 0 { continue }
+        // Blackbody power over this area (µW): net µW/m² × faces × 0.01 m².
+        let power = (net * e.area_q16 / ONE as i128 / 100) as i64;
+        let energy = (Power(power) * TICK).0;
+        let from_face = opaque && !e.from_gas;
+        let sent = send(w, x, y, z, from_face, energy, e.t, e.albedo, &mut stream, &mut glow, out);
+        if e.from_gas { from_gas += sent } else { from_solid += sent }
+    }
     (from_solid, from_gas, glow, local_decay)
 }
 
-/// Turns `energy` of thermal emission at `t` into packets; returns how much
-/// was actually sent. The energy is split exactly between bands by Planck's
-/// law, and each band gets its own packet size: visible light is a tiny
+/// Turns `energy` of blackbody emission at `t` into packets, each band
+/// weighted by how well the emitter emits there (`1 − albedo`); returns how
+/// much was actually sent. Each band gets its own packet size: visible light is a tiny
 /// share of a fire's output but it is what lights a scene, so it travels as
 /// many small packets (millijoules) while infrared goes as fewer big ones.
 /// Small amounts go as one packet now and then (on average exactly their
 /// emission).
 #[allow(clippy::too_many_arguments)]
-fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, t: Temperature, stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
+fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, t: Temperature, albedo: [u64; 4], stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
     if energy <= 0 { return 0 }
     let shares = tables().bands[k_index(t.0)];
     let mut sent_total = 0;
-    let mut left_to_split = energy;
     for band in 0..4 {
-        // The last band takes what rounding left, so the split is exact.
-        let e_band = if band == 3 { left_to_split } else { Fraction(shares[band]).of(energy) };
-        left_to_split -= e_band;
+        // Each band: the blackbody share, times how well it emits there
+        // (1 − albedo, Kirchhoff).
+        let e_band = Fraction(Fraction(Fraction::ONE.0 - albedo[band]).of(Fraction(shares[band]).of(energy)) as u64).0 as i64;
         if e_band <= 0 { continue }
         let quantum = if band == IR { QUANTUM } else { VISIBLE_QUANTUM };
         let (count, size, sent) = if e_band >= quantum * MAX_PER_CELL {
@@ -250,11 +280,6 @@ fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, t
     sent_total
 }
 
-fn pick_band(bands: &[u64; 4], r: u64) -> usize {
-    let mut acc = 0u64;
-    for (b, share) in bands.iter().enumerate() { acc += share; if r < acc { return b } }
-    IR
-}
 
 fn centre(x: usize, y: usize, z: usize, s: &mut Stream) -> [i64; 3] {
     [x as i64 * ONE + s.below(ONE as u64) as i64, y as i64 * ONE + s.below(ONE as u64) as i64, z as i64 * ONE + s.below(ONE as u64) as i64]
@@ -314,9 +339,9 @@ fn volume_optics(c: &Cell, subs: &[Substance], band: usize, s: &mut Stream) -> (
     if total == 0 { return (0, Meets::Gas, 0) }
     // Which of them does it meet? In proportion to each one's attenuation.
     let r = s.below(total as u64) as i64;
-    if r < k_solid { return (total, Meets::Solid, sub.optics.albedo[band].0) }
+    if r < k_solid { return (total, Meets::Solid, band_albedo(sub, band)) }
     if r < k_solid + k_soot { return (total, Meets::Gas, 0) }
-    (total, Meets::Gas, if band == IR { Fraction::ONE.0 * 2 / 5 } else { Fraction::ONE.0 * 99 / 100 })
+    (total, Meets::Gas, drop_albedo(band))
 }
 
 fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
@@ -366,7 +391,7 @@ fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
             if n.opaque(subs) {
                 let sub = &subs[n.substance as usize];
                 if (1..=3).contains(&(p.band as usize)) { dep.light[j][p.band as usize - 1].fetch_add(p.energy, Relaxed); }
-                if p.bounces < MAX_BOUNCES && p.stream.chance(sub.optics.albedo[p.band as usize].0) {
+                if p.bounces < MAX_BOUNCES && p.stream.chance(band_albedo(sub, p.band as usize)) {
                     p.bounces += 1;
                     p.dir = lambert(&mut p.stream, exit_axis, -step);
                     p.pos[exit_axis] = if step > 0 { next[exit_axis] * ONE - 1 } else { next[exit_axis] * ONE + ONE };
@@ -425,6 +450,26 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
     total
 }
 
+/// Direct sunlight entering through a side face of the box (an open-air
+/// cell on the sunward edge): W/m² × 0.01 m² × the sun's angle to that face.
+fn side_sun(w: &World, sky: &Sky, x: usize, y: usize, z: usize, axis: usize, out: &mut Vec<Packet>) -> i64 {
+    if sky.sun_w_m2 == 0 { return 0 }
+    let mut stream = Stream(hash(w.seed, w.tick, w.idx(x, y, z) as u64, 0x5ce + axis as u64));
+    let cos = sky.sun_dir[axis].abs();
+    let e_total = (Power(sky.sun_w_m2 * 10_000 * cos / ONE) * TICK).0;
+    let mut pos = [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, z as i64 * ONE + stream.below(ONE as u64) as i64];
+    pos[axis] = if sky.sun_dir[axis] > 0 { 1 } else { [w.nx, w.ny][axis] as i64 * ONE - 2 };
+    let bands = tables().bands[5_778];
+    let mut total = 0;
+    for (b, share) in bands.iter().enumerate() {
+        let e = Fraction(*share).of(e_total);
+        if e <= 0 { continue }
+        out.push(Packet { pos, dir: sky.sun_dir, energy: e, band: b as u8, bounces: 0, stream: Stream(stream.next()) });
+        total += e;
+    }
+    total
+}
+
 /// One tick of radiation: emit, travel, absorb, and record the light.
 pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
     let n = w.cells.len();
@@ -447,6 +492,14 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
                 dh[l] = local;
                 glow[l] = g;
                 if z == wr.nz - 1 { *skyin += sky_packets(wr, sky, x, y, list) }
+                // Low sun also crosses the box's sunward sides through open air.
+                if !wr.cells[i].opaque(&wr.subs) {
+                    for axis in 0..2 {
+                        let toward = sky.sun_dir[axis];
+                        let at_edge = [x, y][axis] == if toward > 0 { 0 } else { [wr.nx, wr.ny][axis] - 1 };
+                        if toward != 0 && at_edge { *skyin += side_sun(wr, sky, x, y, z, axis, list) }
+                    }
+                }
             }
         };
         #[cfg(feature = "parallel")]
@@ -495,7 +548,10 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
                 let decayed = ((c.nuclear.0 as u128 * s.decay_per_tick as u128) >> 64) as i64;
                 c.nuclear -= Energy(decayed);
             }
-            c.solid_energy += Energy(to_solid[i] - emitted[i][0] + decay_heat[i]);
+            // Surfaces (opaque cells' outer layer, or airy cells' solid) take
+            // what arrived and give what they sent; decay heat stays inside.
+            *c.surface_store(&wr.subs) += Energy(to_solid[i] - emitted[i][0]);
+            if c.has_solid() { c.solid_energy += Energy(decay_heat[i]) } else { c.energy += Energy(decay_heat[i]) }
             c.energy += Energy(to_gas[i] - emitted[i][1]);
             out[l] = c;
         }

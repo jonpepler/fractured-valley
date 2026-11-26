@@ -127,7 +127,7 @@ fn apply(w: &mut World, books: &mut Books, c: Command) {
             if x < w.nx && y < w.ny && z < w.nz {
                 let subs = w.subs.clone();
                 let c = w.get_mut(x, y, z);
-                if c.has_solid() { c.solid_energy += energy } else { c.energy += energy }
+                *c.surface_store(&subs) += energy;
                 let _ = subs;
                 books.commands += energy.0 as i128;
             }

@@ -18,6 +18,10 @@ pub const VOLATILE: usize = 0;
 pub const CHAR: usize = 1;
 pub const MINERAL: usize = 2;
 
+/// An opaque cell's surface layer, per mille of its solid (its outer
+/// centimetre: about how deep heat reaches into wood in a few minutes).
+pub const SKIN_PERMILLE: i64 = 100;
+
 /// Which of this cell's + faces are bonded to the neighbour there.
 pub const BOND_X: u8 = 1;
 pub const BOND_Y: u8 = 2;
@@ -39,8 +43,13 @@ pub struct Cell {
     /// held by its vapour (so condensing vapour warms the gas without
     /// changing this number).
     pub energy: Energy,
-    /// The solid's (and its water's) thermal energy above absolute zero.
+    /// The solid's (and its water's) thermal energy above absolute zero. For
+    /// an opaque cell this is its core, below the surface layer.
     pub solid_energy: Energy,
+    /// An opaque cell's surface layer (its outer centimetre): what sunlight,
+    /// flames and air touch. Wood is an insulator, so a log's surface can
+    /// char and glow while its core stays cool. Zero for airy cells.
+    pub skin: Energy,
     /// Radioactive decay energy still to come.
     pub nuclear: Energy,
 }
@@ -67,14 +76,31 @@ impl Cell {
     /// The latent heat held by the vapour.
     pub fn latent(&self) -> Energy { self.gas[Gas::Vapour as usize] * LATENT_HEAT_VAPOUR }
 
+    /// Heat capacity of an opaque cell's surface layer (a tenth of its solid).
+    pub fn skin_capacity(&self, subs: &[Substance]) -> HeatCapacity {
+        if !self.opaque(subs) { return HeatCapacity::ZERO }
+        HeatCapacity(self.solid_capacity(subs).0 * SKIN_PERMILLE / 1000)
+    }
+
+    /// Heat capacity of the solid below the surface layer.
+    pub fn core_capacity(&self, subs: &[Substance]) -> HeatCapacity { self.solid_capacity(subs) - self.skin_capacity(subs) }
+
+    /// The temperature of an opaque cell's surface (its solid's, for airy cells).
+    pub fn surface_temperature(&self, subs: &[Substance]) -> Temperature {
+        let c = self.skin_capacity(subs);
+        if c.0 <= 0 { return self.solid_temperature(subs) }
+        self.skin / c
+    }
+
     pub fn gas_temperature(&self) -> Temperature {
         let c = self.gas_capacity();
         if c.0 <= 0 { return Temperature(0) }
         (self.energy - self.latent()) / c
     }
 
+    /// The solid's temperature (an opaque cell's core).
     pub fn solid_temperature(&self, subs: &[Substance]) -> Temperature {
-        let c = self.solid_capacity(subs);
+        let c = self.core_capacity(subs);
         if c.0 <= 0 { return self.gas_temperature() }
         self.solid_energy / c
     }
@@ -82,11 +108,21 @@ impl Cell {
     /// The temperature that matters to the outside: an opaque cell's
     /// surface is its solid; an airy cell is mostly its gas.
     pub fn temperature(&self, subs: &[Substance]) -> Temperature {
-        if self.opaque(subs) || self.gas_capacity().0 == 0 { self.solid_temperature(subs) } else { self.gas_temperature() }
+        if self.opaque(subs) { return self.surface_temperature(subs) }
+        if self.gas_capacity().0 == 0 { return self.solid_temperature(subs) }
+        self.gas_temperature()
     }
 
-    /// All thermal energy (gas and solid).
-    pub fn thermal(&self) -> Energy { self.energy + self.solid_energy }
+    /// All thermal energy (gas, solid core and surface).
+    pub fn thermal(&self) -> Energy { self.energy + self.solid_energy + self.skin }
+
+    /// The store that surface heat goes into: an opaque cell's surface layer,
+    /// an airy cell's solid if it has one, else its gas.
+    pub fn surface_store(&mut self, subs: &[Substance]) -> &mut Energy {
+        if self.opaque(subs) { return &mut self.skin }
+        if self.has_solid() { return &mut self.solid_energy }
+        &mut self.energy
+    }
 
     /// Chemical energy stored here: what burning everything burnable would release.
     pub fn chemical(&self, subs: &[Substance]) -> Energy {
@@ -149,7 +185,8 @@ impl Cell {
     /// Set both energies from one temperature.
     pub fn set_temperature(&mut self, t: Temperature, subs: &[Substance]) {
         self.energy = self.gas_capacity() * t + self.latent();
-        self.solid_energy = self.solid_capacity(subs) * t;
+        self.skin = self.skin_capacity(subs) * t;
+        self.solid_energy = self.core_capacity(subs) * t;
     }
 
     /// A cell of open air at the given temperature.

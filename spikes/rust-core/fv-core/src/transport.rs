@@ -31,6 +31,8 @@ pub struct Side {
     /// The temperature heat is conducted from: the solid of an opaque cell,
     /// the gas of an airy one.
     pub t_cond: Temperature,
+    /// An opaque cell's surface temperature (what the air film touches).
+    pub t_skin: Temperature,
     pub gas_ml: i64,
     pub permeable: bool,
     /// Conductance of half the cell (centre to face).
@@ -58,13 +60,14 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
     let share = c.solid_share(subs);
     let k = share.of(s.conductivity) + AIR_CONDUCTIVITY - share.of(AIR_CONDUCTIVITY);
     let t = c.gas_temperature();
-    let t_cond = c.temperature(subs);
+    let t_cond = if c.permeable(subs) { t } else { c.solid_temperature(subs) };
+    let t_skin = c.surface_temperature(subs);
     let gas_ml = c.gas_volume_ml(subs);
     let fresh: i64 = FRESH_AIR.iter().map(|m| m.0).sum();
     // What fits at this temperature (ideal gas at constant pressure).
     let fits = if t.0 > 0 { (fresh as i128 * gas_ml as i128 * ambient.0 as i128 / (CELL_VOLUME_ML as i128 * t.0 as i128)) as i64 } else { i64::MAX };
     Side {
-        t, t_cond, gas_ml, permeable: c.permeable(subs),
+        t, t_cond, t_skin, gas_ml, permeable: c.permeable(subs),
         // k [mW/(m·K)] × 0.01 m² / 0.05 m = 0.2·k mW/K = 200·k µW/K
         half: Conductance(k * 200),
         excess: Mass((c.gas_mass().0 - fits).max(0)),
@@ -94,6 +97,9 @@ pub struct Flux {
     pub energy: Energy,
     /// Heat carried by the moving gas itself (gas store on both sides).
     pub carried: Energy,
+    /// Whether this face is an opaque surface against air (its conducted
+    /// heat goes to and from the surface layer).
+    pub film: bool,
     pub gas: [Mass; GASES],
 }
 
@@ -111,11 +117,16 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64) -> Flu
     // Conduction: two half-cells in series; a solid meeting air goes through the film.
     let (ga, gb) = (a.half.0.max(1) as i128, b.half.0.max(1) as i128);
     let mut g = ga * gb / (ga + gb);
+    let (mut ta, mut tb) = (a.t_cond, b.t_cond);
     if a.permeable != b.permeable {
+        // A surface meeting air: through the film, from the surface layer.
         let solid = if a.permeable { gb } else { ga };
         g = solid * FILM.0 as i128 / (solid + FILM.0 as i128);
+        f.film = true;
+        if !a.permeable { ta = a.t_skin }
+        if !b.permeable { tb = b.t_skin }
     }
-    f.energy = (Conductance(g as i64) * (a.t_cond - b.t_cond)) * TICK;
+    f.energy = (Conductance(g as i64) * (ta - tb)) * TICK;
 
     // Mixing: each side sends a share of its gas, by concentration. Eddies
     // come from the wind and from heat itself: hot gas churns at about
@@ -162,7 +173,8 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64) -> Flu
 /// to the solid of an opaque cell, the gas of an airy one.
 #[inline]
 pub fn apply(out: &mut Cell, me: &Side, f: &Flux, sign: i64) {
-    if me.permeable { out.energy += Energy(f.energy.0 * sign) } else { out.solid_energy += Energy(f.energy.0 * sign) }
+    let e = Energy(f.energy.0 * sign);
+    if me.permeable { out.energy += e } else if f.film { out.skin += e } else { out.solid_energy += e }
     out.energy += Energy(f.carried.0 * sign);
     for k in 0..GASES { out.gas[k] += Mass(f.gas[k].0 * sign) }
 }

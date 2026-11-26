@@ -68,20 +68,22 @@ fn fresh_o2(ml: i64) -> i64 { FRESH_AIR[Gas::Oxygen as usize].0 * ml / CELL_VOLU
 /// Moves the sensible heat of `m` (specific heat `sh`, at `t`) from the
 /// solid store to the gas store, as that matter leaves the solid.
 #[inline]
-fn solid_to_gas(c: &mut Cell, m: Mass, sh: SpecificHeat, t: Temperature) {
+fn solid_to_gas(c: &mut Cell, subs: &[Substance], m: Mass, sh: SpecificHeat, t: Temperature) {
     let e = (m * sh) * t;
-    c.solid_energy -= e;
+    *c.surface_store(subs) -= e;
     c.energy += e;
 }
 
-/// Water leaves the solid as vapour: its sensible heat and its latent heat
-/// both come out of the solid's store and go into the gas's.
-fn evaporate(c: &mut Cell, dm: Mass, ts: Temperature) {
+/// Water leaves the solid as vapour at the surface's temperature: the
+/// vapour's sensible heat (as steam) and its latent heat come out of the
+/// solid's store and go into the gas's. The water's own extra heat capacity
+/// stays with the solid.
+fn evaporate(c: &mut Cell, subs: &[Substance], dm: Mass, ts: Temperature) {
     if dm.0 <= 0 { return }
-    let e = (dm * WATER_SPECIFIC_HEAT) * ts + dm * LATENT_HEAT_VAPOUR;
+    let e = (dm * GAS_SPECIFIC_HEAT[Gas::Vapour as usize]) * ts + dm * LATENT_HEAT_VAPOUR;
     c.water -= dm;
     c.gas[Gas::Vapour as usize] += dm;
-    c.solid_energy -= e;
+    *c.surface_store(subs) -= e;
     c.energy += e;
 }
 
@@ -95,18 +97,35 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
     // Dense matter has its pores' walls, so its gas follows the solid at
     // once; a tuft of grass in a flame warms over a second or two.
     if c.has_solid() && c.gas_capacity().0 > 0 {
-        let (cs, cg) = (c.solid_capacity(subs), c.gas_capacity());
+        // Pore gas trades with the core (an opaque cell's skin is its outer face).
+        let (cs, cg) = (c.core_capacity(subs), c.gas_capacity());
         let (ts, tg) = (c.solid_temperature(subs), c.gas_temperature());
         // G = h·A with h in mW/(m²·K) and A in mm²: product is 10⁻⁹ W/K = 10⁻³ µW/K.
         let h = (SURFACE_H_PER_SIGMA * s.surface_per_volume) as i128;
         let g = h * c.inner_surface_mm2(subs) as i128 / 1_000;
         let mut q = (Conductance(g as i64) * (tg - ts)) * TICK;
         // Never past the shared temperature: at most what equalises them.
+        // Worked out from the gas side: the shared temperature is rounded to
+        // a millikelvin, and that rounding must land in the big store.
         let shared = (c.energy - c.latent() + c.solid_energy) / (cs + cg);
-        let limit = cs * (shared - ts);
+        let limit = (c.energy - c.latent()) - cg * shared;
         if q.0.abs() > limit.0.abs() || !c.permeable(subs) { q = limit }
         c.solid_energy += q;
         c.energy -= q;
+    }
+    // ── an opaque cell's surface layer and core trade heat ───────────────
+    // Through the solid's own conductivity, across half a cell: in wood
+    // (0.15 W/(m·K)) a hot surface warms the core over many minutes.
+    if c.opaque(subs) && c.skin_capacity(subs).0 > 0 {
+        let g = Conductance(s.conductivity * 200); // k × 0.01 m² / 0.05 m
+        let (tk, tc) = (c.surface_temperature(subs), c.solid_temperature(subs));
+        let mut q = (g * (tk - tc)) * TICK;
+        let (ck, cc) = (c.skin_capacity(subs), c.core_capacity(subs));
+        let shared = (c.skin + c.solid_energy) / (ck + cc);
+        let limit = c.skin - ck * shared; // from the smaller (surface) side
+        if q.0.abs() > limit.0.abs() { q = limit }
+        c.solid_energy += q;
+        c.skin -= q;
     }
     if ml <= 0 { return c }
 
@@ -114,15 +133,17 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
     // Water leaving the solid takes its latent heat from the solid: above
     // boiling, the excess heat boils water off until the solid is back at
     // 100 °C (the plateau that keeps wet things from burning).
-    let ts = c.solid_temperature(subs);
+    // Water leaves from the surface: an opaque cell's surface layer.
+    let surface_cap = |c: &Cell| if c.opaque(subs) { c.skin_capacity(subs) } else { c.solid_capacity(subs) };
+    let ts = c.surface_temperature(subs);
     if c.water.0 > 0 && ts > BOIL {
-        let excess = c.solid_capacity(subs) * (ts - BOIL);
+        let excess = surface_cap(&c) * (ts - BOIL);
         // Each µg boiled takes its latent heat, plus its own sensible heat at 100 °C.
         let per_ug = LATENT_HEAT_VAPOUR.0 + (Mass(1) * WATER_SPECIFIC_HEAT * BOIL).0;
         let dm = Mass((excess.0 / per_ug.max(1)).min(c.water.0));
-        evaporate(&mut c, dm, ts);
+        evaporate(&mut c, subs, dm, ts);
     }
-    let ts = c.solid_temperature(subs);
+    let ts = c.surface_temperature(subs);
     // Below boiling, water evaporates while the vapour the wet surface holds
     // (at the surface's own temperature) is more than the air around it
     // already has; faster for fine fuel (more surface).
@@ -131,7 +152,7 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
         let room = sat - c.gas[vap].0;
         let speed = s.surface_per_volume.min(FINE_SIGMA).max(1);
         let dm = Mass((room as i128 * speed as i128 / (FINE_SIGMA as i128 * 4)) as i64).min(c.water);
-        evaporate(&mut c, dm, ts);
+        evaporate(&mut c, subs, dm, ts);
     }
     // Vapour beyond what the air holds condenses into drops (mist, white
     // smoke); drops in unsaturated air evaporate. Both stay in the gas.
@@ -146,7 +167,8 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
         c.gas[drops] -= dm;
         c.gas[vap] += dm;
     }
-    let ts = c.solid_temperature(subs);
+    // Burning happens at the surface: an opaque cell's outer layer.
+    let ts = c.surface_temperature(subs);
     let ks = k_index(ts.0);
 
     // ── pyrolysis: hot organic matter gives off burnable gas ─────────────
@@ -167,12 +189,12 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
         };
         let dm = t.pyrolysis[ks].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)));
         if dm.0 > 0 {
-            solid_to_gas(&mut c, dm, s.specific_heat, ts);
+            solid_to_gas(&mut c, subs, dm, s.specific_heat, ts);
             c.solid[VOLATILE] -= dm;
             c.gas[Gas::Fuel as usize] += dm;
             // The gas holds more chemical energy than the solid it came
-            // from: the difference is heat taken from the solid.
-            c.solid_energy -= dm * GAS_CHEMICAL[Gas::Fuel as usize] - dm * s.volatile_chemical;
+            // from: the difference is heat taken from the surface.
+            *c.surface_store(subs) -= dm * GAS_CHEMICAL[Gas::Fuel as usize] - dm * s.volatile_chemical;
         }
     }
 
@@ -193,11 +215,11 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
         let dm = want.min(c.gas[o2].0 * O2_PER_CARBON_DEN / O2_PER_CARBON_NUM);
         if dm > 0 {
             let ox = dm * O2_PER_CARBON_NUM / O2_PER_CARBON_DEN;
-            solid_to_gas(&mut c, Mass(dm), CHAR_SPECIFIC_HEAT, ts);
+            solid_to_gas(&mut c, subs, Mass(dm), CHAR_SPECIFIC_HEAT, ts);
             c.solid[CHAR] -= Mass(dm);
             c.gas[o2] -= Mass(ox);
             c.gas[Gas::CarbonDioxide as usize] += Mass(dm + ox);
-            c.solid_energy += Mass(dm) * CHAR_CHEMICAL;
+            *c.surface_store(subs) += Mass(dm) * CHAR_CHEMICAL;
         }
     }
 
@@ -217,7 +239,7 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
         // Gas coming off a hot surface ignites at that surface (a flame
         // anchored to the fuel), so the reaction runs at the hotter of the gas
         // and the solid it's leaving.
-        let anchored = if c.has_solid() { tg.max(c.solid_temperature(subs)) } else { tg };
+        let anchored = if c.has_solid() { tg.max(c.surface_temperature(subs)) } else { tg };
         let kinetic = t.gas_burn[k_index(anchored.0)].of_mass(c.gas[fuel]).0;
         let mixed = if tg.0 + rise.0 >= CRITICAL_FLAME.0 { MIXING.of_mass(Mass(could)).0 } else { 0 };
         let want = kinetic.max(mixed);
@@ -248,7 +270,7 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
             let area = c.inner_surface_mm2(subs);
             let share = Fraction((FEEDBACK_MAX.0 as i128 * area as i128 / (area as i128 + FEEDBACK_HALF_MM2)) as u64);
             let to_solid = if c.has_solid() { share.of_energy(heat) } else { Energy::ZERO };
-            c.solid_energy += to_solid;
+            *c.surface_store(subs) += to_solid;
             c.energy += heat - to_solid;
         }
     }

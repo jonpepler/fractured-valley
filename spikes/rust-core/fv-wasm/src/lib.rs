@@ -73,17 +73,18 @@ pub fn checked(w: &World, b: usize) -> bool { fv_core::rng::hash(w.seed, w.tick,
 // ---------------------------------------------------------------------------
 
 /// The wire format of a peer's share of one phase. Little-endian:
-/// `"FVB1"`, tick (u64), count (u32), then per brick: brick index (u32),
+/// `"FVB2"`, tick (u64), count (u32), then per brick: brick index (u32),
 /// its tally (energy in, each gas in, radiation in, radiation out: i64s),
-/// then its 512 cells (substance u8, bonds u8, then 14 i64s).
+/// then its 512 cells (substance u8, bonds u8, then 15 i64s: solid, water,
+/// gases, gas energy, core, surface, nuclear).
 pub mod wire {
     use super::*;
     use fv_core::substance::GASES;
 
-    const MAGIC: &[u8; 4] = b"FVB1";
+    const MAGIC: &[u8; 4] = b"FVB2";
 
     pub fn encode(tick: u64, parts: &[BrickResult]) -> Vec<u8> {
-        let mut o = Vec::with_capacity(16 + parts.len() * (4 + 8 * (3 + GASES) + BRICK_CELLS * (2 + 8 * (7 + GASES))));
+        let mut o = Vec::with_capacity(16 + parts.len() * (4 + 8 * (3 + GASES) + BRICK_CELLS * (2 + 8 * (8 + GASES))));
         o.extend_from_slice(MAGIC);
         o.extend_from_slice(&tick.to_le_bytes());
         o.extend_from_slice(&(parts.len() as u32).to_le_bytes());
@@ -103,6 +104,7 @@ pub mod wire {
                 for m in c.gas { i(&mut o, m.0) }
                 i(&mut o, c.energy.0);
                 i(&mut o, c.solid_energy.0);
+                i(&mut o, c.skin.0);
                 i(&mut o, c.nuclear.0);
             }
         }
@@ -133,6 +135,7 @@ pub mod wire {
                 for m in c.gas.iter_mut() { *m = Mass(r.i64()?) }
                 c.energy = Energy(r.i64()?);
                 c.solid_energy = Energy(r.i64()?);
+                c.skin = Energy(r.i64()?);
                 c.nuclear = Energy(r.i64()?);
                 cells.push(c);
             }

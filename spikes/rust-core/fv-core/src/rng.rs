@@ -43,6 +43,7 @@ impl Hasher {
         for m in c.gas { self.u64(m.0 as u64) }
         self.u64(c.energy.0 as u64);
         self.u64(c.solid_energy.0 as u64);
+        self.u64(c.skin.0 as u64);
         self.u64(c.nuclear.0 as u64);
     }
     pub fn finish(&self) -> u64 { mix(self.0) }

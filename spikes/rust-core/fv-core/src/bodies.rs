@@ -201,6 +201,7 @@ impl Bodies {
             for g in 0..c.gas.len() { c.gas[g] += there.gas[g] }
             c.energy += there.energy;
             c.solid_energy += there.solid_energy;
+            c.skin += there.skin;
             c.bonds = 0;
             w.set(q[0], q[1], q[2], c);
         }
