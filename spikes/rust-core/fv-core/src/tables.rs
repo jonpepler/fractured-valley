@@ -36,14 +36,30 @@ pub struct Tables {
     /// Planck shares of emission in [infrared, red, green, blue] (blue
     /// includes everything shorter), out of 2³², per kelvin.
     pub bands: Vec<[u64; 4]>,
-    /// The same split for soot, which is not grey: small carbon particles
-    /// absorb, and so emit, more strongly at shorter wavelengths, ε ∝ λ^−α
-    /// with α = 0.83 ± 0.08 measured from 0.51 to 5.2 µm (Köylü & Faeth
-    /// 1996; Siddall & McGrath 1963 found 0.93 for candle soot in the
-    /// infrared). That tips a flame's light toward the visible: at 1 400 K
-    /// about 0.08 % is visible instead of a grey body's 0.025 %. Only the
-    /// split changes; how much a flame or a sooty gas emits in total is set
-    /// elsewhere.
+    /// Soot's absorption coefficient in the infrared band (λ > 700 nm), Q16
+    /// per metre per mg/L of soot, per kelvin of the light's source: the
+    /// band mean of κ_λ = C·c·λ^−α weighted by Planck's spectrum at that
+    /// temperature (see [`SOOT_ALPHA`], [`SOOT_C`]). Infrared spans a
+    /// factor of hundreds in wavelength, over which κ_λ changes several
+    /// times, so its mean depends on whose light it is: a cool wall's
+    /// infrared lies further out, where soot absorbs less.
+    pub soot_kappa_ir: Vec<i64>,
+    /// Soot's absorption coefficient in red (600–700 nm), green (500–600)
+    /// and blue (400–500), Q16 per metre per mg/L: plain means of κ_λ over
+    /// each band. They are narrow, so the light's spectrum barely shifts
+    /// them (a 1 400 K source's Planck weighting lowers them 2–5 %).
+    pub soot_kappa_vis: [i64; 3],
+    /// What a sooty volume emits in each band [IR, R, G, B], out of 2³² of
+    /// 4·κ_ref·V·σT⁴ (κ_ref = 1 per metre per mg/L), per kelvin: the band's
+    /// κ times its Planck share, so emission is 4V∫κ_λB_λ dλ by the very κ
+    /// that absorbs (Kirchhoff). The row sums to the Planck-mean κ_P(T)/κ_ref:
+    /// one at 1 400 K, rising as T^0.83.
+    pub soot_emission: Vec<[u64; 4]>,
+    /// The same, normalised: how soot's emission splits between bands, out
+    /// of 2³² (each row sums to exactly 2³²). Soot is not grey: small carbon
+    /// particles absorb, and so emit, more strongly at shorter wavelengths,
+    /// which tips a flame's light toward the visible (at 1 400 K ~0.09 %
+    /// visible against a grey body's 0.025 %).
     pub soot_bands: Vec<[u64; 4]>,
     /// Rothermel's effective heating number ε = exp(−138/σ) (σ in 1/ft),
     /// per mille, by σ in 1/m: the share of a fine fuel that must reach
@@ -81,25 +97,76 @@ fn planck_below(lambda_t_um_k: f64) -> f64 {
     (15.0 / libm::pow(core::f64::consts::PI, 4.0) * sum).clamp(0.0, 1.0)
 }
 
-/// Soot's spectral emissivity exponent α (ε ∝ λ^−α), Köylü & Faeth (1996).
-const SOOT_ALPHA: f64 = 0.83;
+/// Soot's spectral exponent α: κ_λ ∝ λ^−α, measured 0.83 ± 0.08 from 0.51
+/// to 5.2 µm for overfire soot of many fuels (Köylü & Faeth 1996, J. Heat
+/// Transfer 118:415; Siddall & McGrath 1963 found 0.93 for candle soot in
+/// the infrared). Rayleigh absorption by particles far smaller than λ with a
+/// constant refractive index would give α = 1 (Modest, *Radiative Heat
+/// Transfer*, on soot); carbon's index drifts with λ, which lowers it.
+pub const SOOT_ALPHA: f64 = 0.83;
 
-/// Share of soot's emission at wavelengths below λ, by x = c₂/(λT), for
-/// ε ∝ λ^−α: emission per dx goes as x^(3+α)/(eˣ − 1), the same for every
-/// temperature, so it is integrated once (Simpson's rule, step 1/1000) and
-/// looked up. Returns the cumulative integral from each x up, normalised.
-fn soot_above_x() -> (Vec<f64>, f64) {
+/// Soot's mass-specific spectral absorption, κ_λ = C·c·λ^−α with c in mg/L
+/// (= g/m³) and λ in µm, giving per metre. C is fixed so the Planck mean at
+/// 1 400 K (`chem::FLAME_GLOW`, the temperature flame soot glows at) is the
+/// grey 1 per metre per mg/L the engine used before:
+///
+///   κ_P/c = C·⟨λ^−α⟩ = C·(T/c₂)^α·Γ(4+α)ζ(4+α)/Γ(4)ζ(4) = 0.4325·C = 1,
+///   so C = 2.312.
+///
+/// The grey value was itself a Planck mean: for κ_λ = C₀f_v/λ Modest
+/// (*Radiative Heat Transfer*) gives κ_P = 3.72·C₀·f_v·T/c₂, and with
+/// Dalzell & Sarofim's (1969) refractive index m = 1.57 − 0.56i
+/// (C₀ = 36πnk/((n² − k² + 2)² + 4n²k²) = 4.9) and soot's density 1.8 g/cm³
+/// (f_v = 5.6×10⁻⁷ per mg/L) that is 0.98 per metre per mg/L at 1 400 K.
+/// The same C gives 3.8 m²/g at 550 nm, against 4.9 from Dalzell–Sarofim
+/// (C₀/(ρλ)) and 7.5 ± 1.2 in Bond & Bergstrom's (2006) review of measured
+/// black carbon: within soot's spread, on the low side.
+pub const SOOT_C: f64 = 2.312;
+
+/// Second radiation constant, µm·K.
+const C2: f64 = 14_387.77;
+
+/// ∫ₓ^∞ tᵖ/(eᵗ − 1) dt for x on a grid of step 1/1000 up to 80 (e^−80 is far
+/// below anything that matters), by Simpson's rule: the Planck integrals in
+/// x = c₂/(λT), the same for every temperature, so they're done once.
+fn above_x(p: f64) -> Vec<f64> {
     let h = 0.001;
-    let n = 80_000; // x up to 80: e^−80 is far below anything that matters
-    let f = |x: f64| if x <= 0.0 { 0.0 } else { libm::pow(x, 3.0 + SOOT_ALPHA) / libm::expm1(x) };
-    // Integral over each step [i·h, (i+1)·h], then summed from the top.
+    let n = 80_000;
+    let f = |x: f64| if x <= 0.0 { 0.0 } else { libm::pow(x, p) / libm::expm1(x) };
     let mut above = vec![0.0; n + 1];
     for i in (0..n).rev() {
         let (a, b) = (i as f64 * h, (i + 1) as f64 * h);
         above[i] = above[i + 1] + (b - a) / 6.0 * (f(a) + 4.0 * f((a + b) / 2.0) + f(b));
     }
-    let total = above[0];
-    (above.into_iter().map(|v| v / total).collect(), h)
+    above
+}
+
+/// Linear interpolation in an [`above_x`] table.
+fn at_x(above: &[f64], x: f64) -> f64 {
+    let at = x / 0.001;
+    let i = at.floor() as usize;
+    if i + 1 >= above.len() { return 0.0 }
+    let f = at - i as f64;
+    above[i] + (above[i + 1] - above[i]) * f
+}
+
+/// Mean of λ^−α over [lo, hi] µm.
+fn mean_power(lo: f64, hi: f64) -> f64 {
+    (libm::pow(hi, 1.0 - SOOT_ALPHA) - libm::pow(lo, 1.0 - SOOT_ALPHA)) / ((1.0 - SOOT_ALPHA) * (hi - lo))
+}
+
+/// The visible bands' edges, µm: [red, green, blue].
+const VISIBLE_UM: [(f64, f64); 3] = [(0.6, 0.7), (0.5, 0.6), (0.4, 0.5)];
+
+/// Soot's κ in the infrared at source temperature t (per metre per mg/L):
+/// C·⟨λ^−α⟩ over λ > 700 nm, weighted by B_λ(t). With λ = c₂/(xt),
+/// λ^−α B_λ dλ ∝ (t/c₂)^α x^(3+α)/(eˣ − 1) dx.
+fn kappa_ir(t: f64, grey: &[f64], soot: &[f64]) -> f64 {
+    let t = t.max(1.0);
+    let x700 = C2 / (0.7 * t);
+    let num = soot[0] - at_x(soot, x700);
+    let den = grey[0] - at_x(grey, x700);
+    SOOT_C * libm::pow(t / C2, SOOT_ALPHA) * if den > 0.0 { num / den } else { 0.0 }
 }
 
 fn build() -> Tables {
@@ -112,7 +179,7 @@ fn build() -> Tables {
         (p * 18.015 / (R_GAS * (c + 273.15)) * 1000.0).round() as i64
     }).collect();
     let sigma_t4 = (0..=MAX_K).map(|k| (SIGMA * libm::pow(k as f64, 4.0) * 1e6).round() as i64).collect();
-    let bands = (0..=MAX_K).map(|k| {
+    let bands: Vec<[u64; 4]> = (0..=MAX_K).map(|k| {
         if k < 300 { return [Fraction::ONE.0, 0, 0, 0] }
         let t = k as f64;
         let below = |nm: f64| planck_below(nm / 1000.0 * t);
@@ -123,26 +190,27 @@ fn build() -> Tables {
         let blue = (b500 * one) as u64;
         [Fraction::ONE.0 - red - green - blue, red, green, blue]
     }).collect();
-    let (above, h) = soot_above_x();
-    let soot_below = |nm: f64, t: f64| {
-        let x = 14_387.77 / (nm / 1000.0 * t);
-        let at = x / h;
-        let i = at.floor() as usize;
-        if i + 1 >= above.len() { return 0.0 }
-        let f = at - i as f64;
-        above[i] + (above[i + 1] - above[i]) * f
-    };
-    let soot_bands = (0..=MAX_K).map(|k| {
-        if k < 300 { return [Fraction::ONE.0, 0, 0, 0] }
-        let t = k as f64;
-        let (b700, b600, b500) = (soot_below(700.0, t), soot_below(600.0, t), soot_below(500.0, t));
-        let one = Fraction::ONE.0 as f64;
-        let red = ((b700 - b600) * one) as u64;
-        let green = ((b600 - b500) * one) as u64;
-        let blue = (b500 * one) as u64;
-        [Fraction::ONE.0 - red - green - blue, red, green, blue]
+    let (grey_above, soot_above) = (above_x(3.0), above_x(3.0 + SOOT_ALPHA));
+    let q16 = |v: f64| (v * 65_536.0).round() as i64;
+    let soot_kappa_vis = VISIBLE_UM.map(|(lo, hi)| q16(SOOT_C * mean_power(lo, hi)));
+    let soot_kappa_ir: Vec<i64> = (0..=MAX_K).map(|k| q16(kappa_ir(k as f64, &grey_above, &soot_above))).collect();
+    // Emission per band from the same (rounded) κ that absorbs it.
+    let soot_emission: Vec<[u64; 4]> = (0..=MAX_K).map(|k| {
+        let s: &[u64; 4] = &bands[k];
+        let kappa = [soot_kappa_ir[k], soot_kappa_vis[0], soot_kappa_vis[1], soot_kappa_vis[2]];
+        core::array::from_fn(|b| (s[b] as u128 * kappa[b] as u128 >> 16) as u64)
+    }).collect();
+    let soot_bands = soot_emission.iter().map(|e| {
+        let total: u128 = e.iter().map(|&v| v as u128).sum();
+        if total == 0 { return [Fraction::ONE.0, 0, 0, 0] }
+        let part = |v: u64| (v as u128 * Fraction::ONE.0 as u128 / total) as u64;
+        let (r, g, b) = (part(e[1]), part(e[2]), part(e[3]));
+        [Fraction::ONE.0 - r - g - b, r, g, b]
     }).collect();
     Tables {
+        soot_kappa_ir,
+        soot_kappa_vis,
+        soot_emission,
         soot_bands,
         pyrolysis: arrhenius(1.0e10, 140_000.0),
         char_burn: arrhenius(2.0e5, 100_000.0),

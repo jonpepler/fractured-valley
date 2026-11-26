@@ -12,9 +12,10 @@
 //! - **hot matter** radiates its excess over the surroundings
 //!   (εσ(T⁴ − T_ambient⁴)), split between bands by Planck's law: a warm wall
 //!   gives almost only infrared, a fire's soot glows red to yellow, the sun
-//!   is white. Soot is not grey (ε ∝ λ^−0.83), so its split leans further
-//!   toward the visible than a grey body's. Brightness is energy the source
-//!   gives up;
+//!   is white. Soot is not grey: it absorbs as κ_λ ∝ λ^−0.83, and by
+//!   Kirchhoff's law emits by the same κ_λ, so its light leans further
+//!   toward the visible than a grey body's, and smoke stops visible light
+//!   more readily than heat. Brightness is energy the source gives up;
 //! - **radioactive matter** turns decay energy into heat where it is, and its
 //!   penetrating share into ionising packets that pass through air and are
 //!   stopped by dense matter;
@@ -80,6 +81,9 @@ struct Packet {
     energy: i64,
     band: u8,
     bounces: u8,
+    /// Temperature of the spectrum it was emitted with, in kelvin: soot's
+    /// infrared κ depends on where in the infrared the light lies.
+    kelvin: u16,
     stream: Stream,
 }
 
@@ -235,7 +239,36 @@ pub(crate) fn water_tau(c: &Cell, band: usize, z0: i64, dz: i64, len: i64) -> i6
 impl Emitter {
     /// How its emission splits between bands: soot's own spectrum, or grey.
     pub fn shares(&self) -> [u64; 4] { if self.soot { soot_shares(self.t) } else { grey_shares(self.t) } }
+    /// What it sends this tick (µJ) before its albedo: σ(T⁴ − T_ambient⁴)
+    /// over its area, and for soot times κ_P(T)/κ_ref, its Planck-mean κ
+    /// against the 1 per metre per mg/L its area is counted in, so the sum
+    /// over bands is 4V∫κ_λB_λ dλ (scaled to the excess over ambient).
+    pub fn energy(&self, ambient: Temperature) -> i64 {
+        let net = net_sigma(self.t, ambient) as i128;
+        if net <= 0 { return 0 }
+        // Blackbody power over this area (µW): net µW/m² × faces × face area.
+        let mut power = net * self.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000;
+        if self.soot { power = power * soot_planck_mean(self.t) as i128 >> 32 }
+        (Power(power as i64) * TICK).0.min(self.most)
+    }
 }
+
+/// Soot's Planck-mean κ at `t` against κ_ref = 1 per metre per mg/L, out of 2³².
+pub(crate) fn soot_planck_mean(t: Temperature) -> u64 { tables().soot_emission[k_index(t.0)].iter().sum() }
+
+/// Soot's κ in band `band` for light from a source at `kelvin`, Q16 per
+/// metre per µg of soot per mL (= mg/L). See [`crate::tables::SOOT_C`].
+#[inline]
+pub(crate) fn soot_kappa(band: usize, kelvin: usize) -> i64 {
+    let t = tables();
+    if band == IR { t.soot_kappa_ir[kelvin.min(crate::tables::MAX_K)] } else { t.soot_kappa_vis[band - 1] }
+}
+
+/// Kelvin of a temperature, as packets carry it.
+#[inline]
+fn kelvin(t: Temperature) -> u16 { k_index(t.0) as u16 }
+/// The sun's surface, for sunlight and skylight.
+const SUN_K: u16 = 5_778;
 
 /// Planck's split between bands for a grey body at `t`.
 pub(crate) fn grey_shares(t: Temperature) -> [u64; 4] { tables().bands[k_index(t.0)] }
@@ -244,7 +277,9 @@ pub(crate) fn soot_shares(t: Temperature) -> [u64; 4] { tables().soot_bands[k_in
 
 /// The radiating parts of a cell. A surface radiates from its exposed
 /// faces; airy matter radiates from 4κV (the same κ light is stopped by):
-/// blades (σ·share/4 per metre), soot (1 per metre per mg/L) and water drops
+/// blades (σ·share/4 per metre), soot (counted at κ_ref = 1 per metre per
+/// mg/L, its Planck mean at 1 400 K; [`Emitter::energy`] scales it to its
+/// own temperature) and water drops
 /// (0.15 per metre per mg/L), none more than a black cube (six faces).
 pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temperature) -> Vec<Emitter> {
     let s = &subs[c.substance as usize];
@@ -303,20 +338,17 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
     if faces == 0 { return (0, 0, glow, local_decay) }
     let (mut from_solid, mut from_gas) = (0, 0);
     for e in emitters(c, subs, faces, w.ambient) {
-        let net = net_sigma(e.t, w.ambient) as i128;
-        if net <= 0 { continue }
-        // Blackbody power over this area (µW): net µW/m² × faces × face area.
-        let power = (net * e.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000) as i64;
-        let energy = (Power(power) * TICK).0.min(e.most);
+        let energy = e.energy(w.ambient);
+        if energy <= 0 { continue }
         let start = if e.water_top { Start::WaterTop(c.water_depth_q16()) } else if opaque && !e.from_gas { Start::Face } else { Start::Volume };
-        let sent = send(w, x, y, z, start, energy, e.most, e.shares(), e.albedo, &mut stream, &mut glow, out);
+        let sent = send(w, x, y, z, start, energy, e.most, e.shares(), e.albedo, kelvin(e.t), &mut stream, &mut glow, out);
         if e.from_gas { from_gas += sent } else { from_solid += sent }
     }
     // A flame's own light, set from the heat it released (see chem).
     if c.flame.0 > 0 {
         // At most the gas's heat, less what its soot and drops already sent.
         let flame = c.flame.0.min(((c.energy - c.latent()).0 - from_gas).max(0));
-        from_gas += send(w, x, y, z, Start::Volume, flame, (c.energy - c.latent()).0.max(0) / 2, soot_shares(crate::chem::FLAME_GLOW), [0; 4], &mut stream, &mut glow, out);
+        from_gas += send(w, x, y, z, Start::Volume, flame, (c.energy - c.latent()).0.max(0) / 2, soot_shares(crate::chem::FLAME_GLOW), [0; 4], kelvin(crate::chem::FLAME_GLOW), &mut stream, &mut glow, out);
     }
     (from_solid, from_gas, glow, local_decay)
 }
@@ -344,7 +376,7 @@ enum Start {
 /// sends one packet by chance (fair on average); it only takes that chance
 /// when the store can afford the whole packet, so a nearly empty store can't
 /// go negative.
-fn send(w: &World, x: usize, y: usize, z: usize, start: Start, energy: i64, budget: i64, shares: [u64; 4], albedo: [u64; 4], stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
+fn send(w: &World, x: usize, y: usize, z: usize, start: Start, energy: i64, budget: i64, shares: [u64; 4], albedo: [u64; 4], kelvin: u16, stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
     if energy <= 0 { return 0 }
     let mut sent_total = 0;
     for band in 0..4 {
@@ -376,7 +408,7 @@ fn send(w: &World, x: usize, y: usize, z: usize, start: Start, energy: i64, budg
                     (pos, lambert(stream, 2, 1))
                 }
             };
-            out.push(Packet { pos, dir, energy: e, band: band as u8, bounces: 0, stream: Stream(stream.next()) });
+            out.push(Packet { pos, dir, energy: e, band: band as u8, bounces: 0, kelvin, stream: Stream(stream.next()) });
         }
         sent_total += sent;
     }
@@ -414,7 +446,7 @@ fn push_split(out: &mut Vec<Packet>, energy: i64, band: u8, s: &mut Stream, mut 
         let e = if n == count - 1 { left } else { energy / count };
         left -= e;
         let (pos, dir) = f(s);
-        out.push(Packet { pos, dir, energy: e, band, bounces: 0, stream: Stream(s.next()) });
+        out.push(Packet { pos, dir, energy: e, band, bounces: 0, kelvin: 0, stream: Stream(s.next()) });
     }
 }
 
@@ -426,7 +458,8 @@ enum Meets { Solid, Gas }
 
 /// What a cell does to a band as light passes through it: attenuation per
 /// metre (Q16), and if it interacts, what it met and the albedo of that.
-fn volume_optics(c: &Cell, subs: &[Substance], band: usize, s: &mut Stream) -> (i64, Meets, u64) {
+/// `kelvin`: the temperature of the light's source (soot's infrared κ).
+fn volume_optics(c: &Cell, subs: &[Substance], band: usize, kelvin: usize, s: &mut Stream) -> (i64, Meets, u64) {
     let sub = &subs[c.substance as usize];
     if band == IONISING {
         // Mass attenuation: κ = μ·ρ. (per-mille cm²/g) × (mg per L) → per metre.
@@ -436,7 +469,8 @@ fn volume_optics(c: &Cell, subs: &[Substance], band: usize, s: &mut Stream) -> (
     }
     let share = c.solid_share(subs).0 as i64;
     let k_solid = sub.surface_per_volume * share / Fraction::ONE.0 as i64 * ONE / 4;
-    let k_soot = c.gas[Gas::Soot as usize].0 * ONE / CELL_VOLUME_ML; // κ = 1 per metre per mg/L
+    let soot = c.gas[Gas::Soot as usize].0;
+    let k_soot = if soot == 0 { 0 } else { soot * soot_kappa(band, kelvin) / CELL_VOLUME_ML };
     let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / (100 * CELL_VOLUME_ML); // 0.15 per metre per mg/L
     let total = k_solid + k_soot + k_drop;
     if total == 0 { return (0, Meets::Gas, 0) }
@@ -466,7 +500,7 @@ fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
         }
         let t_exit = t_exit.max(1);
         // Does it interact inside this cell?
-        let (k, mut meets, mut albedo) = volume_optics(c, subs, p.band as usize, &mut p.stream);
+        let (k, mut meets, mut albedo) = volume_optics(c, subs, p.band as usize, p.kelvin as usize, &mut p.stream);
         // Open water lying in the cell's bottom: only the path below its surface.
         let tau_water = if c.open_water() && (p.band as usize) < 4 {
             water_tau(c, p.band as usize, p.pos[2] - cell[2] * ONE, p.dir[2] * t_exit / ONE, t_exit)
@@ -548,7 +582,7 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
     for (b, share) in bands.iter().enumerate() {
         let e = Fraction(*share).of(sun_mj);
         if e <= 0 { continue }
-        out.push(Packet { pos, dir: sky.sun_dir, energy: e, band: b as u8, bounces: 0, stream: Stream(stream.next()) });
+        out.push(Packet { pos, dir: sky.sun_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
         total += e;
     }
     // Skylight: bluer, from a random direction across the sky.
@@ -557,7 +591,7 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
         let r = stream.below(100);
         let band = if r < 45 { IR } else if r < 60 { RED } else if r < 77 { GREEN } else { BLUE };
         let d = lambert(&mut stream, 2, -1);
-        out.push(Packet { pos, dir: d, energy: sky_mj, band: band as u8, bounces: 0, stream: Stream(stream.next()) });
+        out.push(Packet { pos, dir: d, energy: sky_mj, band: band as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
         total += sky_mj;
     }
     total
@@ -577,7 +611,7 @@ fn side_sun(w: &World, sky: &Sky, x: usize, y: usize, z: usize, axis: usize, out
     for (b, share) in bands.iter().enumerate() {
         let e = Fraction(*share).of(e_total);
         if e <= 0 { continue }
-        out.push(Packet { pos, dir: sky.sun_dir, energy: e, band: b as u8, bounces: 0, stream: Stream(stream.next()) });
+        out.push(Packet { pos, dir: sky.sun_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
         total += e;
     }
     total

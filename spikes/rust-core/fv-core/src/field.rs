@@ -11,7 +11,13 @@
 //!
 //! - **absorbed** by the same κ as the packets meet: blades (σ·share/4),
 //!   soot and water drops (ionising: mass attenuation μρ). What is caught is
-//!   split between them in proportion to their κ;
+//!   split between them in proportion to their κ. Soot's κ differs by band
+//!   (κ_λ ∝ λ^−0.83). Its infrared κ depends on the spectrum of the light,
+//!   which a field does not carry, so it is taken at the absorbing cell's own
+//!   temperature, as FDS evaluates κ at the local temperature: exact where
+//!   light and cell are at one temperature (equilibrium, Kirchhoff), and in
+//!   a fire, where most of the infrared a hot cell meets comes from hot gas
+//!   like itself;
 //! - **emitted** by Kirchhoff's law, exactly as much as the packets carry on
 //!   average (the same [`emitters`](crate::rad) and flame light), but split
 //!   exactly over the directions, with no noise;
@@ -43,7 +49,7 @@
 //! shadows cast by firelight are soft and a lone hot spot throws faint
 //! spokes. Sunlight avoids both by being marched as rays.
 
-use crate::rad::{absorb_table, band_albedo, drop_albedo, emitters, exposed, net_sigma, settle, Light, Sky, IONISING, IR, ONE};
+use crate::rad::{absorb_table, band_albedo, drop_albedo, emitters, exposed, settle, soot_kappa, Light, Sky, IONISING, IR, ONE};
 use crate::substance::*;
 use crate::tables::tables;
 use crate::units::*;
@@ -246,12 +252,14 @@ impl Grid {
             idx[l] = i as u32;
             let c = &w.cells[i];
             opaque[l] = c.opaque(&w.subs);
-            let k = kappas(c, &w.subs);
             // Open water, spread through the cell's height: the same optical
             // depth straight down as the layer it is (the packets follow the
             // layer itself; here a sideways path through the cell sees it too).
             let depth = c.water_depth_q16() as i128;
-            for b in 0..4 { kappa[b][l] = k.0 + k.1 + k.2 + (crate::rad::water_kappa(b) as i128 * depth / ONE as i128) as i64 }
+            for b in 0..4 {
+                let k = kappas(c, &w.subs, b);
+                kappa[b][l] = k.0 + k.1 + k.2 + (crate::rad::water_kappa(b) as i128 * depth / ONE as i128) as i64;
+            }
             kappa[IONISING][l] = ionising_kappa(c, &w.subs);
         }}}
         Grid { dims: [nx, ny, nz], strides: [1, nx, nx * ny], idx, opaque, kappa }
@@ -270,12 +278,14 @@ impl Grid {
     }
 }
 
-/// κ of blades, soot and drops (Q16 per metre), as the packets meet them.
-fn kappas(c: &crate::cell::Cell, subs: &[Substance]) -> (i64, i64, i64) {
+/// κ of blades, soot and drops (Q16 per metre) in `band`, as the packets
+/// meet them; soot's infrared κ at the cell's own temperature.
+fn kappas(c: &crate::cell::Cell, subs: &[Substance], band: usize) -> (i64, i64, i64) {
     let sub = &subs[c.substance as usize];
     let share = c.solid_share(subs).0 as i64;
     let k_solid = sub.surface_per_volume * share / Fraction::ONE.0 as i64 * ONE / 4;
-    let k_soot = c.gas[Gas::Soot as usize].0 * ONE / CELL_VOLUME_ML;
+    let soot = c.gas[Gas::Soot as usize].0;
+    let k_soot = if soot == 0 { 0 } else { soot * soot_kappa(band, crate::tables::k_index(c.gas_temperature().0)) / CELL_VOLUME_ML };
     let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / (100 * CELL_VOLUME_ML);
     (k_solid, k_soot, k_drop)
 }
@@ -310,8 +320,8 @@ fn extent(g: &Grid, src: &Sources, bits: u8) -> Option<Extent> {
     any.then_some(Extent { lo, hi })
 }
 
-/// One sweep in direction k of N bands that meet the same κ (infrared and
-/// the three colours together; ionising alone). Returns what left the box.
+/// One sweep in direction k of N bands together (infrared and the three
+/// colours; ionising alone), each meeting its own κ. Returns what left the box.
 ///
 /// Light only travels downstream, so the sweep covers just the part of the
 /// box downstream of the sources' extent: exactly the same result as
@@ -326,7 +336,7 @@ fn sweep<const N: usize>(g: &Grid, k: usize, bands: [usize; N], src: &Sources, e
     let st = g.strides;
     let na = axes.len() as i64;
     let mut escaped = 0i64;
-    let kap = &g.kappa[bands[0]];
+    let kap: [&Vec<i64>; N] = bands.map(|b| &g.kappa[b]);
     let bits = bands.iter().fold(0u8, |m, &b| m | 1 << b);
     // The swept range on each axis, inclusive, and the cell it starts from
     // (which has no upstream neighbour inside the range).
@@ -371,19 +381,20 @@ fn sweep<const N: usize>(g: &Grid, k: usize, bands: [usize; N], src: &Sources, e
                     continue;
                 }
                 let mut rest = [0i64; N];
-                if kap[l] > 0 {
-                    // Light arriving crosses the whole cell; light made in it, half.
-                    let (full, half) = (Fraction(caught_fraction(kap[l], len)), Fraction(caught_fraction(kap[l], len / 2)));
-                    let mut caught_any = false;
-                    for j in 0..N {
-                        let absorbed = full.of(inflow[j]) + half.of(s[j]);
-                        if absorbed > 0 { caught.vol[bands[j]][l].fetch_add(absorbed, Relaxed); caught_any = true }
-                        rest[j] = inflow[j] + s[j] - absorbed;
-                    }
-                    if caught_any { caught.any[l].store(true, Relaxed) }
-                } else {
-                    for j in 0..N { rest[j] = inflow[j] + s[j] }
+                let mut caught_any = false;
+                // Light arriving crosses the whole cell; light made in it, half.
+                // Bands share the lookup while their κ is the same (no soot).
+                let mut at = (-1i64, Fraction(0), Fraction(0));
+                for j in 0..N {
+                    let k = kap[j][l];
+                    rest[j] = inflow[j] + s[j];
+                    if k <= 0 || rest[j] == 0 { continue }
+                    if k != at.0 { at = (k, Fraction(caught_fraction(k, len)), Fraction(caught_fraction(k, len / 2))) }
+                    let absorbed = at.1.of(inflow[j]) + at.2.of(s[j]);
+                    if absorbed > 0 { caught.vol[bands[j]][l].fetch_add(absorbed, Relaxed); caught_any = true }
+                    rest[j] -= absorbed;
                 }
+                if caught_any { caught.any[l].store(true, Relaxed) }
                 let each: [i64; N] = core::array::from_fn(|j| rest[j] / na);
                 let mut left = rest;
                 for (m, &a) in axes.iter().enumerate() {
@@ -486,10 +497,8 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize) -> Option<Emission> {
     if faces == 0 { return (out.vol[IONISING] != 0 || out.decay_heat != 0).then_some(out) }
     let mut bands = [0i64; 4]; // what goes as volume or face emission, per band
     for e in emitters(c, subs, faces, w.ambient) {
-        let net = net_sigma(e.t, w.ambient) as i128;
-        if net <= 0 { continue }
-        let power = (net * e.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000) as i64;
-        let energy = (Power(power) * TICK).0.min(e.most);
+        let energy = e.energy(w.ambient);
+        if energy <= 0 { continue }
         let sent = bands_of(energy, e.shares(), e.albedo);
         let total: i64 = sent.iter().sum();
         if e.from_gas { out.from_gas += total } else { out.from_solid += total }
@@ -650,7 +659,7 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
     for pass in 0..PASSES {
         // Infrared bounces once (surfaces reflect little of it); light, BOUNCES times.
         let last_for = |b: usize| pass + 1 >= if b == IR { 2 } else { PASSES };
-        // Infrared and the colours meet the same κ, so they sweep together.
+        // Infrared and the colours sweep together, each by its own κ.
         const LIGHT: [usize; 4] = [IR, 1, 2, 3];
         let light_ext = extent(&g, src, 0b1111);
         let ion_ext = extent(&g, src, 1 << IONISING);
@@ -696,7 +705,7 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
                         if c.has_solid() { to_solid[i] += v } else { to_gas[i] += v }
                     } else {
                         if b != IR { light.incident[i][b - 1] += v }
-                        let (ks, kso, kd) = kappas(c, &w.subs);
+                        let (ks, kso, kd) = kappas(c, &w.subs, b);
                         let total = (ks + kso + kd).max(1) as i128;
                         let vs = (v as i128 * ks as i128 / total) as i64;
                         let vso = (v as i128 * kso as i128 / total) as i64;

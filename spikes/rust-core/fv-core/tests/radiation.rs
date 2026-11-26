@@ -164,14 +164,106 @@ fn a_bigger_fire_burns_hotter_and_brighter() {
 #[test]
 fn soot_glows_more_in_the_visible_than_a_grey_body() {
     // A grey body at 1 400 K gives ~0.025 % of its emission as visible light;
-    // soot (ε ∝ λ^−0.83) ~0.084 %, by direct integration of Planck's law.
+    // soot (κ_λ ∝ λ^−0.83) ~0.084 % by direct integration of κ_λB_λ. The
+    // engine uses each visible band's plain-mean κ (the one packets are
+    // absorbed by), which is 2–5 % above the Planck-weighted one at 1 400 K:
+    // 0.086 %.
     let t = fv_core::tables::tables();
     let one = fv_core::units::Fraction::ONE.0 as f64;
     let visible = |b: [u64; 4]| (b[1] + b[2] + b[3]) as f64 / one;
     let (grey, soot) = (visible(t.bands[1_400]), visible(t.soot_bands[1_400]));
     eprintln!("visible at 1400 K: grey {grey:.6}, soot {soot:.6}");
     assert!((grey - 0.000254).abs() < 0.00001, "grey {grey}");
-    assert!((soot - 0.000839).abs() < 0.00002, "soot {soot}");
+    assert!((soot - 0.000856).abs() < 0.00001, "soot {soot}");
     // Every row still adds up to all of it.
     for k in [300, 1_000, 1_400, 3_000, 5_778] { assert_eq!(t.soot_bands[k].iter().sum::<u64>(), fv_core::units::Fraction::ONE.0) }
+    // One κ_λ behind it, fixed by the grey 1 per metre per mg/L the engine
+    // used before as soot's Planck mean at 1 400 K, rising as T^0.83.
+    let planck_mean = |k: usize| t.soot_emission[k].iter().sum::<u64>() as f64 / one;
+    eprintln!("soot κ_P: {:.4} at 1400 K, {:.4} at 700 K, {:.4} at 2000 K", planck_mean(1_400), planck_mean(700), planck_mean(2_000));
+    assert!((planck_mean(1_400) - 1.0).abs() < 0.002);
+    assert!((planck_mean(700) / planck_mean(1_400) - 0.5f64.powf(0.83)).abs() < 0.01);
+    // Smoke stops visible light more readily than heat: 3.3–4.5 per metre
+    // per mg/L in red to blue.
+    let q16 = 65_536.0;
+    let vis = t.soot_kappa_vis.map(|k| k as f64 / q16);
+    eprintln!("soot κ red/green/blue {vis:.3?}, infrared from a 1400 K source {:.3}", t.soot_kappa_ir[1_400] as f64 / q16);
+    assert!(vis[0] > 3.2 && vis[0] < vis[1] && vis[1] < vis[2] && vis[2] < 4.6);
+}
+
+/// A sealed 8-cell stone box, walls and air all at `t` (well above ambient),
+/// its air holding `soot_ug_per_ml` (= mg/L) of soot.
+fn sooty_oven(t: Temperature, soot_ug_per_ml: i64) -> World {
+    let mut w = World::new(8, 8, 8, 5, celsius(15));
+    let subs = w.subs.clone();
+    let stone = Cell::solid_of(STONE, 1000, 0, t, &subs);
+    let mut air = Cell::air(t, &subs);
+    air.gas[Gas::Soot as usize] = Mass(soot_ug_per_ml * CELL_VOLUME_ML);
+    air.set_temperature(t, &subs);
+    for z in 0..8 { for y in 0..8 { for x in 0..8 {
+        let wall = [x, y, z].iter().any(|&v| v == 0 || v == 7);
+        w.set(x, y, z, if wall { stone } else { air });
+    }}}
+    w
+}
+
+/// Kirchhoff in a closed box: matter at one temperature, lit only by itself,
+/// neither gains nor loses heat. It must hold band by band, or soot would
+/// pump energy between infrared and light. Soot absorbs as κ_λ ∝ λ^−0.83,
+/// and so must emit by the same κ_λ: if it emitted by that spectrum but
+/// absorbed grey, it would glow ~3× more visible light than it soaks up.
+/// Returns each band's net gain to the soot as a share of what it emitted.
+fn soot_band_balance(mode: fv_core::rad::Radiation, runs: u64) -> [f64; 4] {
+    use fv_core::rad::{radiate_by, Light};
+    let t = Temperature(1_500_000);
+    let base = sooty_oven(t, 1);
+    let interior = |x: usize, y: usize, z: usize| [x, y, z].iter().all(|&v| v != 0 && v != 7);
+    let (mut gas_gain, mut vis_in, mut vis_out) = (0i128, [0i128; 3], [0i128; 3]);
+    for run in 0..runs {
+        let mut w = base.clone();
+        w.tick = run;
+        let mut light = Light::new(w.cells.len());
+        let before: Vec<Cell> = w.cells.clone();
+        radiate_by(mode, &mut w, &Sky::NIGHT, &mut light);
+        assert_eq!(w.first_impossible(), None);
+        // Books: what every cell lost is what left the box (nothing comes in).
+        let lost: i128 = before.iter().zip(&w.cells).map(|(a, b)| (a.thermal() - b.thermal()).0 as i128).sum();
+        let out: i128 = w.tallies.iter().map(|t| (t.radiation_out - t.radiation_in) as i128).sum();
+        assert_eq!(lost, out, "every microjoule booked");
+        for z in 0..8 { for y in 0..8 { for x in 0..8 {
+            if !interior(x, y, z) { continue }
+            let i = w.idx(x, y, z);
+            gas_gain += (w.cells[i].energy - before[i].energy).0 as i128;
+            for b in 0..3 { vis_in[b] += light.incident[i][b] as i128; vis_out[b] += light.glow[i][b] as i128 }
+        }}}
+    }
+    // The soot's infrared: what its air gained, less the visible part. As
+    // the scale to judge it by, its emission at the old grey κ (1 per metre
+    // per mg/L, 4κV = 0.004 m² per mg): σ(T⁴ − T_amb⁴) × area × tick.
+    let tab = fv_core::tables::tables();
+    let net = (tab.sigma_t4[1_500] - tab.sigma_t4[288]) as f64 * 1e-6;
+    let soot_mg = (216 * CELL_VOLUME_ML) as f64 / 1_000.0;
+    let ir_scale = net * 0.004 * soot_mg * 0.05 * 1e6 * runs as f64; // µJ
+    let vis_gain: i128 = (0..3).map(|b| vis_in[b] - vis_out[b]).sum();
+    let ir = (gas_gain - vis_gain) as f64 / ir_scale;
+    let rel = |b: usize| (vis_in[b] - vis_out[b]) as f64 / vis_out[b].max(1) as f64;
+    eprintln!("{mode:?}: net gain / emitted — IR {ir:+.4}, red {:+.4}, green {:+.4}, blue {:+.4} (visible emitted {vis_out:?} µJ)", rel(0), rel(1), rel(2));
+    [ir, rel(0), rel(1), rel(2)]
+}
+
+#[test]
+fn soot_in_a_closed_box_at_one_temperature_neither_gains_nor_loses_in_any_band() {
+    use fv_core::rad::Radiation;
+    // Packets: Monte Carlo, so the balance holds on average; 24 ticks of
+    // ~10⁴ packets each put the noise well under the bounds.
+    let p = soot_band_balance(Radiation::Packets, 24);
+    for (b, (gain, bound)) in p.iter().zip([0.02, 0.03, 0.03, 0.06]).enumerate() {
+        assert!(gain.abs() < bound, "packets, band {b}: soot gains {gain:+.4} of what it emits");
+    }
+    // The field: no noise, but its fixed directions and truncated bounces
+    // leave a small bias.
+    let f = soot_band_balance(Radiation::Field, 1);
+    for (b, gain) in f.iter().enumerate() {
+        assert!(gain.abs() < 0.05, "field, band {b}: soot gains {gain:+.4} of what it emits");
+    }
 }
