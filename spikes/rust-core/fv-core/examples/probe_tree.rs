@@ -15,7 +15,7 @@ fn main() {
         sim.step();
         if std::env::var("CATCH").is_ok() {
             let w = &sim.world;
-            if let Some(i) = (0..w.cells.len()).find(|&i| w.cells[i].gas_mass().0 > 20_000_000 || w.first_impossible().is_some() && w.cells[i].gas.iter().any(|m| m.0 < 0) || w.cells[i].skin.0 < 0 || w.cells[i].energy.0 < 0 || w.cells[i].solid_energy.0 < 0) {
+            if let Some(i) = (0..w.cells.len()).find(|&i| w.cells[i].gas_mass().0 > 20_000_000 || w.cells[i].gas.iter().any(|m| m.0 < 0) || w.cells[i].skin.0 < 0 || w.cells[i].energy.0 < 0 || w.cells[i].solid_energy.0 < 0) {
                 let (c, b) = (&w.cells[i], &before[i]);
                 println!("tick {tick}: pieces {} landed? cell {i} sub {} gasT {:.0}C E {} -> {} gas mass {} -> {} skin {} -> {} | before gasT {:.0}C", sim.bodies.pieces.len(), c.substance, c.gas_temperature().celsius_f64(), b.energy.0, c.energy.0, b.gas_mass().0, c.gas_mass().0, b.skin.0, c.skin.0, b.gas_temperature().celsius_f64());
                 println!("  gas now {:?}\n  gas before {:?}", c.gas.map(|m| m.0), b.gas.map(|m| m.0));

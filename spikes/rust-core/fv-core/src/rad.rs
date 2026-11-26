@@ -270,13 +270,13 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
         let power = (net * e.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000) as i64;
         let energy = (Power(power) * TICK).0.min(e.most);
         let from_face = opaque && !e.from_gas;
-        let sent = send(w, x, y, z, from_face, energy, e.t, e.albedo, &mut stream, &mut glow, out);
+        let sent = send(w, x, y, z, from_face, energy, e.most, e.t, e.albedo, &mut stream, &mut glow, out);
         if e.from_gas { from_gas += sent } else { from_solid += sent }
     }
     // A flame's own light, set from the heat it released (see chem).
     if c.flame.0 > 0 {
         let flame = c.flame.0.min((c.energy - c.latent()).0.max(0));
-        from_gas += send(w, x, y, z, false, flame, crate::chem::FLAME_GLOW, [0; 4], &mut stream, &mut glow, out);
+        from_gas += send(w, x, y, z, false, flame, (c.energy - c.latent()).0.max(0) / 2, crate::chem::FLAME_GLOW, [0; 4], &mut stream, &mut glow, out);
     }
     (from_solid, from_gas, glow, local_decay)
 }
@@ -289,7 +289,11 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
 /// Small amounts go as one packet now and then (on average exactly their
 /// emission).
 #[allow(clippy::too_many_arguments)]
-fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, t: Temperature, albedo: [u64; 4], stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
+/// `budget`: the most the store can give. Below a whole packet, a band
+/// sends one packet by chance (fair on average); it only takes that chance
+/// when the store can afford the whole packet, so a nearly empty store can't
+/// go negative.
+fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, budget: i64, t: Temperature, albedo: [u64; 4], stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
     if energy <= 0 { return 0 }
     let shares = tables().bands[k_index(t.0)];
     let mut sent_total = 0;
@@ -303,7 +307,9 @@ fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, t
             (MAX_PER_CELL, e_band / MAX_PER_CELL, e_band)
         } else {
             let whole = e_band / quantum;
-            let extra = i64::from(stream.below(quantum as u64) < (e_band % quantum) as u64);
+            let roll = stream.below(quantum as u64) < (e_band % quantum) as u64;
+            let affordable = sent_total + (whole + 1) * quantum <= budget;
+            let extra = i64::from(roll && affordable);
             (whole + extra, quantum, (whole + extra) * quantum)
         };
         let mut left = sent;
