@@ -49,8 +49,25 @@ pub const GAS_CHEMICAL: [SpecificEnergy; GASES] = [
 
 /// Liquid water, bound in a solid or as drops.
 pub const WATER_SPECIFIC_HEAT: SpecificHeat = j_per_kg_k(4186);
+/// Liquid water that fills a cell (1 g/mL × the cell's volume).
+pub const WATER_PER_CELL: Mass = grams(CELL_VOLUME_ML);
 /// Energy to turn liquid water into vapour.
 pub const LATENT_HEAT_VAPOUR: SpecificEnergy = kj_per_kg(2257);
+/// Open water's optics. Water absorbs heat radiation within a few tens of
+/// micrometres (κ ≈ 10⁴–10⁵ per metre beyond 3 µm: Hale & Querry 1973,
+/// Appl. Opt. 12, 555) and is nearly clear to sunlight's visible part: pure
+/// water absorbs ≈ 0.34 per metre at 650 nm, 0.057 at 550 nm and 0.009 at
+/// 450 nm (Pope & Fry 1997, Appl. Opt. 36, 8710). Absorption per metre of
+/// water, in thousandths, per band [infrared, red, green, blue]. The single
+/// infrared band can't tell sunlight's near infrared (which partly passes
+/// through a few millimetres) from heat radiation, so it is taken at the
+/// heat-radiation value; the visible light reaches whatever the water lies
+/// on, as it does.
+pub const WATER_KAPPA_MILLI_PER_M: [i64; 4] = [10_000_000, 340, 57, 9];
+/// Emissivity of a water surface in the infrared, ≈ 0.96 (0.95–0.98 over
+/// 8–14 µm: Masuda et al. 1988, Remote Sens. Environ. 24, 313); what it
+/// doesn't absorb it reflects.
+pub const WATER_EMISSIVITY: Fraction = f(960);
 /// Char (the carbon left after organic matter gives off its gas).
 pub const CHAR_SPECIFIC_HEAT: SpecificHeat = j_per_kg_k(1000);
 pub const CHAR_CHEMICAL: SpecificEnergy = kj_per_kg(32_800);

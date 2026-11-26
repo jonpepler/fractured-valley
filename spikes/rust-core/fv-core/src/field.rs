@@ -247,7 +247,11 @@ impl Grid {
             let c = &w.cells[i];
             opaque[l] = c.opaque(&w.subs);
             let k = kappas(c, &w.subs);
-            for b in 0..4 { kappa[b][l] = k.0 + k.1 + k.2 }
+            // Open water, spread through the cell's height: the same optical
+            // depth straight down as the layer it is (the packets follow the
+            // layer itself; here a sideways path through the cell sees it too).
+            let depth = c.water_depth_q16() as i128;
+            for b in 0..4 { kappa[b][l] = k.0 + k.1 + k.2 + (crate::rad::water_kappa(b) as i128 * depth / ONE as i128) as i64 }
             kappa[IONISING][l] = ionising_kappa(c, &w.subs);
         }}}
         Grid { dims: [nx, ny, nz], strides: [1, nx, nx * ny], idx, opaque, kappa }

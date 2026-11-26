@@ -82,6 +82,20 @@ const FEEDBACK_HALF_MM2: i128 = 10 * CELL_VOLUME_ML as i128;
 /// mW/(m²·K) per 1/m of σ: h = Nu·k/d with d = 4/σ, Nu ≈ 2, k ≈ 0.05 W/(m·K).
 const SURFACE_H_PER_SIGMA: i64 = 25;
 
+/// Heat transfer between open water's surface and the air over it, in
+/// mW/(m²·K): about 10 W/(m²·K) in light air (h = 5.7 + 3.8·v W/(m²·K) at
+/// v ≈ 1 m/s, McAdams 1954, as used for open water by Watmuff et al. 1977).
+const WATER_SURFACE_H: i64 = 10_000;
+/// Vapour carried off a water surface: by the Chilton–Colburn analogy
+/// h_m = h / (ρ·c_p·Le^⅔) with ρ·c_p ≈ 1 200 J/(m³·K) and Le ≈ 0.85 for
+/// water vapour in air, ≈ 9.2 mm/s at the h above (in µm/s). Per tick it
+/// sweeps h_m × the water's surface × the tick of air over it: 4.6 mL on a
+/// 10 cm cell.
+const WATER_TRANSFER_UM_PER_S: i64 = 9_200;
+const WATER_SWEPT_UL: i64 = WATER_TRANSFER_UM_PER_S * FACE_MM2 * TICK.0 / 1_000_000;
+/// A water surface fills a cell's floor, mm².
+const WATER_SURFACE_MM2: i64 = FACE_MM2;
+
 /// Heat transfer from a twig or blade to the gas flowing past it, in the
 /// same units as `SURFACE_H_PER_SIGMA`. Hot gas rises through a fuel bed at
 /// about √(g·l·ΔT/T) (see `transport::buoyant_churn`), and flow across a
@@ -193,7 +207,8 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
         let (ts, tg) = (if porous_skin { c.surface_temperature(subs) } else { c.solid_temperature(subs) }, c.gas_temperature());
         // G = h·A with h in mW/(m²·K) and A in mm²: product is 10⁻⁹ W/K = 10⁻³ µW/K.
         let h = (surface_h(s.surface_per_volume, tg, ambient) * s.surface_per_volume) as i128;
-        let g = h * c.inner_surface_mm2(subs) as i128 / 1_000;
+        // Open water trades heat with the air over it across its surface.
+        let g = if c.open_water() { WATER_SURFACE_H as i128 * WATER_SURFACE_MM2 as i128 / 1_000 } else { h * c.inner_surface_mm2(subs) as i128 / 1_000 };
         let mut q = (Conductance(g as i64) * (tg - ts)) * TICK;
         // Never past the shared temperature: at most what equalises them.
         // Worked out from the gas side: the shared temperature is rounded to
@@ -268,8 +283,23 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
         // Only the water the surface layer holds can leave from it.
         let skin_cap = c.skin_capacity(subs);
         let held = if skin_cap.0 > 0 { Mass((c.water.0 as i128 * skin_cap.0 as i128 / c.solid_capacity(subs).0.max(1) as i128) as i64).max(Mass(1)) } else { c.water };
-        let dm = Mass((room as i128 * speed as i128 / (FINE_SIGMA as i128 * 4)) as i64).min(held).min(c.water);
+        let dm = if c.open_water() {
+            // Open water: the air swept over its surface carries off what it
+            // holds short of saturation at the water's temperature (Dalton's
+            // law, E = h_m·(ρ_sat(T_water) − ρ_air)). Warm water holds more
+            // vapour at its surface, so sunlight and heat speed it up.
+            let air = c.gas[vap].0 as i128 * CELL_VOLUME_ML as i128 / ml as i128; // µg/L
+            let sat_l = t.saturated_ug_per_l[k_index(ts.0)] as i128;
+            Mass((((sat_l - air).max(0) * WATER_SWEPT_UL as i128 + 500_000) / 1_000_000) as i64).min(Mass(room))
+        } else {
+            Mass((room as i128 * speed as i128 / (FINE_SIGMA as i128 * 4)) as i64)
+        }.min(held).min(c.water);
         evaporate(&mut c, subs, dm, ts);
+    }
+    // Open water that has all gone leaves its last heat in the air.
+    if c.substance == NONE && c.water.0 == 0 && c.solid_mass().0 == 0 && c.solid_energy.0 != 0 {
+        c.energy += c.solid_energy;
+        c.solid_energy = Energy::ZERO;
     }
     // Vapour beyond what the air holds condenses into drops (mist, white
     // smoke); drops in unsaturated air evaporate. Both stay in the gas.

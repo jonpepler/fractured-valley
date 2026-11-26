@@ -36,7 +36,9 @@ pub struct Cell {
     pub bonds: u8,
     /// The solid, by part: [volatile, char, mineral].
     pub solid: [Mass; 3],
-    /// Liquid water held in the solid.
+    /// Liquid water: held in the solid's pores, or, in a cell with no solid
+    /// (`substance::NONE`), lying in its bottom as open water (a puddle, a
+    /// pool), filling `water / 1 kg` of the cell.
     pub water: Mass,
     /// The gas space: see [`Gas`].
     pub gas: [Mass; GASES],
@@ -63,6 +65,19 @@ impl Cell {
     pub fn solid_mass(&self) -> Mass { self.solid[0] + self.solid[1] + self.solid[2] }
     pub fn gas_mass(&self) -> Mass { self.gas.iter().copied().sum() }
     pub fn has_solid(&self) -> bool { self.solid_mass().0 > 0 || self.water.0 > 0 }
+
+    /// Liquid water with no solid holding it: a puddle or pool lying in the
+    /// bottom of the cell. Its heat, light and evaporation are the water's
+    /// own (it is the same `water` a wet log holds, in a different place).
+    pub fn open_water(&self) -> bool { self.substance == NONE && self.water.0 > 0 }
+
+    /// How deep open water stands in this cell, out of 2¹⁶ of the cell's
+    /// height (1 g per mL fills the cell; 1 mm is 10 g on a 10 cm cell). Zero for
+    /// water held in a solid.
+    pub fn water_depth_q16(&self) -> i64 {
+        if !self.open_water() { return 0 }
+        ((self.water.0 as i128 * 65_536) / WATER_PER_CELL.0 as i128).min(65_536) as i64
+    }
 
     pub fn gas_capacity(&self) -> HeatCapacity {
         let mut c = HeatCapacity::ZERO;
@@ -156,7 +171,9 @@ impl Cell {
 
     /// Room for gas, in millilitres.
     pub fn gas_volume_ml(&self, subs: &[Substance]) -> i64 {
-        CELL_VOLUME_ML - self.solid_share(subs).of(CELL_VOLUME_ML)
+        // Open water takes its own room (1 mL a gram); water in a solid sits in its pores.
+        let water_ml = if self.open_water() { (self.water.0 / 1_000_000).min(CELL_VOLUME_ML) } else { 0 };
+        CELL_VOLUME_ML - self.solid_share(subs).of(CELL_VOLUME_ML) - water_ml
     }
 
     /// Whether air can blow through this cell (open air, grass, leaves).
@@ -204,6 +221,16 @@ impl Cell {
     /// A cell of open air at the given temperature.
     pub fn air(t: Temperature, subs: &[Substance]) -> Cell {
         let mut c = Cell { gas: FRESH_AIR, ..Cell::default() };
+        c.set_temperature(t, subs);
+        c
+    }
+
+    /// A cell of open water `depth_mm` deep (a puddle; `CELL_MM` fills it),
+    /// with fresh air above it, all at `t`.
+    pub fn puddle(depth_mm: i64, t: Temperature, subs: &[Substance]) -> Cell {
+        let mut c = Cell { water: Mass(WATER_PER_CELL.0 * depth_mm.clamp(0, CELL_MM) / CELL_MM), ..Cell::default() };
+        let vol = c.gas_volume_ml(subs);
+        for k in 0..GASES { c.gas[k] = Mass(FRESH_AIR[k].0 * vol / CELL_VOLUME_ML) }
         c.set_temperature(t, subs);
         c
     }

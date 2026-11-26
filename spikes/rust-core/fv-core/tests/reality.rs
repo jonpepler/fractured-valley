@@ -132,3 +132,102 @@ fn wet_wood_holds_near_boiling_until_dry() {
         }
     }
 }
+
+// ── a puddle in the sun, in shade and at night ─────────────────────────────
+
+/// Where the puddle lies: a 4×4 patch of cells, 40 cm across, on stone.
+const PUDDLE: core::ops::Range<usize> = 6..10;
+const PUDDLE_Z: usize = 4;
+/// Air after rain on a mild day: 20 °C at 85 % humidity.
+const AIR_C: i64 = 20;
+const HUMIDITY_PERCENT: i64 = 85;
+
+/// Sets a cell's vapour to the given humidity at `t` (keeping its temperature).
+fn humidify(c: &mut Cell, t: Temperature, subs: &[Substance]) {
+    let ml = c.gas_volume_ml(subs);
+    if ml <= 0 || c.gas_mass().0 == 0 { return }
+    let sat = fv_core::tables::tables().saturated_ug_per_l[fv_core::tables::k_index(t.0)];
+    c.gas[Gas::Vapour as usize] = Mass(sat * HUMIDITY_PERCENT / 100 * ml / CELL_VOLUME_ML);
+    c.set_temperature(t, subs);
+}
+
+/// A puddle 5 mm deep on stone, everything at 20 °C in humid air, under
+/// `sky`, with or without a stone roof over it. Runs `warm` ticks, then
+/// `measure` more, checking the books every tick. Returns the evaporation
+/// rate over the measured ticks (mm/day) and how much the water warmed over
+/// the whole run (K).
+fn puddle(sky: Sky, roof: bool, warm: u64, measure: u64) -> (f64, f64) {
+    let air = celsius(AIR_C);
+    let mut w = World::new(16, 16, 16, 9, air);
+    let subs = w.subs.clone();
+    let stone = Cell::solid_of(STONE, 1000, 2, air, &subs);
+    for z in 0..PUDDLE_Z { for y in 0..16 { for x in 0..16 { w.set(x, y, z, stone) } } }
+    if roof {
+        // A stone roof 30 cm up over the whole box: the low sun reaches the
+        // ground under it only near the box's edges.
+        for y in 0..16 { for x in 0..16 { w.set(x, y, PUDDLE_Z + 3, stone) } }
+    }
+    for c in w.cells.iter_mut() { if c.substance == NONE { humidify(c, air, &subs) } }
+    let mut outside = w.outside_air;
+    humidify(&mut outside, air, &subs);
+    w.outside_air = outside;
+    let mut wet = Cell::puddle(5, air, &subs);
+    humidify(&mut wet, air, &subs);
+    for y in PUDDLE { for x in PUDDLE { w.set(x, y, PUDDLE_Z, wet) } }
+    let mut sim = Sim::new(w, sky);
+    let water = |sim: &Sim| -> (i64, f64) {
+        let (mut m, mut t) = (0i64, 0f64);
+        for y in PUDDLE { for x in PUDDLE {
+            let c = sim.world.get(x, y, PUDDLE_Z);
+            assert!(c.open_water(), "the puddle is still there");
+            m += c.water.0;
+            t += c.solid_temperature(&sim.world.subs).kelvin_f64();
+        }}
+        (m, t / (PUDDLE.len() * PUDDLE.len()) as f64)
+    };
+    let (_, t0) = water(&sim);
+    let mut m0 = 0;
+    for tick in 0..warm + measure {
+        if tick == warm { m0 = water(&sim).0 }
+        sim.step();
+        assert_eq!(sim.energy_gap(), 0, "energy books, tick {tick}");
+        assert_eq!(sim.mass_gap(), 0, "mass books, tick {tick}");
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative, tick {tick}");
+    }
+    let (m1, t1) = water(&sim);
+    // 1 mm of water over a cell's face is FACE_MM2 mg (10 g on a 10 cm cell).
+    let mm = (m0 - m1) as f64 / 1_000.0 / FACE_MM2 as f64 / (PUDDLE.len() * PUDDLE.len()) as f64;
+    let days = measure as f64 * 0.05 / 86_400.0;
+    (mm / days, t1 - t0)
+}
+
+#[test]
+fn a_puddle_dries_in_the_sun_but_barely_in_shade_or_at_night() {
+    // Open water in summer sun loses about 3–8 mm a day (Penman 1948, Proc.
+    // R. Soc. A 193, 120; Class A pan evaporation, FAO Irrigation and
+    // Drainage Paper 56, Allen et al. 1998), and the sunlit hours carry
+    // most of it. Penman's equation splits it into a radiation term, the
+    // sun's heat turned to latent heat, and an aerodynamic term,
+    // f(u)·(e_s − e_a), the air's own drying power. In shade or at night
+    // only the second is left, and in humid air after rain it is small:
+    // here (20 °C, 85 %, ~2.6 g/m³ short of saturation) about 2 mm a day
+    // at the transfer coefficient the sim uses (h_m ≈ 9 mm/s, McAdams 1954
+    // with Chilton–Colburn), less once the water cools towards its wet-bulb
+    // temperature. Everything starts at air temperature, so the sun's
+    // effect grows as the water warms: the rate is taken over minutes 3–5,
+    // with the ranges ×3 around the references.
+    let (warm, measure) = (3 * 60 * 20, 2 * 60 * 20);
+    let (sun, shade, night) = std::thread::scope(|s| {
+        let sun = s.spawn(|| puddle(Sky::afternoon(), false, warm, measure));
+        let shade = s.spawn(|| puddle(Sky::afternoon(), true, warm, measure));
+        let night = s.spawn(|| puddle(Sky::NIGHT, false, warm, measure));
+        (sun.join().unwrap(), shade.join().unwrap(), night.join().unwrap())
+    });
+    eprintln!("puddle: sun {:.2} mm/day ({:+.2} K), shade {:.2} mm/day ({:+.2} K), night {:.2} mm/day ({:+.2} K)", sun.0, sun.1, shade.0, shade.1, night.0, night.1);
+    assert!((1.0..24.0).contains(&sun.0), "in the sun it dries at summer rates (3–8 mm/day, ×3): {:.2} mm/day", sun.0);
+    assert!(sun.1 > 1.0, "the sunlit water warms: {:+.2} K", sun.1);
+    for (name, (rate, _)) in [("shade", shade), ("night", night)] {
+        assert!((0.67..6.0).contains(&rate), "in {name} only the air dries it (~2 mm/day, ×3): {rate:.2} mm/day");
+        assert!(sun.0 > 2.0 * rate, "the sun dries it clearly faster than {name}: {:.2} against {rate:.2} mm/day", sun.0);
+    }
+}

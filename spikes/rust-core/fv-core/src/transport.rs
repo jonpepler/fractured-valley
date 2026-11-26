@@ -54,6 +54,11 @@ pub struct Side {
     /// Conductance from gas to this cell's fuel surface (h·A), µW/K, if it
     /// has fuel that can catch; zero otherwise.
     pub fuel_g: i64,
+    /// Open water lies here: heat conducted across its faces is the water's.
+    pub wet: bool,
+    /// Conductance from the middle of open water down to what it lies on
+    /// (half its depth of water), µW/K; zero without open water.
+    pub water_g: i64,
 }
 
 /// Share of the time a flame leans over the fuel beside it (flame fingers
@@ -82,6 +87,9 @@ const FLAME_CONTACT: Temperature = Temperature(1_173_000);
 /// Ignition Handbook): about 80 W/(m²·K) at flame temperature, mW/(m²·K).
 const FLAME_ON_FACE: i64 = 80_000;
 
+/// Thermal conductivity of liquid water, mW/(m·K) (0.59 W/(m·K) at 20 °C:
+/// e.g. Incropera, Fundamentals of Heat and Mass Transfer, table A.6).
+const WATER_CONDUCTIVITY: i64 = 590;
 /// Thermal conductivity of still air, mW/(m·K).
 const AIR_CONDUCTIVITY: i64 = 26;
 /// Film coefficient where a solid surface meets air: ~15 W/(m²·K) over one
@@ -104,7 +112,14 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
     let share = c.solid_share(subs);
     let k = share.of(s.conductivity) + AIR_CONDUCTIVITY - share.of(AIR_CONDUCTIVITY);
     let t = c.gas_temperature();
-    let t_cond = if c.permeable(subs) { t } else { c.solid_temperature(subs) };
+    let wet = c.open_water();
+    let t_cond = if wet { c.solid_temperature(subs) } else if c.permeable(subs) { t } else { c.solid_temperature(subs) };
+    // k × face / (depth / 2): mW/(m·K) × mm² / µm is 10³ µW/K. Depth in µm
+    // is the water's µg over the face's mm² (1 mm over 1 mm² is 1 mg).
+    let water_g = if wet {
+        let half_um = (c.water.0 / (2 * FACE_MM2)).max(500);
+        (WATER_CONDUCTIVITY as i128 * FACE_MM2 as i128 * 1_000 / half_um as i128) as i64
+    } else { 0 };
     let t_skin = c.surface_temperature(subs);
     let gas_ml = c.gas_volume_ml(subs);
     let fresh: i64 = FRESH_AIR.iter().map(|m| m.0).sum();
@@ -124,7 +139,7 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
         (h as i128 * area as i128 / 1_000) as i64
     } else { 0 };
     Side {
-        flame_t, flame_heat, fuel_g,
+        flame_t, flame_heat, fuel_g, wet, water_g,
         t, t_cond, t_skin, gas_ml, permeable: c.permeable(subs),
         // k × face / half an edge = k·L²/(L/2) = 2·k·L: k [mW/(m·K)] × L [mm]
         // is µW/K (200·k at 10 cm).
@@ -198,7 +213,10 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: 
     if a.permeable != b.permeable {
         // A surface meeting air: through the film, from the surface layer.
         let solid = if a.permeable { gb } else { ga };
-        g = solid * FILM.0 as i128 / (solid + FILM.0 as i128);
+        // Open water lying on a solid touches it through the water itself,
+        // not an air film.
+        let film = if axis == 2 && b.wet && !a.permeable { b.water_g as i128 } else { FILM.0 as i128 };
+        g = solid * film / (solid + film);
         f.film = true;
         if !a.permeable { ta = a.t_skin }
         if !b.permeable { tb = b.t_skin }
@@ -252,7 +270,7 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: 
 #[inline]
 pub fn apply(out: &mut Cell, me: &Side, f: &Flux, sign: i64) {
     let e = Energy(f.energy.0 * sign);
-    if me.permeable { out.energy += e } else if f.film { out.skin += e } else { out.solid_energy += e }
+    if me.wet { out.solid_energy += e } else if me.permeable { out.energy += e } else if f.film { out.skin += e } else { out.solid_energy += e }
     // Flame contact: the giver's flame gas loses it, the taker's fuel surface gains it.
     let flame = f.flame.0 * sign;
     // (Fuel that can catch always has a surface layer.)

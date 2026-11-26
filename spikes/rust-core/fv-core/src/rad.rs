@@ -208,7 +208,29 @@ pub(crate) fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 
 /// `most`: the most it may send this tick (µJ): half the heat its store holds
 /// above the surroundings. A thin hot layer radiating for a whole tick at its
 /// starting temperature could otherwise send more than it has.
-pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool, pub most: i64, pub soot: bool }
+/// `water_top`: open water, sending from its surface upward.
+pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool, pub most: i64, pub soot: bool, pub water_top: bool }
+
+/// How open water treats a band: what it reflects of what it meets (the
+/// rest it absorbs). Infrared by its emissivity; visible light it barely
+/// scatters, and so neither does it glow (Kirchhoff).
+pub fn water_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 - WATER_EMISSIVITY.0 } else { 0 } }
+
+/// Absorption of open water, Q16 per metre of water, per band.
+pub(crate) fn water_kappa(band: usize) -> i64 { WATER_KAPPA_MILLI_PER_M[band] * ONE / 1_000 }
+
+/// Optical depth (Q16) of the open water lying in a cell's bottom, along a
+/// ray that starts at height `z0` in the cell (Q16 of its height), rises
+/// `dz` and runs `len` (both Q16 cell lengths): only the part of the path
+/// below the water's surface passes through water.
+pub(crate) fn water_tau(c: &Cell, band: usize, z0: i64, dz: i64, len: i64) -> i64 {
+    let h = c.water_depth_q16();
+    if h == 0 || band >= 4 { return 0 }
+    let (lo, hi) = (z0.min(z0 + dz), z0.max(z0 + dz));
+    if lo >= h { return 0 }
+    let in_water = if hi <= h { len as i128 } else { len as i128 * (h - lo) as i128 / (hi - lo).max(1) as i128 };
+    (water_kappa(band) as i128 * in_water / ONE as i128 * CELL_MM as i128 / 1_000).min(i64::MAX as i128 / 2) as i64
+}
 
 impl Emitter {
     /// How its emission splits between bands: soot's own spectrum, or grey.
@@ -235,23 +257,26 @@ pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temper
     let one = Fraction::ONE.0 as i128;
     let solid_albedo = [0, 1, 2, 3].map(|b| band_albedo(s, b));
     if c.opaque(subs) {
-        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false }];
+        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water_top: false }];
     }
     let cap = 6 * ONE as i128;
     let share = c.solid_share(subs).0 as i128;
     let mut out = Vec::new();
-    if c.has_solid() {
+    if c.open_water() {
+        // Open water radiates from its surface: the cell's floor area, one face.
+        out.push(Emitter { area_q16: ONE as i128, t: c.surface_temperature(subs), albedo: [0, 1, 2, 3].map(water_albedo), from_gas: false, most: solid_most, soot: false, water_top: true });
+    } else if c.has_solid() {
         // 4κV = σ·share·L³ = σ·share·L faces (L in m: 0.1 at 10 cm).
-        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 * CELL_MM as i128 / 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false });
+        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 * CELL_MM as i128 / 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water_top: false });
     }
     let tg = c.gas_temperature();
     // Soot: 4κV = 4 × (1 per m per mg/L) × mg/V × V = 0.004 m² per mg,
     // whatever the cell: 0.4 faces of 0.01 m² per mg = µg/2500 at 10 cm.
     let soot = c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / (2_500 * FACE_MM2 as i128 / 10_000);
-    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most, soot: true }) }
+    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most, soot: true, water_top: false }) }
     // Drops: 4 × 0.15 per m per mg/L: 0.0006 m² per mg = µg/16 667 faces at 10 cm.
     let drops = c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128 / (16_667 * FACE_MM2 as i128 / 10_000);
-    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most, soot: false }) }
+    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most, soot: false, water_top: false }) }
     out
 }
 
@@ -283,15 +308,15 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
         // Blackbody power over this area (µW): net µW/m² × faces × face area.
         let power = (net * e.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000) as i64;
         let energy = (Power(power) * TICK).0.min(e.most);
-        let from_face = opaque && !e.from_gas;
-        let sent = send(w, x, y, z, from_face, energy, e.most, e.shares(), e.albedo, &mut stream, &mut glow, out);
+        let start = if e.water_top { Start::WaterTop(c.water_depth_q16()) } else if opaque && !e.from_gas { Start::Face } else { Start::Volume };
+        let sent = send(w, x, y, z, start, energy, e.most, e.shares(), e.albedo, &mut stream, &mut glow, out);
         if e.from_gas { from_gas += sent } else { from_solid += sent }
     }
     // A flame's own light, set from the heat it released (see chem).
     if c.flame.0 > 0 {
         // At most the gas's heat, less what its soot and drops already sent.
         let flame = c.flame.0.min(((c.energy - c.latent()).0 - from_gas).max(0));
-        from_gas += send(w, x, y, z, false, flame, (c.energy - c.latent()).0.max(0) / 2, soot_shares(crate::chem::FLAME_GLOW), [0; 4], &mut stream, &mut glow, out);
+        from_gas += send(w, x, y, z, Start::Volume, flame, (c.energy - c.latent()).0.max(0) / 2, soot_shares(crate::chem::FLAME_GLOW), [0; 4], &mut stream, &mut glow, out);
     }
     (from_solid, from_gas, glow, local_decay)
 }
@@ -303,12 +328,23 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
 /// many small packets (millijoules) while infrared goes as fewer big ones.
 /// Small amounts go as one packet now and then (on average exactly their
 /// emission).
+/// Where a source's packets set out from.
+#[derive(Copy, Clone)]
+enum Start {
+    /// Anywhere in the cell, any direction (airy matter, flames).
+    Volume,
+    /// Just outside one of an opaque cell's exposed faces.
+    Face,
+    /// From the surface of open water this deep (Q16 of the cell), upward.
+    WaterTop(i64),
+}
+
 #[allow(clippy::too_many_arguments)]
 /// `budget`: the most the store can give. Below a whole packet, a band
 /// sends one packet by chance (fair on average); it only takes that chance
 /// when the store can afford the whole packet, so a nearly empty store can't
 /// go negative.
-fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, budget: i64, shares: [u64; 4], albedo: [u64; 4], stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
+fn send(w: &World, x: usize, y: usize, z: usize, start: Start, energy: i64, budget: i64, shares: [u64; 4], albedo: [u64; 4], stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
     if energy <= 0 { return 0 }
     let mut sent_total = 0;
     for band in 0..4 {
@@ -331,7 +367,15 @@ fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, b
             let e = if n == count - 1 { left } else { size };
             left -= e;
             if (1..=3).contains(&band) { glow[band - 1] += e }
-            let (pos, dir) = if from_face { face_start(w, x, y, z, stream) } else { (centre(x, y, z, stream), isotropic(stream)) };
+            let (pos, dir) = match start {
+                Start::Face => face_start(w, x, y, z, stream),
+                Start::Volume => (centre(x, y, z, stream), isotropic(stream)),
+                Start::WaterTop(h) => {
+                    let mut pos = centre(x, y, z, stream);
+                    pos[2] = z as i64 * ONE + h.clamp(0, ONE - 1);
+                    (pos, lambert(stream, 2, 1))
+                }
+            };
             out.push(Packet { pos, dir, energy: e, band: band as u8, bounces: 0, stream: Stream(stream.next()) });
         }
         sent_total += sent;
@@ -422,10 +466,20 @@ fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
         }
         let t_exit = t_exit.max(1);
         // Does it interact inside this cell?
-        let (k, meets, albedo) = volume_optics(c, subs, p.band as usize, &mut p.stream);
-        if k > 0 {
-            let tau = (k as i128 * t_exit as i128 / ONE as i128 * CELL_MM as i128 / 1_000) as i64; // κ (Q16 /m) × length (cells × edge in m)
+        let (k, mut meets, mut albedo) = volume_optics(c, subs, p.band as usize, &mut p.stream);
+        // Open water lying in the cell's bottom: only the path below its surface.
+        let tau_water = if c.open_water() && (p.band as usize) < 4 {
+            water_tau(c, p.band as usize, p.pos[2] - cell[2] * ONE, p.dir[2] * t_exit / ONE, t_exit)
+        } else { 0 };
+        if k > 0 || tau_water > 0 {
+            let tau_volume = (k as i128 * t_exit as i128 / ONE as i128 * CELL_MM as i128 / 1_000) as i64; // κ (Q16 /m) × length (cells × edge in m)
+            let tau = tau_volume.saturating_add(tau_water);
             let prob = tab[((tau >> 8) as usize).min(4095)];
+            if tau_water > 0 && p.stream.below(tau as u64) < tau_water as u64 {
+                // What it met was the water.
+                meets = Meets::Solid;
+                albedo = water_albedo(p.band as usize);
+            }
             if p.stream.chance(prob) {
                 if (1..=3).contains(&(p.band as usize)) { dep.light[i][p.band as usize - 1].fetch_add(p.energy, Relaxed); }
                 if p.bounces < MAX_BOUNCES && p.stream.chance(albedo) {
