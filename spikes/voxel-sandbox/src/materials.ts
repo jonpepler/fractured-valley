@@ -92,13 +92,13 @@ const list: Material[] = [
   {
     id: M.Grass, name: 'grass', solid: true, opaque: true, terrain: true, density: 16,
     moisture: 35,
-    flammable: { ignitesAt: 260, extinction: 40, fineness: 6, burnTicks: 40, heat: 260, soot: 110, becomes: M.Scorched },
+    flammable: { ignitesAt: 260, extinction: 40, fineness: 6, burnTicks: 40, heat: 260, soot: 50, becomes: M.Scorched },
     palette: ['#3d6428', '#4b742e', '#5b8236', '#6c8a3c', '#7d8c46', '#8e9152'].map(hex),
   },
   {
     id: M.TallGrass, name: 'tall grass', solid: false, opaque: true, density: 1,
     moisture: 18,
-    flammable: { ignitesAt: 230, extinction: 45, fineness: 8, burnTicks: 30, heat: 220, soot: 90, becomes: M.Air },
+    flammable: { ignitesAt: 230, extinction: 45, fineness: 8, burnTicks: 30, heat: 220, soot: 40, becomes: M.Air },
     palette: ['#56883a', '#6a9844', '#8c9a52', '#a3a462'].map(hex),
   },
   {
@@ -119,7 +119,7 @@ const list: Material[] = [
   {
     id: M.Leaves, name: 'leaves', solid: true, opaque: true, density: 1,
     moisture: 140,
-    flammable: { ignitesAt: 260, extinction: 120, fineness: 7, burnTicks: 160, heat: 240, soot: 160, becomes: M.Air },
+    flammable: { ignitesAt: 260, extinction: 120, fineness: 7, burnTicks: 160, heat: 240, soot: 50, becomes: M.Air },
     palette: ['#3d7a2c', '#2f6a27', '#4b8a33', '#58993b'].map(hex),
   },
   {

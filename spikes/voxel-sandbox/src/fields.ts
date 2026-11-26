@@ -25,7 +25,7 @@ export const enum F { Heat = 0, Soot = 1, Steam = 2 }
 const KINDS = 3
 
 /** How fast each field fades per tick, out of 256. */
-const FADE = [22, 4, 8]
+const FADE = [22, 3, 6]
 /** Gas can't get hotter than a flame (°C). */
 const MAX_HEAT = 1100
 

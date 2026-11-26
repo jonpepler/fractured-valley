@@ -244,7 +244,7 @@ export class Sim {
       const h0 = hash32(this.seed, this.tick, p, 0xb1)
       const boil = wet && (h0 & 1) ? 1 : 0
       if (boil) w.setMoisture(x, y, z, wet - 1)
-      f.emit(ax, ay, az, fl.heat, fl.soot, boil * 120)
+      f.emit(ax, ay, az, fl.heat, fl.soot, boil * 240)
       const h = hash32(this.seed, this.tick, p, 0xb0)
       if (this.embers.length < MAX_EMBERS && fl.fineness >= 5 && chance(h >>> 8, fl.fineness, 12000)) {
         // An ember leaves upward with a little random push.
@@ -287,7 +287,7 @@ export class Sim {
           wet -= loss
           w.setMoisture(x, y, z, wet)
           const [ax, ay, az] = this.openSide(x, y, z)
-          f.emit(ax, ay, az, 0, 0, loss * 40)
+          f.emit(ax, ay, az, 0, 0, loss * 90)
         }
       }
       if (wet <= fl.extinction && heat >= fl.ignitesAt) {
