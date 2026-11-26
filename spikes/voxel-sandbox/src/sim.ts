@@ -6,7 +6,7 @@
 // - Integer maths only. Every collection is walked in sorted order.
 // - Commands are applied in (tick, peer, seq) order on every peer.
 
-import { F, FR, Fields } from './fields'
+import { type AirState, F, FR, Fields } from './fields'
 import { prevailing } from './wind'
 import { Grid, hashGrids } from './grid'
 import { M, mat } from './materials'
@@ -80,6 +80,7 @@ export interface SimState {
   tick: number
   embers: Ember[]
   gas: { brick: number; values: number[] }[]
+  air: AirState
   burning: number[]
   loose: number[]
   debris: number[]
@@ -119,8 +120,8 @@ export class Sim {
    */
   fieldStep: (seed: number, tick: number) => void
 
-  constructor(readonly world: Grid, readonly seed: number, opts: { sharedFields?: boolean } = {}) {
-    this.fields = new Fields(world, opts.sharedFields ?? false)
+  constructor(readonly world: Grid, readonly seed: number, opts: { sharedFields?: boolean; airFlow?: boolean } = {}) {
+    this.fields = new Fields(world, opts.sharedFields ?? false, opts.airFlow ?? true)
     this.fieldStep = (s, t) => this.fields.step(s, t)
   }
 
@@ -132,6 +133,7 @@ export class Sim {
       tick: this.tick,
       embers: this.embers.map(e => ({ ...e })),
       gas: this.fields.exportActive(),
+      air: this.fields.exportAir(),
       burning: sorted(this.burning),
       loose: sorted(this.loose),
       debris: sorted(this.debris),
@@ -144,6 +146,7 @@ export class Sim {
     this.tick = s.tick
     this.embers = s.embers.map(e => ({ ...e }))
     this.fields.importActive(s.gas)
+    this.fields.importAir(s.air)
     this.burning = new Set(s.burning)
     this.loose = new Set(s.loose)
     this.debris = new Set(s.debris)
@@ -309,7 +312,7 @@ export class Sim {
     for (const e of this.embers) {
       const wx = e.x >> 8, wy = e.y >> 8, wz = e.z >> 8
       const heat = f.at(F.Heat, wx, wy, wz)
-      const [gx, gy, gz] = f.velocity(this.seed, this.tick, Math.floor(wx / FR), Math.floor(wy / FR), heat, base)
+      const [gx, gy, gz] = f.velocity(this.seed, this.tick, Math.floor(wx / FR), Math.floor(wy / FR), Math.floor(wz / FR), heat, base)
       // Field velocity is per field cell; ×FR for world cells.
       e.vx += ((gx * FR - e.vx) >> 3); e.vy += ((gy * FR - e.vy) >> 3); e.vz += ((gz * FR - e.vz) >> 3) - EMBER_GRAVITY
       const nx = e.x + e.vx, ny = e.y + e.vy, nz = e.z + e.vz

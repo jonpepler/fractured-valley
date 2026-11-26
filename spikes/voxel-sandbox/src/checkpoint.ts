@@ -36,7 +36,7 @@ class Reader {
   ascending() { const n = this.uint(), out: number[] = []; let prev = 0; for (let i = 0; i < n; i++) { prev += this.uint(); out.push(prev) } return out }
 }
 
-const MAGIC = 0x46564332 // "FVC2": with moisture, gas and embers
+const MAGIC = 0x46564333 // "FVC3": with moisture, gas, embers and moving air
 /** Values per gas brick: 8³ field cells × (heat, soot, steam). */
 const GAS_VALUES = 8 * 8 * 8 * 3
 
@@ -66,6 +66,9 @@ export function takeCheckpoint(sim: Sim, spec: WorldSpec, fresh: Grid = generate
   for (const e of st.embers) { w.int(e.x); w.int(e.y); w.int(e.z); w.int(e.vx); w.int(e.vy); w.int(e.vz); w.int(e.life) }
   w.uint(st.gas.length)
   for (const { brick, values } of st.gas) { w.uint(brick); for (const v of values) w.uint(v) }
+  w.ascending(st.air.moving); w.ascending(st.air.todo)
+  w.uint(st.air.bricks.length)
+  for (const { brick, values } of st.air.bricks) { w.uint(brick); w.uint(values.length); for (const v of values) w.int(v) }
 
   const g = sim.world
   const a = new Uint8Array(BRICK_CELLS), as = new Uint8Array(BRICK_CELLS), aw = new Uint8Array(BRICK_CELLS)
@@ -118,6 +121,12 @@ export function restoreCheckpoint(data: Uint8Array): { sim: Sim; spec: WorldSpec
     for (let k = 0; k < GAS_VALUES; k++) values.push(r.uint())
     gas.push({ brick, values })
   }
+  const air: SimState['air'] = { moving: r.ascending(), todo: r.ascending(), bricks: [] }
+  for (let n = r.uint(); n > 0; n--) {
+    const brick = r.uint(), len = r.uint(), values: number[] = []
+    for (let k = 0; k < len; k++) values.push(r.int())
+    air.bricks.push({ brick, values })
+  }
   const world = generate(spec)
   const changed = r.ascending()
   for (const b of changed) {
@@ -138,6 +147,6 @@ export function restoreCheckpoint(data: Uint8Array): { sim: Sim; spec: WorldSpec
   }
   world.compact()
   const sim = new Sim(world, spec.seed)
-  sim.importState({ tick, burning, loose, debris, touched, queue, embers, gas })
+  sim.importState({ tick, burning, loose, debris, touched, queue, embers, gas, air })
   return { sim, spec }
 }

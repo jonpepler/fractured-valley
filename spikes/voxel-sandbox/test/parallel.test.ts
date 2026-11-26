@@ -23,7 +23,7 @@ function lit(sim: Sim) {
 }
 
 function soloHashes(): number[] {
-  const sim = lit(new Sim(generate(SPEC), SPEC.seed))
+  const sim = lit(new Sim(generate(SPEC), SPEC.seed, { airFlow: false }))
   const out: number[] = []
   for (let i = 0; i < TICKS; i++) { sim.step(); if (sim.tick % 20 === 0) out.push(sim.hash()) }
   return out
@@ -38,7 +38,7 @@ describe('threads', () => {
   for (const threads of [3, 4]) {
     test(`gas stepped on ${threads} worker threads matches one thread, tick for tick`, { timeout: 120_000 }, () => {
       const world = generate(SPEC)
-      const sim = lit(new Sim(world, SPEC.seed, { sharedFields: true }))
+      const sim = lit(new Sim(world, SPEC.seed, { sharedFields: true, airFlow: false }))
       const pool = new FieldPool(sim.fields, threads, world.bricks.length)
       pools.push(pool)
       sim.fieldStep = (s, t) => pool.step(s, t)
@@ -76,7 +76,7 @@ function each(v: FieldView, b: number, f: (i: number, k: number) => void) {
  * other's by recomputing it. `corruptAt` makes peer 0 send one wrong value.
  */
 function runPeers(corruptAt = -1) {
-  const peers = [lit(new Sim(generate(SPEC), SPEC.seed)), lit(new Sim(generate(SPEC), SPEC.seed))]
+  const peers = [lit(new Sim(generate(SPEC), SPEC.seed, { airFlow: false })), lit(new Sim(generate(SPEC), SPEC.seed, { airFlow: false }))]
   const mismatches: number[] = []
   let sent = 0
   // Both peers step together; the field step of each is the shared exchange.
@@ -92,7 +92,7 @@ function runPeers(corruptAt = -1) {
         // outside the 1-in-4 sample slips past this check; the regular
         // whole-world hash comparison then catches the desync instead.)
         const j = mine.findIndex(b => hash32(seed, tick, b, 0xc4ec) % 4 === 0)
-        if (j >= 0) data[j]![5] ^= 1
+        if (j >= 0) { const d = data[j]!; d[5] = d[5]! ^ 1 }
       }
       sent += data.length
       return { mine, withGas, data }

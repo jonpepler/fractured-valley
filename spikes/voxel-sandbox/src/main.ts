@@ -19,6 +19,8 @@ const renderer = new IsoRenderer(world)
 renderer.seed = spec.seed
 // ?bodies=snap|splat|quarter: how rotating bodies are drawn (render-only)
 renderer.bodyStyle = (params.get('bodies') as 'snap' | 'splat' | 'quarter' | null) ?? 'quarter'
+// ?view=air: temperature and air motion instead of flames and smoke
+renderer.airView = params.get('view') === 'air'
 
 // ?net=broadcast (default: other tabs of this browser) | trystero (real P2P) | solo
 const room = params.get('room') ?? 'valley'

@@ -12,6 +12,7 @@
 // neighbours) are processed.
 import { BRICK, type Grid } from './grid'
 import { mat } from './materials'
+import { stepFlow, type FlowView } from './flow'
 import { prevailing, windAt } from './wind'
 
 export const FR = 2 // world cells per field cell
@@ -25,7 +26,7 @@ export const enum F { Heat = 0, Soot = 1, Steam = 2 }
 const KINDS = 3
 
 /** How fast each field fades per tick, out of 256. */
-const FADE = [22, 3, 6]
+const FADE = [14, 3, 6]
 /** Gas can't get hotter than a flame (°C). */
 const MAX_HEAT = 1100
 
@@ -41,8 +42,19 @@ export class Fields {
   /** Field cells that are mostly solid: gas can't be there. */
   readonly solid: Uint8Array
 
-  /** @param shared put the buffers in shared memory, so worker threads can compute bricks. */
-  constructor(private readonly world: Grid, shared = false) {
+  /** Air velocity (departure from the prevailing wind), when the air moves. */
+  vel: Int32Array[] | undefined
+  private velNext: Int32Array[] = []
+  private scratch: { mask: Uint8Array; div: Int32Array; p: Int32Array; pNext: Int32Array } | undefined
+  /** Bricks where the air departs from the wind. */
+  moving = new Set<number>()
+  private lastTodo = new Set<number>()
+
+  /**
+   * @param shared put the buffers in shared memory, so worker threads can compute bricks.
+   * @param flow give the air its own velocity (buoyancy, pressure); otherwise gas is just carried by the wind and a fixed rise.
+   */
+  constructor(private readonly world: Grid, shared = false, readonly flow = false) {
     this.nx = Math.ceil(world.sx / FR)
     this.ny = Math.ceil(world.sy / FR)
     this.nz = Math.ceil(world.sz / FR)
@@ -51,6 +63,11 @@ export class Fields {
     this.cur = Array.from({ length: KINDS }, u16)
     this.next = Array.from({ length: KINDS }, u16)
     this.solid = new Uint8Array(shared ? new SharedArrayBuffer(n) : new ArrayBuffer(n))
+    if (flow) {
+      this.vel = [0, 1, 2].map(() => new Int32Array(n))
+      this.velNext = [0, 1, 2].map(() => new Int32Array(n))
+      this.scratch = { mask: new Uint8Array(n), div: new Int32Array(n), p: new Int32Array(n), pNext: new Int32Array(n) }
+    }
   }
 
   index(fx: number, fy: number, fz: number): number {
@@ -79,15 +96,19 @@ export class Fields {
    * Gas velocity at a field cell, in 1/256 field cells per tick: the wind,
    * plus hot air rising (buoyancy grows with heat, capped).
    */
-  velocity(seed: number, tick: number, fx: number, fy: number, heat: number, base = prevailing(seed, tick)): [number, number, number] {
+  velocity(seed: number, tick: number, fx: number, fy: number, fz: number, heat: number, base = prevailing(seed, tick)): [number, number, number] {
     const w = windAt(seed, tick, fx * FR + 1, fy * FR + 1, base)
     // wind ±256 ≈ a strong breeze ≈ 1 world cell (half a field cell) per tick
+    if (this.vel && fx >= 0 && fy >= 0 && fz >= 0 && fx < this.nx && fy < this.ny && fz < this.nz) {
+      const i = this.index(fx, fy, fz)
+      return [(w.x >> 1) + this.vel[0]![i]!, (w.y >> 1) + this.vel[1]![i]!, this.vel[2]![i]!]
+    }
     return [w.x >> 1, w.y >> 1, rise(heat)]
   }
 
   /** Field buffers and dimensions, for the kernel (here, in a worker, or on a peer). */
   view(): FieldView {
-    return { nx: this.nx, ny: this.ny, nz: this.nz, bx: this.world.bx, by: this.world.by, cur: this.cur, next: this.next, solid: this.solid }
+    return { nx: this.nx, ny: this.ny, nz: this.nz, bx: this.world.bx, by: this.world.by, cur: this.cur, next: this.next, solid: this.solid, ...(this.vel ? { vel: this.vel } : {}) }
   }
 
   /** The bricks the next step must compute (sorted), with their solid masks up to date. */
@@ -125,7 +146,25 @@ export class Fields {
   }
 
   step(seed: number, tick: number) {
-    this.finish(computeBricks(this.view(), this.plan(), seed, tick))
+    const bricks = this.plan()
+    if (this.vel) this.stepAir(bricks, seed, tick)
+    this.finish(computeBricks(this.view(), bricks, seed, tick))
+  }
+
+  /** Advance the air's velocity over these bricks, before gas is carried by it. */
+  private stepAir(bricks: number[], seed: number, tick: number) {
+    const s = this.scratch!
+    const view: FlowView = { nx: this.nx, ny: this.ny, nz: this.nz, bx: this.world.bx, by: this.world.by, solid: this.solid,
+      heat: this.cur[0]!, vel: this.vel!, velNext: this.velNext, mask: s.mask, div: s.div, p: s.p, pNext: s.pNext }
+    const moving = stepFlow(view, bricks, seed, tick)
+    const t = this.vel!; this.vel = this.velNext; this.velNext = t
+    // Bricks no longer computed go back to plain wind; the spare buffer is
+    // zeroed where it held velocity, so stale motion never resurfaces.
+    const todo = new Set(bricks)
+    for (const b of this.lastTodo) if (!todo.has(b)) this.clearBrick(this.vel!, b)
+    for (const b of this.lastTodo) this.clearBrick(this.velNext, b)
+    this.lastTodo = todo
+    this.moving = new Set(moving)
   }
 
   private solidAt = new Int32Array(0)
@@ -143,7 +182,7 @@ export class Fields {
     this.solidAt[b] = w.version[b]!
   }
 
-  private clearBrick(arrs: Uint16Array[], b: number) {
+  private clearBrick(arrs: (Uint16Array | Int32Array)[], b: number) {
     const w = this.world
     const bx = b % w.bx, by = Math.floor(b / w.bx) % w.by, bz = Math.floor(b / (w.bx * w.by))
     for (let lz = 0; lz < FB; lz++) for (let ly = 0; ly < FB; ly++) for (let lx = 0; lx < FB; lx++) {
@@ -162,6 +201,10 @@ export class Fields {
 
   /** Hash of all gas, in a fixed order (part of the desync check). */
   hash(h: number, mix: (h: number, v: number) => number): number {
+    if (this.vel) for (const b of [...this.moving].sort((a, c) => a - c)) {
+      h = mix(h, b)
+      this.eachIndex(b, i => { h = mix(h, this.vel![0]![i]! ^ (this.vel![1]![i]! << 11) ^ (this.vel![2]![i]! << 22)) })
+    }
     for (const b of [...this.active].sort((a, c) => a - c)) {
       h = mix(h, b)
       const w = this.world
@@ -190,6 +233,47 @@ export class Fields {
         if (hh | s | st) yield [fx, fy, fz, hh, s, st]
       }
     }
+  }
+
+  /** Field coordinates of every cell in a brick. */
+  cellsOfBrick(b: number, f: (fx: number, fy: number, fz: number) => void) {
+    const w = this.world
+    const bx = b % w.bx, by = Math.floor(b / w.bx) % w.by, bz = Math.floor(b / (w.bx * w.by))
+    for (let lz = 0; lz < FB; lz++) for (let ly = 0; ly < FB; ly++) for (let lx = 0; lx < FB; lx++) {
+      const fx = bx * FB + lx, fy = by * FB + ly, fz = bz * FB + lz
+      if (fx < this.nx && fy < this.ny && fz < this.nz) f(fx, fy, fz)
+    }
+  }
+
+  private eachIndex(b: number, f: (i: number) => void) {
+    const w = this.world
+    const bx = b % w.bx, by = Math.floor(b / w.bx) % w.by, bz = Math.floor(b / (w.bx * w.by))
+    for (let lz = 0; lz < FB; lz++) for (let ly = 0; ly < FB; ly++) for (let lx = 0; lx < FB; lx++) {
+      const fx = bx * FB + lx, fy = by * FB + ly, fz = bz * FB + lz
+      if (fx < this.nx && fy < this.ny && fz < this.nz) f(this.index(fx, fy, fz))
+    }
+  }
+
+  /** The moving air, exactly, for checkpoints: both bookkeeping sets and the velocity of every brick in either. */
+  exportAir(): AirState {
+    if (!this.vel) return { moving: [], todo: [], bricks: [] }
+    const moving = [...this.moving].sort((a, c) => a - c), todo = [...this.lastTodo].sort((a, c) => a - c)
+    const bricks = [...new Set([...moving, ...todo])].sort((a, c) => a - c).map(b => {
+      const values: number[] = []
+      this.eachIndex(b, i => values.push(this.vel![0]![i]!, this.vel![1]![i]!, this.vel![2]![i]!))
+      return { brick: b, values }
+    })
+    return { moving, todo, bricks }
+  }
+
+  importAir(air: AirState) {
+    if (!this.vel) return
+    for (const { brick: b, values } of air.bricks) {
+      let k = 0
+      this.eachIndex(b, i => { this.vel![0]![i] = values[k++]!; this.vel![1]![i] = values[k++]!; this.vel![2]![i] = values[k++]! })
+    }
+    this.moving = new Set(air.moving)
+    this.lastTodo = new Set(air.todo)
   }
 
   /** Raw values of the active bricks, for checkpoints. */
@@ -226,6 +310,12 @@ export class Fields {
   }
 }
 
+export interface AirState {
+  moving: number[]
+  todo: number[]
+  bricks: { brick: number; values: number[] }[]
+}
+
 /** Plain arrays and sizes: everything the kernel needs, and nothing else. */
 export interface FieldView {
   nx: number; ny: number; nz: number
@@ -234,6 +324,8 @@ export interface FieldView {
   cur: Uint16Array[]
   next: Uint16Array[]
   solid: Uint8Array
+  /** Air velocity (departure from the wind), if the air moves; else gas just rises. */
+  vel?: Int32Array[]
 }
 
 /**
@@ -260,8 +352,11 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
       if (fx >= nx || fy >= ny || fz >= nz) continue
       const i = (fz * ny + fy) * nx + fx
       if (v.solid[i]) { nx0[i] = 0; nx1[i] = 0; nx2[i] = 0; continue }
-      // Where did the gas now here come from? Wind, plus hot air rising (1/256 field cell).
-      const sx = fx * 256 - wx, sy = fy * 256 - wy, sz = fz * 256 - rise(cur0[i]!)
+      // Where did the gas now here come from? The wind plus the air's own
+      // motion, or (without moving air) the wind plus a fixed rise for hot gas.
+      const vel = v.vel
+      const sx = fx * 256 - wx - (vel ? vel[0]![i]! : 0), sy = fy * 256 - wy - (vel ? vel[1]![i]! : 0)
+      const sz = fz * 256 - (vel ? vel[2]![i]! : rise(cur0[i]!))
       const x0 = sx >> 8, y0 = sy >> 8, z0 = sz >> 8
       const tx = sx & 255, ty = sy & 255, tz = sz & 255
       // The 8 corners of the source cell (outside the field reads as 0).

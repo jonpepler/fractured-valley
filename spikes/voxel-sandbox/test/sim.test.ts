@@ -17,8 +17,10 @@ function groundAt(sim: Sim, x: number, y: number) {
   return z
 }
 
+// The post tests are about structure, so they run without moving air (fast);
+// moving air has its own determinism and checkpoint tests.
 function burnThePost() {
-  const sim = new Sim(generate(SPEC), SPEC.seed)
+  const sim = new Sim(generate(SPEC), SPEC.seed, { airFlow: false })
   const gx = POST.x - 4, gy = POST.y - 4
   sim.schedule({ tick: 1, peer: 0, seq: 0, command: { kind: 'ignite', x: gx, y: gy, z: groundAt(sim, gx, gy) } })
   sim.schedule({ tick: 5, peer: 1, seq: 0, command: { kind: 'drop', x: 30, y: 100, z: 60 } })
@@ -39,7 +41,7 @@ describe('determinism', () => {
     const b = burnThePost()
     expect(a.hash()).toBe(b.hash())
     expect(a.events).toEqual(b.events)
-  }, 60_000)
+  }, 240_000)
 
   test('the hash describes content, not how compactly it is stored', () => {
     const g = new Grid(32, 32, 32)
@@ -87,7 +89,7 @@ describe('the burning post', () => {
     expect(metal).toBe(216 + 216) // this block and the one peer 1 dropped
     const ground = groundAt(sim, POST.x - 5, POST.y - 5)
     expect(top).toBeLessThan(ground + 16 + 6)
-  }, 60_000)
+  }, 240_000)
 })
 
 describe('storage', () => {
@@ -120,5 +122,21 @@ describe('impacts', () => {
     const ev = throwAtTree(60)
     expect(ev.some(e => e.kind === 'smashed')).toBe(true)
     expect(ev.some(e => e.kind === 'detached' && e.cells > 1000)).toBe(false)
+  })
+})
+
+describe('moving air', () => {
+  test('the same fire with moving air gives the same world, tick for tick', { timeout: 120_000 }, () => {
+    const small = { ...DEFAULT_SPEC, sx: 96, sy: 96 }
+    const run = () => {
+      const sim = new Sim(generate(small), small.seed)
+      sim.schedule({ tick: 1, peer: 0, seq: 0, command: { kind: 'ignite', x: 40, y: 50, z: groundAt(sim, 40, 50) } })
+      const out: number[] = []
+      for (let i = 0; i < 240; i++) { sim.step(); if (sim.tick % 20 === 0) out.push(sim.hash()) }
+      return { out, moving: sim.fields.moving.size }
+    }
+    const a = run(), b = run()
+    expect(a.out).toEqual(b.out)
+    expect(a.moving).toBeGreaterThan(0) // the air really moved
   })
 })

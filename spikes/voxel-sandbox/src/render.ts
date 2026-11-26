@@ -153,6 +153,8 @@ export class IsoRenderer {
    * - 'quarter': orientation snapped to the nearest quarter turn, position exact.
    */
   bodyStyle: 'snap' | 'splat' | 'quarter' = 'quarter'
+  /** Debug view: temperature as colour and air motion as short lines, instead of flames and smoke. */
+  airView = false
   /** World seed, so flames can lean with the (pure-function) wind. */
   seed = 0
 
@@ -196,7 +198,10 @@ export class IsoRenderer {
     }
     this.outline()
     // Gas and embers after the outline pass, which would ring them in black.
-    if (air) { this.drawGas(air.fields, tick); this.drawEmbers(air.embers, tick) }
+    if (air) {
+      if (this.airView) this.drawAirView(air.fields, tick)
+      else { this.drawGas(air.fields, tick); this.drawEmbers(air.embers, tick) }
+    }
     return { surfaceCells }
   }
 
@@ -394,6 +399,41 @@ export class IsoRenderer {
   private gasSoot = new Uint32Array(0)
   private gasHeat = new Uint16Array(0)
   private gasMark = new Uint8Array(0)
+
+  /**
+   * The air, for inspection: each field cell with gas or moving air is
+   * tinted by temperature (blue cool → red → yellow flame-hot), and every
+   * other cell gets a short line showing where its air is going.
+   */
+  private drawAirView(fields: Fields, tick: number) {
+    const cells = new Set<number>()
+    const vel = fields.vel
+    const visit = (fx: number, fy: number, fz: number) => {
+      const i = fields.index(fx, fy, fz)
+      if (cells.has(i)) return
+      cells.add(i)
+      const heat = fields.cur[0]![i]!
+      const [cx, cy] = this.anchor(fx * FR + 1, fy * FR + 1, fz * FR + 1)
+      const d = (fx + fy + fz) * FR + 3
+      if (heat > 20) {
+        const t = Math.min(255, heat >> 2)
+        const col = t < 85 ? rgb(40, 60 + t, 160 - t) : t < 170 ? rgb(60 + (t - 85) * 2, 100, 60) : rgb(230, 120 + (t - 170), 40)
+        for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) if (((cx + dx + cy + dy) & 1) === 0) this.putPixel(cx + 1 + dx, cy + 1 + dy, d, col)
+      }
+      if (vel && ((fx + fy + fz) & 1) === 0) {
+        // Screen direction of the air's motion (+x → right-down, +y → left-down, +z → up).
+        const u = vel[0]![i]!, v = vel[1]![i]!, w = vel[2]![i]!
+        const sx = 2 * (u - v), sy = u + v - 2 * w
+        const len = Math.max(Math.abs(sx), Math.abs(sy))
+        if (len > 24) {
+          const steps = Math.min(5, 1 + (len >> 7))
+          for (let k = 0; k <= steps; k++) this.putPixel(cx + 2 + Math.round((sx * k) / len), cy + 2 + Math.round((sy * k) / len), d + 1, k === steps ? rgb(255, 255, 255) : rgb(200, 220, 240))
+        }
+      }
+    }
+    for (const [fx, fy, fz] of fields.cells()) visit(fx, fy, fz)
+    if (vel) for (const b of fields.moving) fields.cellsOfBrick(b, visit)
+  }
 
   /** Embers in flight: a bright pixel with a short dim trail. */
   private drawEmbers(embers: readonly Ember[], tick: number) {
