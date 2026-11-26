@@ -113,8 +113,15 @@ export class Sim {
     if (this.events.length > 500) this.events.shift()
   }
 
-  constructor(readonly world: Grid, readonly seed: number) {
-    this.fields = new Fields(world)
+  /**
+   * How the gas fields advance each tick. Defaults to the fields' own step;
+   * a worker pool (or peers) can take it over with identical results.
+   */
+  fieldStep: (seed: number, tick: number) => void
+
+  constructor(readonly world: Grid, readonly seed: number, opts: { sharedFields?: boolean } = {}) {
+    this.fields = new Fields(world, opts.sharedFields ?? false)
+    this.fieldStep = (s, t) => this.fields.step(s, t)
   }
 
   /** Everything besides the world grid that carries from one tick to the next. */
@@ -157,7 +164,7 @@ export class Sim {
     const stats: StepStats = { burning: 0, loose: 0, bodies: 0, detached: 0, failed: 0 }
     this.applyCommands()
     this.stepFire(stats)
-    this.fields.step(this.seed, this.tick)
+    this.fieldStep(this.seed, this.tick)
     this.stepGrowth()
     this.stepLoose()
     if (this.tick % 4 === 0) this.checkLoads(stats)
