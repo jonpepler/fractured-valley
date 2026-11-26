@@ -81,100 +81,124 @@ export function sample(a: Int32Array | Uint16Array, nx: number, ny: number, nz: 
   return y0v + (((y1v - y0v) * tz) >> 8)
 }
 
-/**
- * Advance the velocity one tick over the given bricks (sorted). Returns the
- * bricks where the air still departs noticeably from the wind.
- */
-export function stepFlow(v: FlowView, bricks: readonly number[], seed: number, tick: number): number[] {
+/** The phases a worker can be asked to run (see field-pool.ts). Lives here, not in the worker module, because importing that module runs the worker. */
+export enum Phase { Gas = 1, Forces = 2, Divergence = 3, Round = 4, Project = 5 }
+
+// ── phases ────────────────────────────────────────────────────────────────
+// Each phase is a pass over a set of bricks that reads shared state and
+// writes only its own cells, so the bricks can be split across threads or
+// peers with a barrier between phases (and between pressure rounds).
+
+/** Mark (1) or unmark (0) the cells of these bricks as part of this step's region. */
+export function flowMark(v: FlowView, bricks: readonly number[], on: 0 | 1) {
+  forEachCell(v, bricks, i => { v.mask[i] = on })
+}
+
+/** Forces and self-advection: departure from the wind, into velNext. */
+export function flowForces(v: FlowView, bricks: readonly number[], seed: number, tick: number) {
   const { nx, ny, nz } = v
-  const nxy = nx * ny
   const [u0, v0, w0] = v.vel as [Int32Array, Int32Array, Int32Array]
   const [u1, v1, w1] = v.velNext as [Int32Array, Int32Array, Int32Array]
   const base = prevailing(seed, tick)
-  const winds = new Map<number, [number, number]>()
-  for (const b of bricks) winds.set(b, ambient(seed, tick, b % v.bx, Math.floor(b / v.bx) % v.by, base))
-
-  // 1–2. Forces and self-advection.
-  forEachCell(v, bricks, (i, fx, fy, fz, b) => {
-    const [ax, ay] = winds.get(b)!
-    if (v.solid[i]) { u1[i] = -ax; v1[i] = -ay; w1[i] = 0; return } // no air moves inside a solid
-    const sx = fx * 256 - (ax + u0[i]!), sy = fy * 256 - (ay + v0[i]!), sz = fz * 256 - w0[i]!
-    const clamp = (x: number) => Math.max(-MAX_SPEED, Math.min(MAX_SPEED, x))
-    u1[i] = clamp((sample(u0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8)
-    v1[i] = clamp((sample(v0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8)
-    w1[i] = clamp(((sample(w0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8) + ((v.heat[i]! * BUOYANCY) >> 8))
-    // Turbulence: warm air gets a small seeded swirl, slowly changing, which
-    // the pressure step turns into rolling eddies. Plumes billow and widen
-    // instead of rising as straight pillars.
-    const heat = v.heat[i]!
-    if (heat > 40) {
-      const amp = Math.min(TURBULENCE, heat >> 2)
-      const t = tick >> 2
-      const n1 = valueNoise2(seed ^ 0x7a1, fx * 3 + fz * 7, fy * 3 + t * 5, 5) - 32768
-      const n2 = valueNoise2(seed ^ 0x7a2, fy * 3 + fz * 5, fx * 3 + t * 3, 5) - 32768
-      u1[i] = clamp(u1[i]! + ((n1 * amp) >> 15))
-      v1[i] = clamp(v1[i]! + ((n2 * amp) >> 15))
-    }
-  })
-
-  // 3. Pressure. Outside the computed bricks the air is open (pressure 0);
-  // a solid neighbour reflects (its pressure reads as this cell's).
-  // A mask of computed cells and a flat list of them keep the rounds cheap.
-  const cells: number[] = []
-  forEachCell(v, bricks, i => { v.mask[i] = 1; cells.push(i) })
-  const m = v.mask, solid = v.solid, div = v.div
-  // Neighbour index or -1 when outside the grid (open air).
-  const xs = new Int32Array(cells.length * 6)
-  cells.forEach((i, k) => {
-    const fx = i % nx, fy = Math.floor(i / nx) % ny, fz = Math.floor(i / nxy)
-    xs[k * 6] = fx + 1 < nx ? i + 1 : -1; xs[k * 6 + 1] = fx > 0 ? i - 1 : -1
-    xs[k * 6 + 2] = fy + 1 < ny ? i + nx : -1; xs[k * 6 + 3] = fy > 0 ? i - nx : -1
-    xs[k * 6 + 4] = fz + 1 < nz ? i + nxy : -1; xs[k * 6 + 5] = fz > 0 ? i - nxy : -1
-  })
-  const vin = (a: Int32Array, j: number) => (j >= 0 && m[j] ? a[j]! : 0)
-  for (let k = 0; k < cells.length; k++) {
-    const i = cells[k]!
-    if (solid[i]) { div[i] = 0; continue }
-    div[i] = ((vin(u1, xs[k * 6]!) - vin(u1, xs[k * 6 + 1]!)) + (vin(v1, xs[k * 6 + 2]!) - vin(v1, xs[k * 6 + 3]!)) +
-      (vin(w1, xs[k * 6 + 4]!) - vin(w1, xs[k * 6 + 5]!))) >> 1
-  }
-  let p = v.p, q = v.pNext
-  for (const i of cells) { p[i] = 0; q[i] = 0 }
-  for (let round = 0; round < PRESSURE_ROUNDS; round++) {
-    for (let k = 0; k < cells.length; k++) {
-      const i = cells[k]!
-      if (solid[i]) { q[i] = 0; continue }
-      const own = p[i]!
-      let sum = 0
-      for (let d = 0; d < 6; d++) {
-        const j = xs[k * 6 + d]!
-        if (j >= 0 && m[j]) sum += solid[j] ? own : p[j]!
-      }
-      q[i] = Math.trunc((sum - div[i]!) / 6)
-    }
-    const t = p; p = q; q = t
-  }
-  // Subtract the pressure gradient.
-  const stillMoving: number[] = []
-  const pAt = (j: number, own: number) => (j >= 0 && m[j] ? (solid[j] ? own : p[j]!) : 0)
-  let k = 0, moving = false
+  const clamp = (x: number) => Math.max(-MAX_SPEED, Math.min(MAX_SPEED, x))
   for (const b of bricks) {
-    moving = false
-    const bx = b % v.bx, by = Math.floor(b / v.bx) % v.by, bz = Math.floor(b / (v.bx * v.by))
-    for (let lz = 0; lz < FB; lz++) for (let ly = 0; ly < FB; ly++) for (let lx = 0; lx < FB; lx++) {
-      if (bx * FB + lx >= nx || by * FB + ly >= ny || bz * FB + lz >= nz) continue
-      const i = cells[k]!
-      const o = k * 6
-      k++
-      if (solid[i]) continue
-      const own = p[i]!
-      u1[i]! -= (pAt(xs[o]!, own) - pAt(xs[o + 1]!, own)) >> 1
-      v1[i]! -= (pAt(xs[o + 2]!, own) - pAt(xs[o + 3]!, own)) >> 1
-      w1[i]! -= (pAt(xs[o + 4]!, own) - pAt(xs[o + 5]!, own)) >> 1
-      if (Math.abs(u1[i]!) + Math.abs(v1[i]!) + Math.abs(w1[i]!) > 48) moving = true
-    }
-    if (moving) stillMoving.push(b)
+    const [ax, ay] = ambient(seed, tick, b % v.bx, Math.floor(b / v.bx) % v.by, base)
+    forEachCell(v, [b], (i, fx, fy, fz) => {
+      if (v.solid[i]) { u1[i] = -ax; v1[i] = -ay; w1[i] = 0; return } // no air moves inside a solid
+      const sx = fx * 256 - (ax + u0[i]!), sy = fy * 256 - (ay + v0[i]!), sz = fz * 256 - w0[i]!
+      u1[i] = clamp((sample(u0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8)
+      v1[i] = clamp((sample(v0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8)
+      w1[i] = clamp(((sample(w0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8) + ((v.heat[i]! * BUOYANCY) >> 8))
+      // Turbulence: warm air gets a small seeded swirl, slowly changing, which
+      // the pressure step turns into rolling eddies. Plumes billow and widen.
+      const heat = v.heat[i]!
+      if (heat > 40) {
+        const amp = Math.min(TURBULENCE, heat >> 2)
+        const t = tick >> 2
+        const n1 = valueNoise2(seed ^ 0x7a1, fx * 3 + fz * 7, fy * 3 + t * 5, 5) - 32768
+        const n2 = valueNoise2(seed ^ 0x7a2, fy * 3 + fz * 5, fx * 3 + t * 3, 5) - 32768
+        u1[i] = clamp(u1[i]! + ((n1 * amp) >> 15))
+        v1[i] = clamp(v1[i]! + ((n2 * amp) >> 15))
+      }
+    })
   }
-  for (const i of cells) m[i] = 0
-  return stillMoving
+}
+
+/** Neighbour index, or -1 outside the grid (open air). */
+function nbr(v: FlowView, i: number, fx: number, fy: number, fz: number, d: number): number {
+  const nxy = v.nx * v.ny
+  return d === 0 ? (fx + 1 < v.nx ? i + 1 : -1) : d === 1 ? (fx > 0 ? i - 1 : -1)
+    : d === 2 ? (fy + 1 < v.ny ? i + v.nx : -1) : d === 3 ? (fy > 0 ? i - v.nx : -1)
+    : d === 4 ? (fz + 1 < v.nz ? i + nxy : -1) : (fz > 0 ? i - nxy : -1)
+}
+
+/** Divergence of the new velocity (outside the region reads as plain wind); zeroes both pressure buffers. */
+export function flowDivergence(v: FlowView, bricks: readonly number[]) {
+  const [u1, v1, w1] = v.velNext as [Int32Array, Int32Array, Int32Array]
+  const m = v.mask
+  const vin = (a: Int32Array, j: number) => (j >= 0 && m[j] ? a[j]! : 0)
+  forEachCell(v, bricks, (i, fx, fy, fz) => {
+    v.p[i] = 0; v.pNext[i] = 0
+    if (v.solid[i]) { v.div[i] = 0; return }
+    v.div[i] = ((vin(u1, nbr(v, i, fx, fy, fz, 0)) - vin(u1, nbr(v, i, fx, fy, fz, 1))) +
+      (vin(v1, nbr(v, i, fx, fy, fz, 2)) - vin(v1, nbr(v, i, fx, fy, fz, 3))) +
+      (vin(w1, nbr(v, i, fx, fy, fz, 4)) - vin(w1, nbr(v, i, fx, fy, fz, 5)))) >> 1
+  })
+}
+
+/**
+ * One Jacobi pressure round: reads `from`, writes `to`. Outside the region the
+ * air is open (pressure 0); a solid neighbour reflects (reads as this cell).
+ */
+export function flowRound(v: FlowView, bricks: readonly number[], from: Int32Array, to: Int32Array) {
+  const m = v.mask, solid = v.solid
+  forEachCell(v, bricks, (i, fx, fy, fz) => {
+    if (solid[i]) { to[i] = 0; return }
+    const own = from[i]!
+    let sum = 0
+    for (let d = 0; d < 6; d++) {
+      const j = nbr(v, i, fx, fy, fz, d)
+      if (j >= 0 && m[j]) sum += solid[j] ? own : from[j]!
+    }
+    to[i] = Math.trunc((sum - v.div[i]!) / 6)
+  })
+}
+
+/** Subtract the pressure gradient. Returns the bricks whose air still departs from the wind. */
+export function flowProject(v: FlowView, bricks: readonly number[], p: Int32Array): number[] {
+  const [u1, v1, w1] = v.velNext as [Int32Array, Int32Array, Int32Array]
+  const m = v.mask, solid = v.solid
+  const pAt = (j: number, own: number) => (j >= 0 && m[j] ? (solid[j] ? own : p[j]!) : 0)
+  const moving: number[] = []
+  for (const b of bricks) {
+    let any = false
+    forEachCell(v, [b], (i, fx, fy, fz) => {
+      if (solid[i]) return
+      const own = p[i]!
+      u1[i]! -= (pAt(nbr(v, i, fx, fy, fz, 0), own) - pAt(nbr(v, i, fx, fy, fz, 1), own)) >> 1
+      v1[i]! -= (pAt(nbr(v, i, fx, fy, fz, 2), own) - pAt(nbr(v, i, fx, fy, fz, 3), own)) >> 1
+      w1[i]! -= (pAt(nbr(v, i, fx, fy, fz, 4), own) - pAt(nbr(v, i, fx, fy, fz, 5), own)) >> 1
+      if (Math.abs(u1[i]!) + Math.abs(v1[i]!) + Math.abs(w1[i]!) > 48) any = true
+    })
+    if (any) moving.push(b)
+  }
+  return moving
+}
+
+/** The pressure buffer holding the result after all rounds. */
+export const finalPressure = (v: FlowView) => (PRESSURE_ROUNDS % 2 === 0 ? v.p : v.pNext)
+
+/**
+ * Advance the velocity one tick over the given bricks (sorted), all phases in
+ * order on this thread. Returns the bricks where the air still departs
+ * noticeably from the wind.
+ */
+export function stepFlow(v: FlowView, bricks: readonly number[], seed: number, tick: number): number[] {
+  flowMark(v, bricks, 1)
+  flowForces(v, bricks, seed, tick)
+  flowDivergence(v, bricks)
+  for (let r = 0; r < PRESSURE_ROUNDS; r++) flowRound(v, bricks, r % 2 ? v.pNext : v.p, r % 2 ? v.p : v.pNext)
+  const moving = flowProject(v, bricks, finalPressure(v))
+  flowMark(v, bricks, 0)
+  return moving
 }

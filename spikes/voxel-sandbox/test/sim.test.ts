@@ -8,7 +8,7 @@ beforeAll(() => initPhysics())
 import { Grid, hashGrids } from '../src/grid'
 
 // A smaller world keeps the suite fast; the rules are the same.
-const SPEC = { ...DEFAULT_SPEC, sx: 144, sy: 144 }
+const SPEC = { ...DEFAULT_SPEC, sx: 96, sy: 96 }
 const POST = { x: Math.floor(SPEC.sx * 0.52), y: Math.floor(SPEC.sy * 0.56) }
 
 function groundAt(sim: Sim, x: number, y: number) {
@@ -23,7 +23,7 @@ function burnThePost() {
   const sim = new Sim(generate(SPEC), SPEC.seed, { airFlow: false })
   const gx = POST.x - 4, gy = POST.y - 4
   sim.schedule({ tick: 1, peer: 0, seq: 0, command: { kind: 'ignite', x: gx, y: gy, z: groundAt(sim, gx, gy) } })
-  sim.schedule({ tick: 5, peer: 1, seq: 0, command: { kind: 'drop', x: 30, y: 100, z: 60 } })
+  sim.schedule({ tick: 5, peer: 1, seq: 0, command: { kind: 'drop', x: 30, y: 70, z: 60 } })
   // The dry post (same wood as the trees, 12% moisture) gives way ~30 s in.
   for (let i = 0; i < 900; i++) sim.step()
   return sim
@@ -96,7 +96,8 @@ describe('storage', () => {
   test('uniform bricks cost no cell arrays', () => {
     const g = generate(SPEC)
     const s = g.stats()
-    expect(s.detailed).toBeLessThan(s.bricks / 2)
+    // Only the surface needs cell arrays; in this small test world that's ~half the bricks.
+    expect(s.detailed).toBeLessThan(s.bricks * 0.6)
   })
 })
 

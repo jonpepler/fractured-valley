@@ -27,11 +27,19 @@ const FACES: readonly [number, number, number][] = [[1, 0, 0], [-1, 0, 0], [0, 1
  * the air is hot enough it burns, adding heat and a little soot, and the
  * amount burning this tick is Flame (not carried: it is made fresh each tick).
  */
-export const enum F { Heat = 0, Soot = 1, Steam = 2, Fuel = 3, Flame = 4 }
-export const KINDS = 5
+export const enum F { Heat = 0, Soot = 1, Steam = 2, Fuel = 3, Flame = 4, O2Used = 5 }
+export const KINDS = 6
 
-/** How fast each field fades per tick, out of 256 (vapour that never burns slowly disperses). */
-const FADE = [14, 9, 12, 10, 0]
+/**
+ * How fast each field fades per tick, out of 256 (vapour that never burns
+ * slowly disperses). Oxygen used doesn't fade: fresh air only comes back by
+ * mixing in from around, so a closed space stays starved.
+ */
+const FADE = [14, 9, 12, 10, 0, 0]
+/** Oxygen in fresh air, in the same units as O2Used (21% of air ≈ 2100). */
+const O2_FRESH = 2100
+/** Oxygen used per unit of vapour burnt. */
+const O2_PER_FUEL = 3
 /** Vapour burns where the air is at least this hot (°C), given oxygen. */
 const VAPOUR_IGNITES = 420
 /** Share of the vapour in a cell that burns per tick, out of 256, and heat released per unit burnt. */
@@ -78,9 +86,10 @@ export class Fields {
     this.next = Array.from({ length: KINDS }, u16)
     this.solid = new Uint8Array(shared ? new SharedArrayBuffer(n) : new ArrayBuffer(n))
     if (flow) {
-      this.vel = [0, 1, 2].map(() => new Int32Array(n))
-      this.velNext = [0, 1, 2].map(() => new Int32Array(n))
-      this.scratch = { mask: new Uint8Array(n), div: new Int32Array(n), p: new Int32Array(n), pNext: new Int32Array(n) }
+      const i32 = () => new Int32Array(shared ? new SharedArrayBuffer(n * 4) : new ArrayBuffer(n * 4))
+      this.vel = [0, 1, 2].map(i32)
+      this.velNext = [0, 1, 2].map(i32)
+      this.scratch = { mask: new Uint8Array(shared ? new SharedArrayBuffer(n) : new ArrayBuffer(n)), div: i32(), p: i32(), pNext: i32() }
     }
   }
 
@@ -93,6 +102,19 @@ export class Fields {
     const fx = Math.floor(x / FR), fy = Math.floor(y / FR), fz = Math.floor(z / FR)
     if (fx < 0 || fy < 0 || fz < 0 || fx >= this.nx || fy >= this.ny || fz >= this.nz) return 0
     return this.cur[kind]![this.index(fx, fy, fz)]!
+  }
+
+  /**
+   * Raise the air at a world cell to at least this temperature: a burning
+   * surface glows (700 °C or so) and the air touching it is that hot. Uses
+   * max, so the order cells do it in doesn't matter.
+   */
+  warm(x: number, y: number, z: number, heat: number) {
+    const fx = Math.floor(x / FR), fy = Math.floor(y / FR), fz = Math.floor(z / FR)
+    if (fx < 0 || fy < 0 || fz < 0 || fx >= this.nx || fy >= this.ny || fz >= this.nz) return
+    const i = this.index(fx, fy, fz)
+    if (this.cur[F.Heat]![i]! < heat) this.cur[F.Heat]![i] = Math.min(MAX_HEAT, heat)
+    this.active.add(this.world.brickIndex(fx * FR, fy * FR, fz * FR))
   }
 
   /** Add gas at a world cell (saturating; order-independent). */
@@ -167,12 +189,24 @@ export class Fields {
   }
 
   /** Advance the air's velocity over these bricks, before gas is carried by it. */
-  private stepAir(bricks: number[], seed: number, tick: number) {
+  /** The air's buffers, for the flow phases (here or in workers). */
+  airView(): FlowView {
     const s = this.scratch!
-    const view: FlowView = { nx: this.nx, ny: this.ny, nz: this.nz, bx: this.world.bx, by: this.world.by, solid: this.solid,
+    return { nx: this.nx, ny: this.ny, nz: this.nz, bx: this.world.bx, by: this.world.by, solid: this.solid,
       heat: this.cur[0]!, vel: this.vel!, velNext: this.velNext, mask: s.mask, div: s.div, p: s.p, pNext: s.pNext }
-    const moving = stepFlow(view, bricks, seed, tick)
+  }
+
+  /** Which velocity buffer is current (0 or 1), for shared-memory workers. */
+  velParity = 0
+
+  private stepAir(bricks: number[], seed: number, tick: number) {
+    this.finishAir(bricks, stepFlow(this.airView(), bricks, seed, tick))
+  }
+
+  /** After the flow phases have filled velNext for these bricks: swap and tidy. */
+  finishAir(bricks: number[], moving: number[]) {
     const t = this.vel!; this.vel = this.velNext; this.velNext = t
+    this.velParity ^= 1
     // Bricks no longer computed go back to plain wind; the spare buffer is
     // zeroed where it held velocity, so stale motion never resurfaces.
     const todo = new Set(bricks)
@@ -244,7 +278,7 @@ export class Fields {
         if (fx >= this.nx || fy >= this.ny || fz >= this.nz) continue
         const i = this.index(fx, fy, fz)
         const hh = this.cur[0]![i]!, s = this.cur[1]![i]!, st = this.cur[2]![i]!, fu = this.cur[3]![i]!, fl = this.cur[4]![i]!
-        if (hh | s | st | fu | fl) yield [fx, fy, fz, hh, s, st, fu, fl]
+        if (hh | s | st | fu | fl | this.cur[5]![i]!) yield [fx, fy, fz, hh, s, st, fu, fl]
       }
     }
   }
@@ -330,6 +364,9 @@ export interface AirState {
   bricks: { brick: number; values: number[] }[]
 }
 
+/** The gases the air carries (Flame is made fresh each tick, not carried). */
+const CARRIED = [F.Heat, F.Soot, F.Steam, F.Fuel, F.O2Used] as const
+
 /** Plain arrays and sizes: everything the kernel needs, and nothing else. */
 export interface FieldView {
   nx: number; ny: number; nz: number
@@ -388,15 +425,23 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
       const iyp = fy + 1 < ny ? i + nx : -1, iym = fy > 0 ? i - nx : -1
       const izp = fz + 1 < nz ? i + nxy : -1, izm = fz > 0 ? i - nxy : -1
       // Carry, blur and fade each gas (flame is not carried: it is made below).
-      const val = [0, 0, 0, 0]
-      for (let k = 0; k < 4; k++) {
+      const val = [0, 0, 0, 0, 0, 0]
+      for (const k of CARRIED) {
         const a = v.cur[k]!
-        const adv = ((c000 ? a[base0]! * w000 : 0) + (c100 ? a[base0 + 1]! * w100 : 0) +
-          (c010 ? a[base0 + nx]! * w010 : 0) + (c110 ? a[base0 + nx + 1]! * w110 : 0) +
-          (c001 ? a[base0 + nxy]! * w001 : 0) + (c101 ? a[base0 + nxy + 1]! * w101 : 0) +
-          (c011 ? a[base0 + nxy + nx]! * w011 : 0) + (c111 ? a[base0 + nxy + nx + 1]! * w111 : 0)) >> 8
-        const nb = ((ixp >= 0 ? a[ixp]! : 0) + (ixm >= 0 ? a[ixm]! : 0) + (iyp >= 0 ? a[iyp]! : 0) +
-          (iym >= 0 ? a[iym]! : 0) + (izp >= 0 ? a[izp]! : 0) + (izm >= 0 ? a[izm]! : 0)) / 6 | 0
+        // Gas traced back into a wall reads as this cell's own (walls neither
+        // hold nor supply gas), so a sealed room keeps its air.
+        const own = a[i]!, sol = v.solid
+        const j0 = base0, j1 = base0 + 1, j2 = base0 + nx, j3 = base0 + nx + 1
+        const j4 = base0 + nxy, j5 = base0 + nxy + 1, j6 = base0 + nxy + nx, j7 = base0 + nxy + nx + 1
+        const adv = ((c000 ? (sol[j0] ? own : a[j0]!) * w000 : 0) + (c100 ? (sol[j1] ? own : a[j1]!) * w100 : 0) +
+          (c010 ? (sol[j2] ? own : a[j2]!) * w010 : 0) + (c110 ? (sol[j3] ? own : a[j3]!) * w110 : 0) +
+          (c001 ? (sol[j4] ? own : a[j4]!) * w001 : 0) + (c101 ? (sol[j5] ? own : a[j5]!) * w101 : 0) +
+          (c011 ? (sol[j6] ? own : a[j6]!) * w011 : 0) + (c111 ? (sol[j7] ? own : a[j7]!) * w111 : 0)) >> 8
+        // A solid neighbour counts as this cell (gas doesn't soak into walls,
+        // and a wall doesn't supply fresh air); outside the grid is open air.
+        const nb = ((ixp < 0 ? 0 : sol[ixp] ? own : a[ixp]!) + (ixm < 0 ? 0 : sol[ixm] ? own : a[ixm]!) +
+          (iyp < 0 ? 0 : sol[iyp] ? own : a[iyp]!) + (iym < 0 ? 0 : sol[iym] ? own : a[iym]!) +
+          (izp < 0 ? 0 : sol[izp] ? own : a[izp]!) + (izm < 0 ? 0 : sol[izm] ? own : a[izm]!)) / 6 | 0
         // Smoke (soot, steam) mixes into the air around it faster than heat or vapour, so plumes widen and thin.
         let x = k === F.Soot || k === F.Steam ? (adv * 5 + nb * 3) >> 3 : (adv * 3 + nb) >> 2
         x -= (x * FADE[k]! + 255) >> 8
@@ -410,16 +455,22 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
       if (glow) val[F.Heat] = Math.min(MAX_HEAT, val[F.Heat]! + ((glow * RADIANT) >> 4))
       // Combustion: vapour in hot air burns, adding heat and a little soot.
       // (Oxygen is assumed plentiful for now; brief 05 has it in the air.)
+      // It needs oxygen: it can only burn what the oxygen here allows, uses
+      // it up, and where oxygen runs short it burns dirty (more soot).
       let flame = 0
-      if (val[F.Fuel]! > 0 && val[F.Heat]! >= VAPOUR_IGNITES) {
+      const o2 = Math.max(0, O2_FRESH - val[F.O2Used]!)
+      if (val[F.Fuel]! > 0 && val[F.Heat]! >= VAPOUR_IGNITES && o2 > 0) {
         flame = Math.max(Math.min(val[F.Fuel]!, 24), (val[F.Fuel]! * BURN_SHARE) >> 8)
+        flame = Math.min(flame, Math.floor(o2 / O2_PER_FUEL))
         val[F.Fuel]! -= flame
+        val[F.O2Used] = Math.min(O2_FRESH, val[F.O2Used]! + flame * O2_PER_FUEL)
         val[F.Heat] = Math.min(MAX_HEAT, val[F.Heat]! + flame * HEAT_PER_FUEL)
-        val[F.Soot] = Math.min(CAP, val[F.Soot]! + ((flame * SOOT_PER_FUEL) >> 8))
+        const starved = 256 + ((768 * (O2_FRESH - o2)) / O2_FRESH | 0) // ×1 fresh … ×4 starved
+        val[F.Soot] = Math.min(CAP, val[F.Soot]! + ((((flame * SOOT_PER_FUEL) >> 8) * starved) >> 8))
       }
-      for (let k = 0; k < 4; k++) v.next[k]![i] = val[k]!
+      for (const k of CARRIED) v.next[k]![i] = val[k]!
       v.next[F.Flame]![i] = Math.min(CAP, flame)
-      if (val[0]! | val[1]! | val[2]! | val[3]! | flame) any = true
+      if (val[0]! | val[1]! | val[2]! | val[3]! | val[5]! | flame) any = true
     }
     if (any) withGas.push(b)
   }

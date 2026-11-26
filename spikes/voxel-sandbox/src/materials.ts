@@ -18,7 +18,11 @@ export interface Flammable {
   readonly fineness: number
   /** Ticks to burn through once alight. */
   readonly burnTicks: number
-  /** Heat given to the air per tick while burning (°C, into one 20 cm field cell). */
+  /**
+   * Heat given to the air per tick while burning (°C, into one 20 cm field
+   * cell). Roughly the fuel's energy ÷ its burn time: a wisp of grass gives
+   * little for a short while; a block of wood a steady glow for minutes.
+   */
   readonly heat: number
   /** Soot (dark smoke) given off per tick while burning. */
   readonly soot: number
@@ -92,19 +96,19 @@ const list: Material[] = [
   {
     id: M.Grass, name: 'grass', solid: true, opaque: true, terrain: true, density: 16,
     moisture: 35,
-    flammable: { ignitesAt: 260, extinction: 40, fineness: 6, burnTicks: 40, heat: 260, soot: 50, becomes: M.Scorched },
+    flammable: { ignitesAt: 260, extinction: 40, fineness: 6, burnTicks: 40, heat: 95, soot: 50, becomes: M.Scorched },
     palette: ['#3d6428', '#4b742e', '#5b8236', '#6c8a3c', '#7d8c46', '#8e9152'].map(hex),
   },
   {
     id: M.TallGrass, name: 'tall grass', solid: false, opaque: true, density: 1,
     moisture: 18,
-    flammable: { ignitesAt: 230, extinction: 45, fineness: 8, burnTicks: 30, heat: 220, soot: 40, becomes: M.Air },
+    flammable: { ignitesAt: 230, extinction: 45, fineness: 8, burnTicks: 30, heat: 80, soot: 40, becomes: M.Air },
     palette: ['#56883a', '#6a9844', '#8c9a52', '#a3a462'].map(hex),
   },
   {
     id: M.Flower, name: 'flower', solid: false, opaque: true, density: 1,
     moisture: 70,
-    flammable: { ignitesAt: 250, extinction: 45, fineness: 8, burnTicks: 20, heat: 160, soot: 15, becomes: M.Air },
+    flammable: { ignitesAt: 250, extinction: 45, fineness: 8, burnTicks: 20, heat: 60, soot: 15, becomes: M.Air },
     palette: ['#d9788a', '#e39aa5', '#c95f75'].map(hex),
   },
   {
@@ -119,7 +123,7 @@ const list: Material[] = [
   {
     id: M.Leaves, name: 'leaves', solid: true, opaque: true, density: 1,
     moisture: 140,
-    flammable: { ignitesAt: 260, extinction: 120, fineness: 7, burnTicks: 160, heat: 240, soot: 50, becomes: M.Air },
+    flammable: { ignitesAt: 260, extinction: 120, fineness: 7, burnTicks: 160, heat: 90, soot: 50, becomes: M.Air },
     palette: ['#3d7a2c', '#2f6a27', '#4b8a33', '#58993b'].map(hex),
   },
   {
@@ -142,7 +146,7 @@ const list: Material[] = [
   {
     id: M.Moss, name: 'moss', solid: false, opaque: true, density: 1,
     moisture: 200,
-    flammable: { ignitesAt: 260, extinction: 60, fineness: 6, burnTicks: 40, heat: 120, soot: 20, becomes: M.Air },
+    flammable: { ignitesAt: 260, extinction: 60, fineness: 6, burnTicks: 40, heat: 40, soot: 20, becomes: M.Air },
     palette: ['#6e9a35', '#82ab3f', '#5c8a2e'].map(hex),
   },
 ]

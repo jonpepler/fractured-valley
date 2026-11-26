@@ -5,8 +5,8 @@ import { DEFAULT_SPEC, generate } from './gen'
 import { M } from './materials'
 import { Sim } from './sim'
 
-export const SCENARIO_SPEC = { ...DEFAULT_SPEC, sx: 144, sy: 144 }
-export const SCENARIO_TICKS = 900
+export const SCENARIO_SPEC = { ...DEFAULT_SPEC, sx: 96, sy: 96 }
+export const SCENARIO_TICKS = 600
 export const SCENARIO_EVERY = 50
 
 export interface ScenarioResult {

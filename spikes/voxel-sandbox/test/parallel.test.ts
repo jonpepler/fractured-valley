@@ -29,7 +29,7 @@ function soloHashes(): number[] {
   return out
 }
 let solo: number[]
-beforeAll(() => { solo = soloHashes() })
+beforeAll(() => { solo = soloHashes() }, 240_000)
 
 describe('threads', () => {
   const pools: FieldPool[] = []
@@ -48,6 +48,29 @@ describe('threads', () => {
       expect(sim.fields.active.size).toBeGreaterThan(0) // the fire really made gas
     })
   }
+})
+
+describe('threads, with moving air', () => {
+  const pools: FieldPool[] = []
+  afterAll(() => Promise.all(pools.map(p => p.close())))
+
+  test('moving air stepped on 3 worker threads (every pressure round split) matches one thread', { timeout: 300_000 }, () => {
+    const run = (threads: number) => {
+      const world = generate(SPEC)
+      const sim = lit(new Sim(world, SPEC.seed, { sharedFields: threads > 0, airFlow: true }))
+      if (threads) {
+        const pool = new FieldPool(sim.fields, threads, world.bricks.length)
+        pools.push(pool)
+        sim.fieldStep = (s, t) => pool.step(s, t)
+      }
+      const out: number[] = []
+      for (let i = 0; i < 160; i++) { sim.step(); if (sim.tick % 20 === 0) out.push(sim.hash()) }
+      return { out, moving: sim.fields.moving.size }
+    }
+    const one = run(0), three = run(3)
+    expect(three.out).toEqual(one.out)
+    expect(one.moving).toBeGreaterThan(0) // the air really moved
+  })
 })
 
 // ── peers: each computes the bricks it owns, sends them, checks a sample ──

@@ -26,6 +26,8 @@ const LOOSE_CAN_HOLD = 32
 /** Air hotter than this (°C) dries fuel next to it. */
 const DRYING_HEAT = 100
 const MAX_EMBERS = 150
+/** Temperature (°C) of the air touching a burning, dry surface. */
+const SURFACE_GLOW = 700
 /** Downward pull on an ember per tick (1/256 cells per tick²). */
 const EMBER_GRAVITY = 6
 /** Which side of a burning cell its heat goes to: up first, then around. */
@@ -108,6 +110,7 @@ export class Sim {
   readonly physics = new Physics()
   /** Heat, soot and steam in the air. */
   readonly fields: Fields
+  private hotScratch = new Uint16Array(0)
   /** Glowing embers in flight (simulation state: they can start fires). */
   embers: Ember[] = []
 
@@ -259,6 +262,9 @@ export class Sim {
       // A quarter of the energy is direct heat from glowing char; the rest
       // leaves as burnable vapour, which burns in the air as flame.
       f.emit(ax, ay, az, fl.heat >> 2, fl.soot >> 1, boil * 240, (fl.heat * 3) >> 2)
+      // Once dry, the burning surface glows and the air touching it is that
+      // hot, so its own vapour lights (a lone log keeps burning).
+      if (!boil && fl.fineness <= 2) f.warm(ax, ay, az, SURFACE_GLOW) // thick fuel chars and glows; fine fuel flashes through
       const h = hash32(this.seed, this.tick, p, 0xb0)
       if (this.embers.length < MAX_EMBERS && fl.fineness >= 5 && chance(h >>> 8, fl.fineness, 40000)) {
         // An ember leaves upward with a little random push.
@@ -276,18 +282,32 @@ export class Sim {
       }
     }
     // 2. Fuel next to hot gas dries, and catches if dry and hot enough.
-    const hot = new Map<number, number>() // fuel cell → hottest air next to it
+    // Fuel cell → hottest air next to it, in a flat array indexed by cell
+    // (a Map here cost ~40 ms a tick in a big fire).
+    const n = w.sx * w.sy * w.sz
+    if (this.hotScratch.length !== n) this.hotScratch = new Uint16Array(n)
+    const hotAt = this.hotScratch
+    const hotList: number[] = []
     for (const [fx, fy, fz, heat] of f.cells()) {
       if (heat < DRYING_HEAT) continue
       for (let dz = -1; dz <= FR; dz++) for (let dy = -1; dy <= FR; dy++) for (let dx = -1; dx <= FR; dx++) {
         const x = fx * FR + dx, y = fy * FR + dy, z = fz * FR + dz
-        const fl = mat(w.get(x, y, z)).flammable
-        if (!fl) continue
-        const p = pack(x, y, z)
-        if ((hot.get(p) ?? 0) < heat) hot.set(p, heat)
+        if (x < 0 || y < 0 || z < 0 || x >= w.sx || y >= w.sy || z >= w.sz) continue
+        const idx = (z * w.sy + y) * w.sx + x
+        if (hotAt[idx]! >= heat) continue
+        if (!mat(w.get(x, y, z)).flammable) continue
+        if (!hotAt[idx]) hotList.push(pack(x, y, z))
+        hotAt[idx] = heat
       }
     }
-    for (const [p, heat] of [...hot].sort((a, b) => a[0] - b[0])) {
+    const hot: [number, number][] = hotList.sort((a, b) => a - b).map(p => {
+      const [x, y, z] = unpack(p)
+      const idx = (z * w.sy + y) * w.sx + x
+      const heat = hotAt[idx]!
+      hotAt[idx] = 0
+      return [p, heat]
+    })
+    for (const [p, heat] of hot) {
       const [x, y, z] = unpack(p)
       const fl = mat(w.get(x, y, z)).flammable!
       if (w.getState(x, y, z) > 0) continue
