@@ -35,7 +35,7 @@ const FADE = [14, 9, 12, 10, 0]
 /** Vapour burns where the air is at least this hot (°C), given oxygen. */
 const VAPOUR_IGNITES = 420
 /** Share of the vapour in a cell that burns per tick, out of 256, and heat released per unit burnt. */
-const BURN_SHARE = 150
+const BURN_SHARE = 220
 const HEAT_PER_FUEL = 3
 /** Soot made per unit of vapour burnt, out of 256 (a well-fed flame makes little). */
 const SOOT_PER_FUEL = 40

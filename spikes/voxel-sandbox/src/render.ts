@@ -87,13 +87,13 @@ const FLAME_PX = [[0xff, 0xf6, 0xc8], [0xff, 0xdc, 0x60], [0xff, 0xb0, 0x34], [0
 const CHAR_PX = rgb(0x26, 0x1d, 0x1a)
 const EMBER_PX = [[0xff, 0x8a, 0x24], [0xe8, 0x52, 0x18], [0xff, 0xc0, 0x50]].map(packed)
 // Smoke from steam (light) to soot (dark).
-const SMOKE_PX = [[0xb4, 0xb0, 0xa8], [0x96, 0x92, 0x8c], [0x66, 0x62, 0x5e], [0x3c, 0x38, 0x36]].map(packed)
+const SMOKE_PX = [[0xb4, 0xb0, 0xa8], [0x96, 0x92, 0x8c], [0x66, 0x62, 0x5e], [0x4c, 0x48, 0x46]].map(packed)
 const MAX_FLAME_PARTICLES = 12000
 /** Splatted weight a pixel needs to show as flame. */
 const FLAME_THRESHOLD = 7
 const FIRELIGHT = rgb(0xff, 0x9a, 0x40)
-/** Smoke opacity steps, out of 255: thin, medium, thick. */
-const SMOKE_OPACITY = [0, 70, 140, 210]
+/** Smoke opacity levels, out of 255, from barely there to thick. */
+const SMOKE_LEVELS = [0, 45, 80, 110, 135, 155, 175]
 interface FlameParticle { x: number; y: number; z: number; vx: number; vy: number; vz: number; heat: number; cool: number; life: number }
 // The 14 pixels of a cube sprite: [dx, dy, face] with face 0 top, 1 left, 2 right.
 const SPRITE: readonly (readonly [number, number, number])[] = [
@@ -293,8 +293,12 @@ export class IsoRenderer {
       // Thin plants: a couple of blade pixels, not a cube.
       const h = hash32(x, y, z, 77)
       const n = RAMPS[m]!.length
-      const c = burning ? fire(h ^ tick) : lut(m, n - 1 - (h % 2), TOP)
-      const c2 = burning ? fire(h ^ (tick + 1)) : lut(m, (h >> 3) % n, LEFT)
+      // Burning blades char dark, with an occasional glowing point; the flame
+      // itself is drawn from the burning vapour above them.
+      const glowing = burning && (hash32(h, tick >> 2) % 100) < 12
+      const charBlade = burning ? blend(lut(m, 0, LEFT), CHAR_PX, 190) : 0
+      const c = glowing ? EMBER_PX[h % 3]! : burning ? charBlade : lut(m, n - 1 - (h % 2), TOP)
+      const c2 = burning ? charBlade : lut(m, (h >> 3) % n, LEFT)
       const ox = 1 + (h & 1)
       this.put(ax + ox, ay + 2, d, c2, id)
       this.put(ax + ox, ay + 1, d, c, id)
@@ -330,7 +334,7 @@ export class IsoRenderer {
     const charA = Math.min(235, 70 + ((progress * 180) >> 8))
     const faces = [blend(top, CHAR_PX, charA), blend(left, CHAR_PX, charA), blend(right, CHAR_PX, charA)]
     // Quick-burning stuff (leaves, grass) is mostly glowing; wood glows more as it burns through.
-    const emberPct = fine >= 5 ? 45 : 6 + (progress >> 4)
+    const emberPct = fine >= 5 ? 12 : 6 + (progress >> 4) // sparse glow points; dense speckle reads as a brown cloud
     for (let i = 0; i < SPRITE.length; i++) {
       const [dx, dy, face] = SPRITE[i]!
       const e = hash32(x * 31 + i, y, z, tick >> 2)
@@ -386,16 +390,24 @@ export class IsoRenderer {
       const heat = gasWeight[i]! ? gasHeat[i]! / gasWeight[i]! : 0
       const smoke = gasSmoke[i]!, soot = gasSoot[i]!
       gasMark[i] = 0; gasSmoke[i] = 0; gasSoot[i] = 0; gasHeat[i] = 0; gasWeight[i] = 0
-      // Clumps ~4 px across, drifting up 1 px a tick, re-rolled slowly.
-      const clump = (hash32(px >> 2, (py + tick) >> 2, tick >> 4) & 127) - 64
-      const density = (smoke >> 2) + (clump * Math.min(smoke >> 2, 120)) / 160
-      const step = density > 150 ? 3 : density > 90 ? 2 : density > 40 ? 1 : 0
-      if (!step) continue
+      // Clumps ~4 px across, drifting up 1 px a tick, re-rolled slowly. They
+      // break the outline most where the smoke is thin, so edges are ragged and
+      // see-through rather than a crisp contour.
+      // Smooth noise (not per-pixel random, which reads as stipple) gives soft
+      // puffs ~6 px across that rise 1 px a tick and slowly change shape.
+      const puff = (valueNoise2(this.seed ^ 0x5340, px * 4 + (tick >> 2), (py + tick) * 4, 24) >> 9) - 64
+      const base = smoke >> 1
+      const density = base + (puff * Math.min(Math.max(base, 40), 140)) / 80
+      if (density < 30) continue
+      const opacity = Math.min(220, (density - 30) * 2)
+      const level = SMOKE_LEVELS[Math.min(SMOKE_LEVELS.length - 1, opacity >> 5)]!
+      if (!level) continue
       const dark = smoke ? Math.min(3, Math.floor((soot * 4) / smoke)) : 0
       let col = SMOKE_PX[dark]!
-      const lit = heat > 600 ? Math.min(110, (heat - 600) >> 2) : 0
+      // Warm only on the underside, just above hot flames, and faintly.
+      const lit = heat > 760 ? Math.min(60, (heat - 760) >> 2) : 0
       if (lit) col = blend(col, FLAME_PX[3]!, lit)
-      this.px[i] = blend(this.px[i]!, col, SMOKE_OPACITY[step]!)
+      this.px[i] = blend(this.px[i]!, col, level)
     }
     this.drawFlames()
   }
@@ -418,6 +430,12 @@ export class IsoRenderer {
     }
     for (const [fx, fy, fz, heat, , , , flame] of fields.cells()) {
       if (!flame) continue
+      // Tongues come and go: each burning cell is briefly quiet about a third
+      // of the time (re-rolled every 8 ticks), and has its own height for that
+      // spell, so the front breaks into separate tongues with gaps between.
+      const spell = hash32(fx * 7919 + fy, fz, tick >> 3)
+      if ((spell & 255) < 85) continue
+      const tall = 0.55 + ((spell >>> 8) & 255) / 300 // ×0.55 … ×1.4
       const n = Math.min(3, 1 + (flame >> 7))
       const [gx, gy, gz] = fields.velocity(this.seed, tick, fx, fy, fz, heat)
       for (let k = 0; k < n && kept.length < MAX_FLAME_PARTICLES; k++) {
@@ -431,7 +449,7 @@ export class IsoRenderer {
           // field velocity is 1/256 field cells per tick: ×FR/256 for world cells
           vx: (gx * FR) / 256 + (r(h, 4) - 0.5) * 0.05, vy: (gy * FR) / 256 + (r(h, 12) - 0.5) * 0.05,
           vz: Math.max(0.12, (gz * FR) / 256) + r(h, 20) * 0.12,
-          heat: Math.min(1000, heat - 40), cool: 45 + r(h, 24) * 45, life: 4 + ((h >>> 28) & 7),
+          heat: Math.min(1000, heat - 40), cool: (45 + r(h, 24) * 45) / tall, life: Math.round((4 + ((h >>> 28) & 7)) * tall),
         })
       }
     }
@@ -569,7 +587,6 @@ export class IsoRenderer {
       const d = Math.round(x + y + z) + 1
       const c = EMBER_PX[(e.life + tick) % 3]!
       this.putPixel(px, py, d, c)
-      if (e.life & 1) this.putPixel(px - Math.sign(e.vx - e.vy), py + 1, d, EMBER_PX[1]!)
     }
   }
 

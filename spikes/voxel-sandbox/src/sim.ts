@@ -25,7 +25,7 @@ export const SMALL_PIECE = 8
 const LOOSE_CAN_HOLD = 32
 /** Air hotter than this (°C) dries fuel next to it. */
 const DRYING_HEAT = 100
-const MAX_EMBERS = 600
+const MAX_EMBERS = 150
 /** Downward pull on an ember per tick (1/256 cells per tick²). */
 const EMBER_GRAVITY = 6
 /** Which side of a burning cell its heat goes to: up first, then around. */
@@ -260,7 +260,7 @@ export class Sim {
       // leaves as burnable vapour, which burns in the air as flame.
       f.emit(ax, ay, az, fl.heat >> 2, fl.soot >> 1, boil * 240, (fl.heat * 3) >> 2)
       const h = hash32(this.seed, this.tick, p, 0xb0)
-      if (this.embers.length < MAX_EMBERS && fl.fineness >= 5 && chance(h >>> 8, fl.fineness, 12000)) {
+      if (this.embers.length < MAX_EMBERS && fl.fineness >= 5 && chance(h >>> 8, fl.fineness, 40000)) {
         // An ember leaves upward with a little random push.
         const r = (k: number) => ((h >>> k) & 31) - 16
         this.embers.push({ x: ax * 256 + 128, y: ay * 256 + 128, z: az * 256 + 128, vx: r(0) * 3, vy: r(5) * 3, vz: 120 + ((h >>> 10) & 63), life: 60 + ((h >>> 16) & 63) })
