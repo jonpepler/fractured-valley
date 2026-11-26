@@ -28,6 +28,11 @@ fn main() {
         let (mut hot, mut hottest, mut at) = (0, 0i64, (0, 0, 0));
         for z in 0..w.nz { for y in 0..w.ny { for x in 0..w.nx { let c = w.get(x, y, z); let t = c.temperature(&w.subs).0; if t > 1_500_000 { hot += 1 } if t > hottest { hottest = t; at = (x, y, z) } } } }
         let c = w.get(at.0, at.1, at.2);
+        let burning = w.cells.iter().filter(|c| c.substance == KINDLING && c.solid[fv_core::cell::VOLATILE].0 < 39_000_000).count();
+        let maxgas = w.cells.iter().map(|c| c.gas_temperature().0).max().unwrap();
+        let wood_hot = w.cells.iter().filter(|c| c.substance == WOOD && c.surface_temperature(&w.subs).0 > 600_000).count();
+        if tick % 50 != 49 { continue }
+        println!("kindling burning {burning}/24, wood faces >327C {wood_hot}, max gas {:.0}C", maxgas as f64 / 1000.0 - 273.15);
         println!("{tick} gap {} mass {} | cells>1500K {hot} | hottest {:.0}C at {:?} sub {} solid_mass {} skin {} solidE {} gasE {} cap {}", sim.energy_gap(), sim.mass_gap(), hottest as f64 / 1000.0 - 273.15, at, c.substance, c.solid_mass().0, c.skin.0, c.solid_energy.0, c.energy.0, c.solid_capacity(&w.subs).0);
     }
 }

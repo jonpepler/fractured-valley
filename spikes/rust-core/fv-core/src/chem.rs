@@ -35,6 +35,10 @@ const FINE_SIGMA: i64 = 4_000;
 /// The lowest flame temperature a fuel–air mix can sustain (FDS default
 /// critical flame temperature, 1427 °C).
 const CRITICAL_FLAME: Temperature = Temperature(1_700_000);
+/// Below this, burnable gas can't catch: a pilot flame lights wood gas off
+/// a surface at about 350 °C (Babrauskas, Ignition Handbook, 2003). The
+/// gas or the surface it leaves must be this hot.
+pub const IGNITION: Temperature = Temperature(623_000);
 /// Share of a flammable mix that burns per tick when the flame holds: fuel
 /// and air mix in ~0.1 s at this scale (1 − e^(−0.5)).
 const MIXING: Fraction = Fraction(1_690_000_000);
@@ -85,6 +89,21 @@ fn evaporate(c: &mut Cell, subs: &[Substance], dm: Mass, ts: Temperature) {
     c.gas[Gas::Vapour as usize] += dm;
     *c.surface_store(subs) -= e;
     c.energy += e;
+}
+
+/// Burnable gas a cell's solid gives off this tick, at its surface's
+/// temperature, within the two measured caps (see `react_cell`).
+pub fn pyrolysis_rate(c: &Cell, subs: &[Substance], t: &Tables) -> Mass {
+    let s = &subs[c.substance as usize];
+    if c.solid[VOLATILE].0 <= 0 { return Mass(0) }
+    let full = s.full_mass.0 * s.composition[VOLATILE] / 1_000;
+    let cap = if c.permeable(subs) {
+        (full as i128 * s.surface_per_volume.max(1) as i128 * TICK.0 as i128 / (RESIDENCE_S_PER_SIGMA as i128 * 1_000)) as i64
+    } else {
+        // ρ × face area × depth charred per tick: full mass × (β·dt / 100 mm)
+        (full as i128 * CHAR_UM_PER_MIN as i128 * TICK.0 as i128 / (60_000i128 * 100_000)) as i64
+    };
+    t.pyrolysis[k_index(c.surface_temperature(subs).0)].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)))
 }
 
 pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
@@ -180,14 +199,7 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
     // (fire-exposed charring rates, e.g. Eurocode 5: 0.65–1 mm/min standard,
     // faster in intense fires), so a 10 cm log burns for most of an hour.
     if c.solid[VOLATILE].0 > 0 {
-        let full = s.full_mass.0 * s.composition[VOLATILE] / 1_000;
-        let cap = if c.permeable(subs) {
-            (full as i128 * s.surface_per_volume.max(1) as i128 * TICK.0 as i128 / (RESIDENCE_S_PER_SIGMA as i128 * 1_000)) as i64
-        } else {
-            // ρ × face area × depth charred per tick: full mass × (β·dt / 100 mm)
-            (full as i128 * CHAR_UM_PER_MIN as i128 * TICK.0 as i128 / (60_000i128 * 100_000)) as i64
-        };
-        let dm = t.pyrolysis[ks].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)));
+        let dm = pyrolysis_rate(&c, subs, t);
         if dm.0 > 0 {
             solid_to_gas(&mut c, subs, dm, s.specific_heat, ts);
             c.solid[VOLATILE] -= dm;
@@ -235,13 +247,21 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
     if c.gas[fuel].0 > 0 && c.gas[o2].0 > 0 {
         let tg = c.gas_temperature();
         let could = c.gas[fuel].0.min(c.gas[o2].0 * 1_000 / O2_PER_FUEL);
-        let rise = Mass(could) * GAS_CHEMICAL[fuel] / c.gas_capacity();
+        // The flame sheet holds fuel and just the air it needs to burn, with
+        // whatever that air carries along (nitrogen, and in a smoky cell,
+        // smoke): FDS checks that mix, not the cell's average, which at 10 cm
+        // is always too thin to burn.
+        let o2_needed = could as i128 * O2_PER_FUEL as i128 / 1_000;
+        let air_cap = (c.gas_capacity() - c.gas[fuel] * GAS_SPECIFIC_HEAT[fuel]).0 as i128;
+        let sheet_cap = (Mass(could) * GAS_SPECIFIC_HEAT[fuel]).0 as i128 + air_cap * o2_needed / c.gas[o2].0.max(1) as i128;
+        let rise = Mass(could) * GAS_CHEMICAL[fuel] / HeatCapacity(sheet_cap as i64);
         // Gas coming off a hot surface ignites at that surface (a flame
         // anchored to the fuel), so the reaction runs at the hotter of the gas
         // and the solid it's leaving.
         let anchored = if c.has_solid() { tg.max(c.surface_temperature(subs)) } else { tg };
         let kinetic = t.gas_burn[k_index(anchored.0)].of_mass(c.gas[fuel]).0;
-        let mixed = if tg.0 + rise.0 >= CRITICAL_FLAME.0 { MIXING.of_mass(Mass(could)).0 } else { 0 };
+        let holds = anchored >= IGNITION && tg.0 + rise.0 >= CRITICAL_FLAME.0;
+        let mixed = if holds { MIXING.of_mass(Mass(could)).0 } else { 0 };
         let want = kinetic.max(mixed);
         // Short of oxygen, it burns dirty: up to a tenth of it becomes soot.
         let starved = 1_000 - (c.gas[o2].0 * 1_000 / fresh).min(1_000);

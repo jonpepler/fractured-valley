@@ -60,7 +60,7 @@ pub struct Exposure {
 }
 
 impl Default for Exposure {
-    fn default() -> Self { Exposure { percentile: 0.75, min_w_m2: 60.0, adapt_seconds: 1.0, max_rate: 4.0, night_hold: 4.0, sky_w_m2: None, fixed: None } }
+    fn default() -> Self { Exposure { percentile: 0.75, min_w_m2: 15.0, adapt_seconds: 1.0, max_rate: 4.0, night_hold: 2.0, sky_w_m2: None, fixed: None } }
 }
 
 /// Simulated seconds per tick (fv-core ticks are 50 ms).
