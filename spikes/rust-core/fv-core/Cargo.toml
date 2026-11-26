@@ -7,6 +7,7 @@ description = "Spike: the Fractured Valley simulation core, energy-first"
 
 [dependencies]
 libm = "0.2"
+rapier3d = { version = "0.36", features = ["enhanced-determinism"] }
 rayon = { version = "1.10", optional = true }
 
 [features]

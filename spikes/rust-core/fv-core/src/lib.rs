@@ -3,6 +3,7 @@
 //! Energy-first: every transfer moves energy or mass from one place to
 //! another, and [`ledger::Books`] checks that nothing is made or lost.
 
+pub mod bodies;
 pub mod cell;
 pub mod checkpoint;
 pub mod chem;

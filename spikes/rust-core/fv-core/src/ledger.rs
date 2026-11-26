@@ -37,15 +37,18 @@ impl Totals {
 
     pub fn of(world: &World) -> Totals {
         let mut t = Totals::default();
-        for c in &world.cells {
-            t.thermal += c.thermal().0 as i128;
-            t.chemical += c.chemical(&world.subs).0 as i128;
-            t.nuclear += c.nuclear.0 as i128;
-            t.solid_mass += c.solid_mass().0 as i128;
-            t.water_mass += c.water.0 as i128;
-            for k in 0..GASES { t.gas_mass[k] += c.gas[k].0 as i128 }
-        }
+        for c in &world.cells { t.add(c, &world.subs) }
         t
+    }
+
+    /// Count one cell's stores (in the grid, or riding a falling piece).
+    pub fn add(&mut self, c: &crate::cell::Cell, subs: &[crate::substance::Substance]) {
+        self.thermal += c.thermal().0 as i128;
+        self.chemical += c.chemical(subs).0 as i128;
+        self.nuclear += c.nuclear.0 as i128;
+        self.solid_mass += c.solid_mass().0 as i128;
+        self.water_mass += c.water.0 as i128;
+        for k in 0..GASES { self.gas_mass[k] += c.gas[k].0 as i128 }
     }
 }
 
@@ -67,6 +70,10 @@ pub struct Books {
     pub commands_mass: i128,
     /// Work done by gravity on bodies (their fall turned into motion, then heat).
     pub gravity_work: i128,
+    /// Solid matter (and the water and gas in it) carried out of the box by
+    /// falling pieces, and every kind of energy it took with it.
+    pub edge_matter_mass: i128,
+    pub edge_matter_energy: i128,
 }
 
 impl Books {
@@ -87,8 +94,9 @@ impl Books {
     /// What the energy should be now.
     pub fn expected_energy(&self) -> i128 {
         self.start.energy() + self.edge_energy + self.edge_chemical() + self.radiation_in - self.radiation_out + self.commands + self.gravity_work
+            - self.edge_matter_energy
     }
-    pub fn expected_mass(&self) -> i128 { self.start.mass() + self.edge_gas.iter().sum::<i128>() + self.commands_mass }
+    pub fn expected_mass(&self) -> i128 { self.start.mass() + self.edge_gas.iter().sum::<i128>() + self.commands_mass - self.edge_matter_mass }
 
     /// The gap between what the stores hold and what the books say: zero, or
     /// something made or lost energy.

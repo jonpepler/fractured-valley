@@ -33,6 +33,9 @@ const AREA: f64 = 0.01;
 const LENGTH: f64 = 0.1;
 /// Shear stiffness as a share of axial (≈ G/E for most solids).
 const SHEAR_STIFFNESS: f64 = 0.4;
+/// What loose rubble bears in compression, kPa, and how stiff it is, MPa.
+const GRANULAR_KPA: f64 = 30.0;
+const GRANULAR_MPA: f64 = 20.0;
 /// Shear strength as a share of tensile.
 const SHEAR_STRENGTH: f64 = 0.6;
 
@@ -163,8 +166,7 @@ pub fn settle(w: &mut World) -> Report {
     let mut report = Report::default();
     for cells in &stacks { solve_piece(w, cells, &grounded, &mut report) }
     let broke = report.broke.clone();
-    drop(solid);
-    drop(rests_on);
+    let _ = (solid, rests_on);
     for (p, axis) in &broke {
         let c = w.get_mut(p[0], p[1], p[2]);
         c.bonds &= !BITS[*axis];
@@ -212,8 +214,10 @@ pub fn settle(w: &mut World) -> Report {
             // ...or resting on held, uncrushed cells with its centre of mass
             // over them (otherwise it tips over).
             let rests: Vec<[usize; 3]> = group.iter().copied().filter(|p| {
+                // A crushed cell can't hold anything up, but it can lie on
+                // the ground as rubble.
                 p[2] > 0 && solid(p[0], p[1], p[2] - 1) && held[at([p[0], p[1], p[2] - 1])]
-                    && !crushed[at([p[0], p[1], p[2] - 1])] && !crushed[at(*p)]
+                    && !crushed[at([p[0], p[1], p[2] - 1])]
             }).collect();
             let balanced = !rests.is_empty() && {
                 let (mut m, mut mx, mut my) = (0f64, 0f64, 0f64);
@@ -280,11 +284,14 @@ fn solve_piece(w: &World, cells: &[[usize; 3]], grounded: &[bool], report: &mut 
             if other.is_none() && !grounded[at(q)] { continue }
             let mut b = bond(a, c, &w.subs);
             // Contact can't pull or shear: only its crushing strength counts.
+            // Even matter with no strength left bears some weight as a loose
+            // pile (ash and char rubble, ~30 kPa), like any granular heap.
             b.tension = f64::INFINITY;
             b.shear = f64::INFINITY;
-            b.compression = b.compression.max(1.0);
-            links[i].push((other, 2, b, true));
+            b.compression = b.compression.max(GRANULAR_KPA * 1e3 * AREA);
+            b.stiffness = b.stiffness.max(GRANULAR_MPA * 1e6 * AREA / LENGTH);
             if dz < 0 { contacts.push((i, other, q, b)) }
+            links[i].push((other, 2, b, true));
         }
     }
     // Matter that's burnt away holds nothing: its bonds are gone and it

@@ -67,7 +67,9 @@ fn a_post_charred_through_on_one_side_bends_then_gives_way() {
             let left = w.get(7, 7, 5).integrity_permille(&w.subs);
             first_break = Some((left, r.broke.clone()));
         }
-        if !r.loose.is_empty() { loose = r.loose; break }
+        // Charred crumbs may drop first; wait for the piece carrying the block.
+        let carries_block = r.loose.iter().any(|g| g.iter().any(|p| w.get(p[0], p[1], p[2]).substance == IRON));
+        if carries_block { loose = r.loose; break }
         let _ = step;
     }
     let (left, broke) = first_break.expect("the post failed before it burnt away entirely");
@@ -76,8 +78,8 @@ fn a_post_charred_through_on_one_side_bends_then_gives_way() {
     // faces between the two sides, not the sound side alone.
     assert!(broke.iter().any(|(p, _)| p[0] == 7), "the charred side gave first: {broke:?}");
     assert!(!loose.is_empty(), "the post and block came loose");
-    let fell: usize = loose.iter().map(|p| p.len()).sum();
-    assert!(fell >= 27, "the iron block went with it ({fell} cells)");
+    let iron: usize = loose.iter().flatten().filter(|p| w.get(p[0], p[1], p[2]).substance == IRON).count();
+    assert_eq!(iron, 27, "the whole iron block came loose with it");
 }
 
 #[test]

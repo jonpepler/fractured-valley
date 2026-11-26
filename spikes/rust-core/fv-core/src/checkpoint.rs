@@ -41,6 +41,7 @@ fn read_totals(r: &mut R) -> Totals {
 }
 
 pub fn export(sim: &Sim) -> Vec<u8> {
+    assert!(!sim.bodies.in_flight(), "checkpoint between falls (pieces in flight aren't saved yet)");
     let mut w = W(Vec::new());
     w.0.extend_from_slice(MAGIC);
     let wd = &sim.world;
@@ -59,7 +60,7 @@ pub fn export(sim: &Sim) -> Vec<u8> {
     totals(&mut w, &b.start);
     w.i128(b.edge_energy);
     for v in b.edge_gas { w.i128(v) }
-    for v in [b.radiation_in, b.radiation_out, b.commands, b.commands_mass, b.gravity_work] { w.i128(v) }
+    for v in [b.radiation_in, b.radiation_out, b.commands, b.commands_mass, b.gravity_work, b.edge_matter_mass, b.edge_matter_energy] { w.i128(v) }
     w.u64(sim.queue.len() as u64);
     for s in &sim.queue {
         w.u64(s.tick);
@@ -104,6 +105,8 @@ pub fn import(bytes: &[u8]) -> Sim {
     books.commands = r.i128();
     books.commands_mass = r.i128();
     books.gravity_work = r.i128();
+    books.edge_matter_mass = r.i128();
+    books.edge_matter_energy = r.i128();
     let mut queue = Vec::new();
     for _ in 0..r.u64() {
         let (t, peer, seq) = (r.u64(), r.u64() as u16, r.u64() as u32);
