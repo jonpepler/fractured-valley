@@ -36,8 +36,7 @@ struct Globals {
     encode_srgb: u32,
     outline: vec4<f32>,
     // Tone curve on light: shows (light / exposure) ^ curve. Below 1 it lifts
-    // shadows and tames highlights, like a photographer's grade. Applied in
-    // full by day only.
+    // shadows and tames highlights, like a photographer's grade.
     light_curve: f32,
     _pad0: f32,
     _pad1: f32,
@@ -150,9 +149,10 @@ const LIGHT_STEPS: f32 = 3.0;
 
 // Light as it shows: divided by the exposure, through the tone curve.
 fn shown(light: vec3<f32>) -> vec3<f32> {
-    // At night (day → 0) the curve relaxes to linear, so the dark stays dark.
-    let curve = mix(1.0, g.light_curve, g.day);
-    let s = pow(max(light * g.inv_exposure, vec3<f32>(0.0)), vec3<f32>(curve));
+    // Day and night alike: an eye adapted to firelight still sees the dim
+    // ground a few metres off, compressed the way vision compresses
+    // brightness (a power law, Stevens), not black.
+    let s = pow(max(light * g.inv_exposure, vec3<f32>(0.0)), vec3<f32>(g.light_curve));
     // Pixel art shades in steps, not smooth ramps: snap the brightness to
     // steps of 1/LIGHT_STEPS of a stop (colour kept).
     let l = dot(s, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -217,9 +217,11 @@ fn fs_block(v: VOut) -> @location(0) vec4<f32> {
     if face == 0 && flag(v, TOP_AO) { shade *= 0.88; }
     if face == 0 && !flag(v, TOP_AO) && flag(v, LEDGE) && p.y == 0 { shade *= 1.08; }
     var col = v.albedo.rgb * shown(v.light.rgb) * shade;
-    // Glowing embers: brighter in the cracks, flickering slowly.
-    let flicker = unit(hash4(v.cell.x * 16 + p.x + p.y * 4, v.cell.y, v.cell.z, i32(g.tick / 3u)));
-    col += v.glow.rgb * g.inv_exposure * (0.3 + 1.6 * flicker * flicker);
+    // Glowing embers: brighter in the cracks (a fixed pattern, averaging 1).
+    // How bright they are, and how it flickers, is the simulation's: the
+    // glow is what this cell emitted this tick.
+    let crack = unit(hash4(v.cell.x * 16 + p.x + p.y * 4, v.cell.y, v.cell.z, 5));
+    col += v.glow.rgb * g.inv_exposure * (0.25 + 2.25 * crack * crack);
     return vec4<f32>(col, 1.0);
 }
 
@@ -245,8 +247,9 @@ fn fs_tuft(v: VOut) -> @location(0) vec4<f32> {
     var row_shade = array<f32, 5>(1.18, 1.06, 0.96, 0.80, 0.72);
     let shade = row_shade[p.y + 1] * RAMP[h & 7u];
     var col = v.albedo.rgb * shown(v.light.rgb) * shade;
-    let flicker = unit(hash4(v.cell.x * 32 + p.x, v.cell.y + p.y, v.cell.z, i32(g.tick / 2u)));
-    col += v.glow.rgb * g.inv_exposure * (2.0 * flicker * flicker);
+    // Glowing blades: a fixed pattern averaging 1, brightness from the sim.
+    let ember = unit(hash4(v.cell.x * 32 + p.x, v.cell.y + p.y, v.cell.z, 9));
+    col += v.glow.rgb * g.inv_exposure * (3.0 * ember * ember);
     return vec4<f32>(col, 1.0);
 }
 
@@ -269,8 +272,10 @@ fn fs_smoke(v: VOut) -> @location(0) vec4<f32> {
     return vec4<f32>(col, a);
 }
 
-// Flames: hot gas giving off light. Drawn additively as flickering tongues that
-// rise from the cell; the total brightness follows the cell's glow.
+// Flames: hot gas giving off light. Drawn additively as tongues that rise from
+// the cell. The tongues' shape moves (a view choice) but their brightness is
+// the light the simulation's flame sent out from this cell this tick, so the
+// flame and what it lights flicker together.
 @fragment
 fn fs_flame(v: VOut) -> @location(0) vec4<f32> {
     let p = vec2<i32>(floor(v.pos.xy)) - v.anchor;
@@ -299,13 +304,35 @@ fn vs_full(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(pts[vi], 0.0, 1.0);
 }
 
-// Linear values up to ~0.8 pass straight through; brighter ones roll off
-// smoothly toward 1, per channel, so fire bleaches toward yellow-white.
+// Filmic tone curve (the ACES fit of Narkowicz 2015), per channel: a toe that
+// keeps the darks dark, near-linear midtones, and a long shoulder, so a lit
+// surface at the exposure shows bright but not white, and the fire, many
+// times brighter, rolls off to yellow-white without the rest losing shape.
 fn tonemap(c: vec3<f32>) -> vec3<f32> {
-    let k = 0.8;
-    let over = max(c - vec3<f32>(k), vec3<f32>(0.0));
-    let soft = vec3<f32>(k) + (1.0 - k) * (vec3<f32>(1.0) - exp(-over / (1.0 - k)));
-    return select(c, soft, c > vec3<f32>(k));
+    let x = c * 0.9;
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Bloom: light far above the exposure spills into the pixels around it, as
+// it does in an eye or a lens (view only). Only what is over BLOOM_FROM
+// spreads, with a Gaussian of BLOOM_RADIUS native pixels.
+const BLOOM_FROM: f32 = 1.5;
+const BLOOM_RADIUS: i32 = 5;
+const BLOOM_STRENGTH: f32 = 0.12;
+fn bloom(p: vec2<i32>) -> vec3<f32> {
+    let s = vec2<i32>(g.native_size);
+    var sum = vec3<f32>(0.0);
+    var weight = 0.0;
+    for (var dy = -BLOOM_RADIUS; dy <= BLOOM_RADIUS; dy += 1) {
+        for (var dx = -BLOOM_RADIUS; dx <= BLOOM_RADIUS; dx += 1) {
+            let w = exp(-f32(dx * dx + dy * dy) / (0.5 * f32(BLOOM_RADIUS * BLOOM_RADIUS)));
+            weight += w;
+            let q = p + vec2<i32>(dx, dy);
+            if q.x < 0 || q.y < 0 || q.x >= s.x || q.y >= s.y { continue; }
+            sum += w * max(textureLoad(native, q, 0).rgb - vec3<f32>(BLOOM_FROM), vec3<f32>(0.0));
+        }
+    }
+    return sum / weight * BLOOM_STRENGTH;
 }
 
 fn to_srgb(c: vec3<f32>) -> vec3<f32> {
@@ -324,7 +351,7 @@ fn coverage(p: vec2<i32>) -> f32 {
 fn fs_composite(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<i32>(floor(pos.xy)) / i32(g.scale);
     let c = textureLoad(native, p, 0);
-    var rgb = tonemap(max(c.rgb, vec3<f32>(0.0)));
+    var rgb = tonemap(max(c.rgb, vec3<f32>(0.0)) + bloom(p));
     // A dark outline where the world meets the backdrop (alpha 1 = solid).
     let edge = c.a < 0.5 && max(max(coverage(p + vec2(1, 0)), coverage(p - vec2(1, 0))),
                                 max(coverage(p + vec2(0, 1)), coverage(p - vec2(0, 1)))) > 0.5;

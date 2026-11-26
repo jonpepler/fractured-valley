@@ -5,15 +5,18 @@
 //! 1. On the CPU, walk the view and pick the cells worth drawing: solid and
 //!    porous cells with an open side facing the camera (+x, +y or +z), and air
 //!    cells holding smoke or glowing gas. Each becomes one *sprite* instance.
-//! 2. Choose an exposure from the light on the visible surfaces (like an eye
-//!    or a camera adapting), with a limit on how far it can brighten a dark
-//!    scene, so a night stays dark and only firelight shows.
+//! 2. Choose an exposure from the light on the visible surfaces, as an eye
+//!    adapts: by night it adapts to whatever is lit (firelight), over the
+//!    eye's range of about four orders of magnitude, so the ground near a
+//!    fire reads and falls off into the dark.
 //! 3. On the GPU, draw the sprites into a small native image (one texel per
 //!    sprite pixel) with a depth test, so nearer cells cover farther ones
 //!    exactly: blocks and tufts first, then smoke blended back to front, then
 //!    flames added on top.
-//! 4. Scale that image up by a whole number, tone-map it and draw a dark
-//!    outline where the world meets the sky.
+//! 4. Scale that image up by a whole number, add a little bloom around
+//!    what is far brighter than the exposure, tone-map it with a filmic
+//!    curve (the fire's core clips to white while the surroundings keep
+//!    their shading) and draw a dark outline where the world meets the sky.
 //!
 //! Light is physical: a surface shows as its colour × the light the simulation
 //! says reached it, plus any light it gives off, divided by the exposure.
@@ -39,8 +42,10 @@ pub struct Exposure {
     /// lit by something else count: a burning log's own glow never sets the
     /// exposure, nor do unlit surfaces.
     pub percentile: f32,
-    /// The least exposure allowed. This caps the gain: in a dark scene the
-    /// camera stops brightening here, so a night stays dark.
+    /// The least exposure allowed: the most an eye can adapt to the dark.
+    /// Daylit ground is ~100–300 W/m² of visible light; an eye covers about
+    /// four orders of magnitude below that before it stops adapting
+    /// (scotopic vision), so ~0.01 W/m². Below this the scene goes dark.
     pub min_w_m2: f32,
     /// How quickly the exposure follows the scene, in seconds of simulated
     /// time (an eye takes about a second).
@@ -49,8 +54,8 @@ pub struct Exposure {
     /// factor (so a sudden flare can't swing it from one frame to the next).
     pub max_rate: f32,
     /// At night the camera holds this many times more exposure than the lit
-    /// surfaces alone would ask for, so firelit ground reads dim and the fire
-    /// bright, rather than the scene being brightened to look like day.
+    /// surfaces alone would ask for (1 = adapt fully, as an eye near a fire
+    /// does; more keeps firelit ground dimmer than the eye would see it).
     pub night_hold: f32,
     /// The sky's own light (sun + sky, W/m²), if the caller knows it. Then
     /// day or night is read from it; if not, it is guessed from the scene.
@@ -60,13 +65,14 @@ pub struct Exposure {
 }
 
 impl Default for Exposure {
-    fn default() -> Self { Exposure { percentile: 0.75, min_w_m2: 15.0, adapt_seconds: 1.0, max_rate: 4.0, night_hold: 2.0, sky_w_m2: None, fixed: None } }
+    fn default() -> Self { Exposure { percentile: 0.75, min_w_m2: 0.01, adapt_seconds: 1.0, max_rate: 4.0, night_hold: 1.0, sky_w_m2: None, fixed: None } }
 }
 
 /// Simulated seconds per tick (fv-core ticks are 50 ms).
 const TICK_SECONDS: f32 = 0.05;
-/// A surface counts as lit above this (W/m²).
-const LIT_MIN: f32 = 1.0;
+/// A surface counts as lit above this (W/m²): a tenth of the darkest the
+/// eye adapts to (`Exposure::min_w_m2`'s default).
+const LIT_MIN: f32 = 0.001;
 /// A surface giving off more than this (W) is its own light source and is
 /// left out of the exposure.
 const SELF_LIT_W: f32 = 0.005;
@@ -222,8 +228,8 @@ pub struct Renderer {
     pub exposure: Exposure,
     pub grade: Grade,
     /// Tone curve on light: a surface shows as (light / exposure) ^ this.
-    /// 1 is linear; lower lifts shadows and tames highlights. It eases back
-    /// to linear as the scene gets darker, so a night stays dark.
+    /// 1 is linear; lower lifts shadows and tames highlights, by day and by
+    /// night (where the eye has adapted to the firelight).
     pub light_curve: f32,
     pub stats: Stats,
 }

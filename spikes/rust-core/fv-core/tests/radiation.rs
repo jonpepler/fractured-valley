@@ -144,7 +144,11 @@ fn a_bigger_fire_burns_hotter_and_brighter() {
     eprintln!("twigs {small_solid:.0} → {big_solid:.0} °C, gas {small_gas:.0} → {big_gas:.0} °C, glow {small_glow} → {big_glow}");
     assert!(big_solid > small_solid + 30.0, "twigs: {small_solid:.0} °C alone, {big_solid:.0} °C in a bigger fire");
     assert!(big_gas > small_gas + 30.0, "gas: {small_gas:.0} °C alone, {big_gas:.0} °C in a bigger fire");
-    assert!(big_glow > small_glow * 11 / 10, "glow: {small_glow} µJ alone, {big_glow} µJ in a bigger fire");
+    // Brighter too, but by less than it is hotter: most of a burning cell's
+    // visible light is its flame's, set by the heat it releases rather than by
+    // temperature (soot's spectrum makes flames ~3× brighter in the visible
+    // than a grey body would), and only the hot twigs' share grows with heat.
+    assert!(big_glow > small_glow * 104 / 100, "glow: {small_glow} µJ alone, {big_glow} µJ in a bigger fire");
     // And the heat stays near the fire: books that balance can still hide
     // energy put in the wrong place, so bound it too.
     let w = &sim.world;
@@ -155,4 +159,19 @@ fn a_bigger_fire_burns_hotter_and_brighter() {
         let t = w.get(x, y, z).temperature(&w.subs).celsius_f64();
         if far { assert!(t < 150.0, "{t:.0} °C at ({x}, {y}, {z}), far from the fire") }
     }}}
+}
+
+#[test]
+fn soot_glows_more_in_the_visible_than_a_grey_body() {
+    // A grey body at 1 400 K gives ~0.025 % of its emission as visible light;
+    // soot (ε ∝ λ^−0.83) ~0.084 %, by direct integration of Planck's law.
+    let t = fv_core::tables::tables();
+    let one = fv_core::units::Fraction::ONE.0 as f64;
+    let visible = |b: [u64; 4]| (b[1] + b[2] + b[3]) as f64 / one;
+    let (grey, soot) = (visible(t.bands[1_400]), visible(t.soot_bands[1_400]));
+    eprintln!("visible at 1400 K: grey {grey:.6}, soot {soot:.6}");
+    assert!((grey - 0.000254).abs() < 0.00001, "grey {grey}");
+    assert!((soot - 0.000839).abs() < 0.00002, "soot {soot}");
+    // Every row still adds up to all of it.
+    for k in [300, 1_000, 1_400, 3_000, 5_778] { assert_eq!(t.soot_bands[k].iter().sum::<u64>(), fv_core::units::Fraction::ONE.0) }
 }

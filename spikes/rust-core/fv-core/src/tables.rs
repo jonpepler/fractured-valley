@@ -36,6 +36,15 @@ pub struct Tables {
     /// Planck shares of emission in [infrared, red, green, blue] (blue
     /// includes everything shorter), out of 2³², per kelvin.
     pub bands: Vec<[u64; 4]>,
+    /// The same split for soot, which is not grey: small carbon particles
+    /// absorb, and so emit, more strongly at shorter wavelengths, ε ∝ λ^−α
+    /// with α = 0.83 ± 0.08 measured from 0.51 to 5.2 µm (Köylü & Faeth
+    /// 1996; Siddall & McGrath 1963 found 0.93 for candle soot in the
+    /// infrared). That tips a flame's light toward the visible: at 1 400 K
+    /// about 0.08 % is visible instead of a grey body's 0.025 %. Only the
+    /// split changes; how much a flame or a sooty gas emits in total is set
+    /// elsewhere.
+    pub soot_bands: Vec<[u64; 4]>,
     /// Rothermel's effective heating number ε = exp(−138/σ) (σ in 1/ft),
     /// per mille, by σ in 1/m: the share of a fine fuel that must reach
     /// ignition before it lights (its surface layer; thin blades nearly all).
@@ -72,6 +81,27 @@ fn planck_below(lambda_t_um_k: f64) -> f64 {
     (15.0 / libm::pow(core::f64::consts::PI, 4.0) * sum).clamp(0.0, 1.0)
 }
 
+/// Soot's spectral emissivity exponent α (ε ∝ λ^−α), Köylü & Faeth (1996).
+const SOOT_ALPHA: f64 = 0.83;
+
+/// Share of soot's emission at wavelengths below λ, by x = c₂/(λT), for
+/// ε ∝ λ^−α: emission per dx goes as x^(3+α)/(eˣ − 1), the same for every
+/// temperature, so it is integrated once (Simpson's rule, step 1/1000) and
+/// looked up. Returns the cumulative integral from each x up, normalised.
+fn soot_above_x() -> (Vec<f64>, f64) {
+    let h = 0.001;
+    let n = 80_000; // x up to 80: e^−80 is far below anything that matters
+    let f = |x: f64| if x <= 0.0 { 0.0 } else { libm::pow(x, 3.0 + SOOT_ALPHA) / libm::expm1(x) };
+    // Integral over each step [i·h, (i+1)·h], then summed from the top.
+    let mut above = vec![0.0; n + 1];
+    for i in (0..n).rev() {
+        let (a, b) = (i as f64 * h, (i + 1) as f64 * h);
+        above[i] = above[i + 1] + (b - a) / 6.0 * (f(a) + 4.0 * f((a + b) / 2.0) + f(b));
+    }
+    let total = above[0];
+    (above.into_iter().map(|v| v / total).collect(), h)
+}
+
 fn build() -> Tables {
     let saturated = (0..=MAX_K).map(|k| {
         let c = k as f64 - 273.15;
@@ -93,7 +123,27 @@ fn build() -> Tables {
         let blue = (b500 * one) as u64;
         [Fraction::ONE.0 - red - green - blue, red, green, blue]
     }).collect();
+    let (above, h) = soot_above_x();
+    let soot_below = |nm: f64, t: f64| {
+        let x = 14_387.77 / (nm / 1000.0 * t);
+        let at = x / h;
+        let i = at.floor() as usize;
+        if i + 1 >= above.len() { return 0.0 }
+        let f = at - i as f64;
+        above[i] + (above[i + 1] - above[i]) * f
+    };
+    let soot_bands = (0..=MAX_K).map(|k| {
+        if k < 300 { return [Fraction::ONE.0, 0, 0, 0] }
+        let t = k as f64;
+        let (b700, b600, b500) = (soot_below(700.0, t), soot_below(600.0, t), soot_below(500.0, t));
+        let one = Fraction::ONE.0 as f64;
+        let red = ((b700 - b600) * one) as u64;
+        let green = ((b600 - b500) * one) as u64;
+        let blue = (b500 * one) as u64;
+        [Fraction::ONE.0 - red - green - blue, red, green, blue]
+    }).collect();
     Tables {
+        soot_bands,
         pyrolysis: arrhenius(1.0e10, 140_000.0),
         char_burn: arrhenius(2.0e5, 100_000.0),
         gas_burn: arrhenius(1.0e9, 110_000.0),

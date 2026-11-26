@@ -4,7 +4,8 @@
 //!   cargo run --release -p fv-render --example record -- --scene night-crib --size 64 --ticks 600
 //!
 //! Options (all optional):
-//!   --scene day-crib | night-crib   afternoon sun or no sun at all; the crib is lit either way
+//!   --scene S       tree, dead-tree, campfire, grass, post, or the valley
+//!   --sky day|night afternoon sun, or no light but the fire's
 //!   --size N        world is N×N cells (10 cm each), default 64
 //!   --height N      world height in cells, default 64
 //!   --seed N        terrain seed, default 7
@@ -33,7 +34,7 @@ use std::io::Write;
 use std::process::{Command as Process, Stdio};
 use std::time::Instant;
 
-const DEFAULT_OUT: &str = "/tmp/claude-0/-home-user/5649d0d7-d4b1-5036-842d-57dfada3ede9/scratchpad/render";
+const DEFAULT_OUT: &str = "render";
 
 struct Args {
     scene: String,
@@ -103,24 +104,9 @@ fn build_scene(a: &Args) -> Scene {
             Scene { world: w, torch, centre: [n / 2, n / 2, h / 3], frame: (2 * (a.size * 2) + 16, a.size * 2 + a.height + 24), char_post: None }
         }
         "campfire" => {
-            let mut w = fv_core::world::World::new(a.size, a.size, a.height, a.seed, fv_core::units::celsius(15));
-            let subs = w.subs.clone();
-            let t = fv_core::units::celsius(15);
-            let stone = Cell::solid_of(STONE, 1000, 2, t, &subs);
-            let soil = Cell::solid_of(SOIL, 1000, 150, t, &subs);
-            let grass = Cell::solid_of(GRASS, 1000, 900, t, &subs);
-            let wood = Cell::solid_of(WOOD, 1000, 100, t, &subs);
-            let kindling = Cell::solid_of(KINDLING, 1000, 80, t, &subs);
-            let n = a.size;
-            for y in 0..n { for x in 0..n { for z in 0..4 { w.set(x, y, z, if z < 2 { stone } else { soil }) } w.set(x, y, 4, grass) } }
-            let (cx, cy) = (n / 2 - 2, n / 2 - 2);
-            for y in cy..cy + 4 { for x in cx..cx + 4 { w.set(x, y, 4, kindling); w.set(x, y, 5, if (x + y) % 2 == 0 { kindling } else { wood }) } }
-            for x in cx..cx + 4 { w.set(x, cy, 6, wood); w.set(x, cy + 3, 6, wood) }
-            // A stone wall behind the fire, to catch its light and warmth.
-            for z in 5..14 { for x in cx - 6..cx + 10 { w.set(x, cy - 4, z, stone) } }
-            fv_core::scene::bond_all(&mut w, fv_core::scene::natural_bonds);
-            let torch = vec![(cx, cy, 4), (cx + 2, cy + 1, 4), (cx + 1, cy + 3, 4), (cx + 3, cy + 2, 4)];
-            Scene { world: w, torch, centre: [(cx + 2) as i32, (cy + 2) as i32, 6], frame: (200, 150), char_post: None }
+            let f = fv_core::scene::campfire(a.size, a.height);
+            let (cx, cy, _) = f.fire;
+            Scene { world: f.world, torch: f.torch, centre: [(cx + 2) as i32, (cy + 2) as i32, 6], frame: (200, 150), char_post: None }
         }
         "grass" => {
             // A field of dry grass on soil, lit along one edge.

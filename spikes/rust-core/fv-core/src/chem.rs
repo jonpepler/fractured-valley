@@ -45,7 +45,14 @@ pub const IGNITION: Temperature = Temperature(623_000);
 /// from the heat the flame releases, not from the cell's average temperature.
 pub const RADIATIVE_FRACTION: Fraction = Fraction(1_503_238_554); // 0.35
 /// Temperature a flame's soot glows at, for the colour of its light: about
-/// 1 400 K in wood and other sooty flames.
+/// 1 400 K in wood and other sooty flames. Its light is split between bands
+/// by soot's own spectrum (`Tables::soot_bands`), not a grey body's.
+///
+/// Check against measurement: a flame's light per watt of heat is then
+/// 0.35 × 0.12 lm/W ≈ 0.04 lm/W (683·V(λ) over soot's spectrum at 1 400 K),
+/// against 0.1–0.2 lm/W for a candle (Wikipedia, "Luminous efficacy"),
+/// whose small flame burns hotter: the right size, a little low. With a grey
+/// body it was 0.012, ten times too dim.
 pub const FLAME_GLOW: Temperature = Temperature(1_400_000);
 /// Share of a flammable mix that burns per tick when the flame holds: fuel
 /// and air mix in ~0.1 s across a 10 cm cell (1 − e^(−0.5)). The mixing time

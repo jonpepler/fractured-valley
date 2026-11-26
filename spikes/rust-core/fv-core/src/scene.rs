@@ -204,3 +204,43 @@ pub fn crib_and_tree(seed: u64, n: usize, nz: usize, dead: bool) -> (World, Vec<
     bond_all(&mut w, natural_bonds);
     (w, torch)
 }
+
+/// A fire scene: the world, where a torch lights it, and the fire's
+/// footprint (its corner x, y and width in cells) on grass at z = 4.
+pub struct Fire {
+    pub world: World,
+    pub torch: Vec<(usize, usize, usize)>,
+    pub fire: (usize, usize, usize),
+}
+
+/// Ground for the fire scenes: stone, soil, a grass top at z = 4, and a stone
+/// wall 4 cells behind (−y) the fire at (cx, cy), to catch its light.
+fn fire_ground(n: usize, nz: usize, wall: (usize, usize, usize)) -> World {
+    let mut w = World::new(n, n, nz, 7, celsius(15));
+    let subs = w.subs.clone();
+    let t = celsius(15);
+    let stone = Cell::solid_of(STONE, 1000, 2, t, &subs);
+    let soil = Cell::solid_of(SOIL, 1000, 150, t, &subs);
+    let grass = Cell::solid_of(GRASS, 1000, 900, t, &subs);
+    for y in 0..n { for x in 0..n { for z in 0..4 { w.set(x, y, z, if z < 2 { stone } else { soil }) } w.set(x, y, 4, grass) } }
+    let (x0, x1, y) = wall;
+    for z in 5..14.min(nz) { for x in x0..x1.min(n) { put(&mut w, x, y, z, stone) } }
+    w
+}
+
+/// A small campfire: a 40 cm square of kindling with a layer of kindling and
+/// wood checkered over it and two 40 cm logs on top (about 11 kg of wood),
+/// a stone wall behind. Lit by a torch at four points.
+pub fn campfire(n: usize, nz: usize) -> Fire {
+    let (cx, cy) = (n / 2 - 2, n / 2 - 2);
+    let mut w = fire_ground(n, nz, (cx - 6, cx + 10, cy - 4));
+    let subs = w.subs.clone();
+    let t = celsius(15);
+    let wood = Cell::solid_of(WOOD, 1000, 100, t, &subs);
+    let kindling = Cell::solid_of(KINDLING, 1000, 80, t, &subs);
+    for y in cy..cy + 4 { for x in cx..cx + 4 { w.set(x, y, 4, kindling); w.set(x, y, 5, if (x + y) % 2 == 0 { kindling } else { wood }) } }
+    for x in cx..cx + 4 { w.set(x, cy, 6, wood); w.set(x, cy + 3, 6, wood) }
+    bond_all(&mut w, natural_bonds);
+    let torch = vec![(cx, cy, 4), (cx + 2, cy + 1, 4), (cx + 1, cy + 3, 4), (cx + 3, cy + 2, 4)];
+    Fire { world: w, torch, fire: (cx, cy, 4) }
+}

@@ -45,7 +45,7 @@
 
 use crate::rad::{absorb_table, band_albedo, drop_albedo, emitters, exposed, net_sigma, settle, Light, Sky, IONISING, IR, ONE};
 use crate::substance::*;
-use crate::tables::{k_index, tables};
+use crate::tables::tables;
 use crate::units::*;
 use crate::world::{World, TICK};
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering::Relaxed};
@@ -459,11 +459,10 @@ struct Emission {
     decay_heat: i64,
 }
 
-/// The blackbody emission `energy` at `t`, per band, weighted by how well the
+/// Emission `energy` split between bands by `shares`, weighted by how well the
 /// emitter emits there (1 − albedo, Kirchhoff): what the packets carry on average.
-fn bands_of(energy: i64, t: Temperature, albedo: [u64; 4]) -> [i64; 4] {
+fn bands_of(energy: i64, shares: [u64; 4], albedo: [u64; 4]) -> [i64; 4] {
     if energy <= 0 { return [0; 4] }
-    let shares = tables().bands[k_index(t.0)];
     core::array::from_fn(|b| Fraction(Fraction(Fraction::ONE.0 - albedo[b]).of(Fraction(shares[b]).of(energy)) as u64).0 as i64)
 }
 
@@ -487,14 +486,14 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize) -> Option<Emission> {
         if net <= 0 { continue }
         let power = (net * e.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000) as i64;
         let energy = (Power(power) * TICK).0.min(e.most);
-        let sent = bands_of(energy, e.t, e.albedo);
+        let sent = bands_of(energy, e.shares(), e.albedo);
         let total: i64 = sent.iter().sum();
         if e.from_gas { out.from_gas += total } else { out.from_solid += total }
         for b in 0..4 { bands[b] += sent[b] }
     }
     if c.flame.0 > 0 {
         let flame = c.flame.0.min((c.energy - c.latent()).0.max(0));
-        let sent = bands_of(flame, crate::chem::FLAME_GLOW, [0; 4]);
+        let sent = bands_of(flame, crate::rad::soot_shares(crate::chem::FLAME_GLOW), [0; 4]);
         out.from_gas += sent.iter().sum::<i64>();
         for b in 0..4 { bands[b] += sent[b] }
     }

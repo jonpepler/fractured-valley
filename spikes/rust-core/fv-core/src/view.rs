@@ -3,8 +3,13 @@
 //! colours for drawing. Nothing flows back into the simulation.
 //!
 //! Light is physical: `light` is the visible energy that arrived at each
-//! cell (smoothed over a few ticks to hide packet noise), and `glow` is the
-//! visible energy the cell itself gave off. A renderer draws a surface as its
+//! cell, and `glow` is the visible energy the cell itself gave off this
+//! tick. With the field method both are exact each tick, so a fire and the
+//! wall it lights flicker together. Packets are noisy (each cell catches a
+//! few random packets), so their light is averaged over a few ticks and
+//! then scaled by how much light the scene emitted this tick against that
+//! average: noise is smoothed away but a flare of the fire still brightens
+//! the wall in the same frame. A renderer draws a surface as its
 //! colour times the light that reached it, plus its own glow, scaled by an
 //! exposure (the eye or camera, a view choice). So a scene at night is lit
 //! only by what the simulation emitted.
@@ -31,9 +36,9 @@ pub struct ViewCell {
     /// How much of the solid is left, 0 … 255 (burnt to ash: small).
     pub left: u8,
     /// Visible light arriving, per band [red, green, blue], in watts per
-    /// square metre of face (smoothed).
+    /// square metre of face (packets: smoothed, see the module notes).
     pub light: [f32; 3],
-    /// Visible light given off, per band, in watts per cell (smoothed).
+    /// Visible light given off this tick, per band, in watts per cell.
     pub glow: [f32; 3],
     /// Soot in the air here, mg per litre (dark smoke).
     pub soot: f32,
@@ -60,35 +65,40 @@ pub struct View {
 /// Keeps the smoothed light between frames (view only).
 pub struct Viewer {
     light: Vec<[f32; 3]>,
-    glow: Vec<[f32; 3]>,
-    /// Share of the new tick blended into the running average (1 = no smoothing).
+    /// Running average of the visible light emitted, W, for packets.
+    emitted: f32,
+    /// Share of the new tick blended into the running average of packet
+    /// light (1 = no smoothing). Field light is never smoothed.
     pub blend: f32,
 }
 
 impl Viewer {
-    pub fn new() -> Viewer { Viewer { light: Vec::new(), glow: Vec::new(), blend: 0.25 } }
+    pub fn new() -> Viewer { Viewer { light: Vec::new(), emitted: 0.0, blend: 0.1 } }
 
     /// Build a snapshot of the world and the light it made this tick.
     pub fn view(&mut self, w: &World, light: &Light) -> View {
         let n = w.nx * w.ny * w.nz;
-        if self.light.len() != n { self.light = vec![[0.0; 3]; n]; self.glow = vec![[0.0; 3]; n] }
+        if self.light.len() != n { self.light = vec![[0.0; 3]; n]; self.emitted = 0.0 }
         // µJ per tick on one face → W/m²: ×10⁻⁶ / 0.05 s / face (0.002 at 10 cm)
         const TO_W_M2: f32 = 2e-5 * 1e6 / crate::substance::FACE_MM2 as f32;
         // µJ per tick → W: ×10⁻⁶ / 0.05 s = ×2×10⁻⁵
         const TO_W: f32 = 2e-5;
         let mut cells = vec![ViewCell::default(); n];
-        let b = self.blend;
+        // The field is exact: no smoothing. Packets: average, then scale by
+        // this tick's emission against the average (at most ×4 either way).
+        let exact = light.field.is_some();
+        let b = if exact { 1.0 } else { self.blend };
+        let now: f32 = light.glow.iter().map(|g| (g[0] + g[1] + g[2]) as f32 * TO_W).sum();
+        self.emitted += (now - self.emitted) * b;
+        let flicker = if exact || self.emitted <= 0.0 { 1.0 } else { (now / self.emitted).clamp(0.25, 4.0) };
         for z in 0..w.nz { for y in 0..w.ny { for x in 0..w.nx {
             let i = w.idx(x, y, z);
             let o = (z * w.ny + y) * w.nx + x;
             let c = &w.cells[i];
             let l = light.incident[i];
             let g = light.glow[i];
-            for k in 0..3 {
-                self.light[o][k] += (l[k] as f32 * TO_W_M2 - self.light[o][k]) * b;
-                self.glow[o][k] += (g[k] as f32 * TO_W - self.glow[o][k]) * b;
-            }
-            cells[o] = view_cell(c, &w.subs, self.light[o], self.glow[o]);
+            for k in 0..3 { self.light[o][k] += (l[k] as f32 * TO_W_M2 - self.light[o][k]) * b }
+            cells[o] = view_cell(c, &w.subs, self.light[o].map(|v| v * flicker), g.map(|v| v as f32 * TO_W));
         }}}
         View { nx: w.nx, ny: w.ny, nz: w.nz, cells, colours: w.subs.iter().map(|s| s.colour).collect(), tick: w.tick, bodies: Vec::new() }
     }

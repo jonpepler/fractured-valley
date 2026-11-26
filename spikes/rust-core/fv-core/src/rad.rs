@@ -12,7 +12,9 @@
 //! - **hot matter** radiates its excess over the surroundings
 //!   (εσ(T⁴ − T_ambient⁴)), split between bands by Planck's law: a warm wall
 //!   gives almost only infrared, a fire's soot glows red to yellow, the sun
-//!   is white. Brightness is energy the source gives up;
+//!   is white. Soot is not grey (ε ∝ λ^−0.83), so its split leans further
+//!   toward the visible than a grey body's. Brightness is energy the source
+//!   gives up;
 //! - **radioactive matter** turns decay energy into heat where it is, and its
 //!   penetrating share into ionising packets that pass through air and are
 //!   stopped by dense matter;
@@ -204,7 +206,17 @@ pub(crate) fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 
 /// `most`: the most it may send this tick (µJ): half the heat its store holds
 /// above the surroundings. A thin hot layer radiating for a whole tick at its
 /// starting temperature could otherwise send more than it has.
-pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool, pub most: i64 }
+pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool, pub most: i64, pub soot: bool }
+
+impl Emitter {
+    /// How its emission splits between bands: soot's own spectrum, or grey.
+    pub fn shares(&self) -> [u64; 4] { if self.soot { soot_shares(self.t) } else { grey_shares(self.t) } }
+}
+
+/// Planck's split between bands for a grey body at `t`.
+pub(crate) fn grey_shares(t: Temperature) -> [u64; 4] { tables().bands[k_index(t.0)] }
+/// The split for glowing soot at `t` (see [`crate::tables::Tables::soot_bands`]).
+pub(crate) fn soot_shares(t: Temperature) -> [u64; 4] { tables().soot_bands[k_index(t.0)] }
 
 /// The radiating parts of a cell. A surface radiates from its exposed
 /// faces; airy matter radiates from 4κV (the same κ light is stopped by):
@@ -221,23 +233,23 @@ pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temper
     let one = Fraction::ONE.0 as i128;
     let solid_albedo = [0, 1, 2, 3].map(|b| band_albedo(s, b));
     if c.opaque(subs) {
-        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most }];
+        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false }];
     }
     let cap = 6 * ONE as i128;
     let share = c.solid_share(subs).0 as i128;
     let mut out = Vec::new();
     if c.has_solid() {
         // 4κV = σ·share·L³ = σ·share·L faces (L in m: 0.1 at 10 cm).
-        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 * CELL_MM as i128 / 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most });
+        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 * CELL_MM as i128 / 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false });
     }
     let tg = c.gas_temperature();
     // Soot: 4κV = 4 × (1 per m per mg/L) × mg/V × V = 0.004 m² per mg,
     // whatever the cell: 0.4 faces of 0.01 m² per mg = µg/2500 at 10 cm.
     let soot = c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / (2_500 * FACE_MM2 as i128 / 10_000);
-    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most }) }
+    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most, soot: true }) }
     // Drops: 4 × 0.15 per m per mg/L: 0.0006 m² per mg = µg/16 667 faces at 10 cm.
     let drops = c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128 / (16_667 * FACE_MM2 as i128 / 10_000);
-    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most }) }
+    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most, soot: false }) }
     out
 }
 
@@ -270,18 +282,18 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
         let power = (net * e.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000) as i64;
         let energy = (Power(power) * TICK).0.min(e.most);
         let from_face = opaque && !e.from_gas;
-        let sent = send(w, x, y, z, from_face, energy, e.most, e.t, e.albedo, &mut stream, &mut glow, out);
+        let sent = send(w, x, y, z, from_face, energy, e.most, e.shares(), e.albedo, &mut stream, &mut glow, out);
         if e.from_gas { from_gas += sent } else { from_solid += sent }
     }
     // A flame's own light, set from the heat it released (see chem).
     if c.flame.0 > 0 {
         let flame = c.flame.0.min((c.energy - c.latent()).0.max(0));
-        from_gas += send(w, x, y, z, false, flame, (c.energy - c.latent()).0.max(0) / 2, crate::chem::FLAME_GLOW, [0; 4], &mut stream, &mut glow, out);
+        from_gas += send(w, x, y, z, false, flame, (c.energy - c.latent()).0.max(0) / 2, soot_shares(crate::chem::FLAME_GLOW), [0; 4], &mut stream, &mut glow, out);
     }
     (from_solid, from_gas, glow, local_decay)
 }
 
-/// Turns `energy` of blackbody emission at `t` into packets, each band
+/// Turns `energy` of emission, split between bands by `shares`, into packets, each band
 /// weighted by how well the emitter emits there (`1 − albedo`); returns how
 /// much was actually sent. Each band gets its own packet size: visible light is a tiny
 /// share of a fire's output but it is what lights a scene, so it travels as
@@ -293,9 +305,8 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
 /// sends one packet by chance (fair on average); it only takes that chance
 /// when the store can afford the whole packet, so a nearly empty store can't
 /// go negative.
-fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, budget: i64, t: Temperature, albedo: [u64; 4], stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
+fn send(w: &World, x: usize, y: usize, z: usize, from_face: bool, energy: i64, budget: i64, shares: [u64; 4], albedo: [u64; 4], stream: &mut Stream, glow: &mut [i64; 3], out: &mut Vec<Packet>) -> i64 {
     if energy <= 0 { return 0 }
-    let shares = tables().bands[k_index(t.0)];
     let mut sent_total = 0;
     for band in 0..4 {
         // Each band: the blackbody share, times how well it emits there
