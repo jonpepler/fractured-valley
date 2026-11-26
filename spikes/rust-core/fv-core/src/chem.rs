@@ -54,14 +54,17 @@ pub const RADIATIVE_FRACTION: Fraction = Fraction(1_503_238_554); // 0.35
 /// whose small flame burns hotter: the right size, a little low. With a grey
 /// body it was 0.012, ten times too dim.
 pub const FLAME_GLOW: Temperature = Temperature(1_400_000);
-/// Share of a flammable mix that burns per tick when the flame holds: fuel
-/// and air mix in ~0.1 s across a 10 cm cell (1 − e^(−0.5)). The mixing time
-/// is a cell's edge over its eddy speed √(g·l·ΔT/T), so it goes as √l: about
-/// 0.07 s across 5 cm (1 − e^(−0.71)).
+/// Share of a flammable mix that burns per tick when the flame holds. Fuel
+/// and air burn only as fast as they mix (FDS's eddy dissipation concept:
+/// rate = min(Y_F, Y_O₂/s)/τ_mix). With no model of a cell's sub-grid
+/// turbulence, τ_mix is FDS's slowest bound, the time buoyancy takes to
+/// stir a cell: τ_g = √(2Δ/g) (McGrattan et al., FDS Technical Reference
+/// Guide, §5.1), 0.143 s at 10 cm, so 1 − e^(−0.05/0.143) = 0.295 a tick;
+/// 0.101 s at 5 cm (0.391).
 #[cfg(not(feature = "cell-5cm"))]
-const MIXING: Fraction = Fraction(1_690_000_000);
+const MIXING: Fraction = Fraction(1_268_733_232);
 #[cfg(feature = "cell-5cm")]
-const MIXING: Fraction = Fraction(2_177_253_391);
+const MIXING: Fraction = Fraction(1_677_276_774);
 /// Anderson's flame residence time: τ [s] = this / σ [1/m].
 const RESIDENCE_S_PER_SIGMA: i64 = 75_600;
 /// Charring rate of a dense solid's exposed face, µm per minute.
@@ -116,10 +119,54 @@ pub fn surface_h(sigma: i64, t_gas: Temperature, ambient: Temperature) -> i64 {
 
 pub fn react(world: &mut World) {
     let t = tables();
+    let lit = flame_reach(world);
     world.run_phase(|w, b, out, _tally| {
         let base = b * BRICK_CELLS;
-        for l in 0..BRICK_CELLS { out[l] = react_cell(w.cells[base + l], &w.subs, t, w.ambient) }
+        for l in 0..BRICK_CELLS { out[l] = react_cell(w.cells[base + l], &w.subs, t, w.ambient, lit[base + l]) }
     });
+}
+
+/// Which cells' gas a flame can reach this tick: gas holding both fuel and
+/// oxygen, joined through such gas to something that lights it (hot gas or
+/// a hot fuel surface, see [`lights`]). A flame is anchored to burning fuel
+/// and runs through the flammable gas around it: a 10 cm cell's average
+/// says nothing of the flame sheet inside it, and FDS has no ignition
+/// temperature for gas by default (its only test is the critical flame
+/// temperature, which `react_cell` applies to each cell).
+pub fn flame_reach(world: &World) -> Vec<bool> {
+    let (o2, fuel) = (Gas::Oxygen as usize, Gas::Fuel as usize);
+    let n = world.cells.len();
+    let burnable = |c: &Cell| c.gas[fuel].0 > 0 && c.gas[o2].0 > 0;
+    let mut lit = vec![false; n];
+    let mut queue = Vec::new();
+    for i in 0..n {
+        let c = &world.cells[i];
+        if burnable(c) && lights(c, &world.subs) { lit[i] = true; queue.push(i) }
+    }
+    // Spread to face neighbours that hold burnable gas (deterministic: a
+    // cell's final state doesn't depend on the order it's reached in).
+    let mut head = 0;
+    while head < queue.len() {
+        let i = queue[head];
+        head += 1;
+        let ((ox, oy, oz), (lx, ly, lz)) = (world.brick_origin(i / BRICK_CELLS), World::local_xyz(i % BRICK_CELLS));
+        let (x, y, z) = (ox + lx, oy + ly, oz + lz);
+        for axis in 0..3 { for dir in [-1i64, 1] {
+            let mut p = [x as i64, y as i64, z as i64];
+            p[axis] += dir;
+            if !world.inside(p[0], p[1], p[2]) { continue }
+            let j = world.idx(p[0] as usize, p[1] as usize, p[2] as usize);
+            if !lit[j] && burnable(&world.cells[j]) && world.cells[j].permeable(&world.subs) { lit[j] = true; queue.push(j) }
+        }}
+    }
+    lit
+}
+
+/// Whether a cell can light burnable gas: its gas is past ignition, or it
+/// holds fuel whose surface is (a burning or glowing surface is a pilot).
+pub fn lights(c: &Cell, subs: &[Substance]) -> bool {
+    (c.gas_capacity().0 > 0 && c.gas_temperature() >= IGNITION)
+        || (c.solid[VOLATILE].0 + c.solid[CHAR].0 > 0 && c.surface_temperature(subs) >= IGNITION)
 }
 
 /// Fresh-air oxygen for a gas volume, µg.
@@ -173,9 +220,9 @@ pub fn pyrolysis_rate(c: &Cell, subs: &[Substance], t: &Tables) -> Mass {
     t.pyrolysis[k_index(c.surface_temperature(subs).0)].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)))
 }
 
-pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature) -> Cell {
+pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool) -> Cell {
     let core_before = c.core_capacity(subs);
-    let mut c = react_inner(c, subs, t, ambient);
+    let mut c = react_inner(c, subs, t, ambient, pilot);
     // Matter leaves from the surface, but a burning solid shrinks as a
     // whole (the surface layer is a share of it): the core gives up the heat
     // of what it no longer holds to the surface, keeping its temperature.
@@ -189,7 +236,7 @@ pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature)
     c
 }
 
-fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature) -> Cell {
+fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool) -> Cell {
     let ml = c.gas_volume_ml(subs);
     let s = &subs[c.substance as usize];
     let vap = Gas::Vapour as usize;
@@ -400,9 +447,12 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
         // and the solid it's leaving.
         let anchored = if c.has_solid() { tg.max(c.surface_temperature(subs)) } else { tg };
         let kinetic = t.gas_burn[k_index(anchored.0)].of_mass(c.gas[fuel]).0;
-        let holds = anchored >= IGNITION && tg.0 + rise.0 >= CRITICAL_FLAME.0;
-        let mixed = if holds { MIXING.of_mass(Mass(could)).0 } else { 0 };
-        let want = kinetic.max(mixed);
+        let holds = (anchored >= IGNITION || pilot) && tg.0 + rise.0 >= CRITICAL_FLAME.0;
+        // Fuel and air must meet before they burn, however fast the
+        // chemistry: no more than mixing brings together burns in a tick.
+        let mixable = MIXING.of_mass(Mass(could)).0;
+        let mixed = if holds { mixable } else { 0 };
+        let want = if holds { mixed } else { kinetic.min(mixable) };
         // Short of oxygen, it burns dirty: up to a tenth of it becomes soot.
         let starved = 1_000 - (c.gas[o2].0 * 1_000 / fresh).min(1_000);
         let soot_pm = 10 + 90 * starved / 1_000;

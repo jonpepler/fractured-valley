@@ -153,9 +153,10 @@ fn a_bigger_fire_burns_hotter_and_brighter() {
     // energy put in the wrong place, so bound it too.
     let w = &sim.world;
     for z in 0..w.nz { for y in 0..w.ny { for x in 0..w.nx {
-        // Sideways: straight above is the plume (a ~50 kW fire's flames
-        // reach ~0.9 m: Heskestad's flame height).
-        let far = x.abs_diff(8).max(y.abs_diff(8)) >= 5;
+        // Sideways, at the bed's height and below: above it is the plume
+        // (a ~50 kW fire's flames reach ~0.9 m: Heskestad's flame height),
+        // which the scene's 0.5 m/s breeze leans over a few cells.
+        let far = x.abs_diff(8).max(y.abs_diff(8)) >= 5 && z <= 4;
         let t = w.get(x, y, z).temperature(&w.subs).celsius_f64();
         if far { assert!(t < 150.0, "{t:.0} °C at ({x}, {y}, {z}), far from the fire") }
     }}}

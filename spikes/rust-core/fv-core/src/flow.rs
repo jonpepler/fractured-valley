@@ -82,12 +82,15 @@ impl Flow {
         let mut temp = vec![w.ambient.0; n];
         let mut open = vec![false; n];
         let mut over_ml = vec![0i64; n];
+        // Drag of the fuel beds in each block, 1/m × 1000 (see `bed_drag`).
+        let mut drag = vec![0i64; n];
         let fresh: i64 = crate::substance::FRESH_AIR.iter().map(|m| m.0).sum();
         for z in 0..cz { for y in 0..cy { for x in 0..cx {
-            let (mut sum, mut cnt, mut over) = (0i64, 0i64, 0i64);
+            let (mut sum, mut cnt, mut over, mut dr) = (0i64, 0i64, 0i64, 0i64);
             for d in 0..8 {
                 let c = w.get(x * FR + (d & 1), y * FR + (d >> 1 & 1), z * FR + (d >> 2));
                 if !c.permeable(&w.subs) { continue }
+                dr += bed_drag(c, &w.subs);
                 let t = c.gas_temperature().0.max(1);
                 sum += t;
                 cnt += 1;
@@ -100,8 +103,16 @@ impl Flow {
             open[i] = cnt >= 4;
             if cnt > 0 { temp[i] = sum / cnt }
             over_ml[i] = over;
+            drag[i] = dr / 8;
         }}}
         let amb = w.ambient.0;
+        // Air carries its own motion (Stam's self-advection): a face's
+        // velocity is what arrives there from upstream, so air near the
+        // ground starts from rest and a plume speeds up as it rises, drawing
+        // air in along its height rather than all at its foot.
+        self.vel = self.carried();
+        // How freely each block's + faces let air through (permille).
+        let mut give_face = vec![[1_000i64; 3]; n];
         // Forces: buoyancy on vertical faces, damping, and a little turbulence
         // in hot air so plumes flicker and break rather than stand still.
         for z in 0..cz { for y in 0..cy { for x in 0..cx {
@@ -123,7 +134,13 @@ impl Flow {
                     let h = hash(w.seed, w.tick / 3, i as u64, axis as u64);
                     v += ((h % 201) as i64 - 100) * hot.min(600) / 100;
                 }
-                self.vel[i][axis] = v.clamp(-MAX_SPEED, MAX_SPEED) as i32;
+                let v = v.clamp(-MAX_SPEED, MAX_SPEED);
+                // Through a fuel bed the air pushes past the fuel elements:
+                // drag c·|u|·u, taken implicitly over the tick (stable at any
+                // c), and the face lets the pressure push it only as much.
+                let k = give(drag[i] + drag[j], v);
+                self.vel[i][axis] = (v * k / 1_000) as i32;
+                give_face[i][axis] = k;
             }
         }}}
         // Pressure: make the flow divergence-free through open blocks.
@@ -147,22 +164,25 @@ impl Flow {
             for z in 0..cz { for y in 0..cy { for x in 0..cx {
                 let i = self.ci(x, y, z);
                 if !open[i] { q[i] = 0; continue }
+                // Σ k·(p_j − p_i) = div over the faces, each face weighted
+                // by how freely it lets air through (k, permille).
                 let (mut sum, mut cnt) = (0i64, 0i64);
-                for (dx, dy, dz) in [(-1i64, 0i64, 0i64), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1)] {
+                for (axis, dx, dy, dz) in [(0usize, -1i64, 0i64, 0i64), (0, 1, 0, 0), (1, 0, -1, 0), (1, 0, 1, 0), (2, 0, 0, -1), (2, 0, 0, 1)] {
                     let (a, b, c) = (x as i64 + dx, y as i64 + dy, z as i64 + dz);
                     let inside = a >= 0 && b >= 0 && c >= 0 && (a as usize) < cx && (b as usize) < cy && (c as usize) < cz;
                     if !inside {
                         // Sides and top: open air at zero pressure; floor: closed.
                         if c < 0 { continue }
-                        cnt += 1;
+                        cnt += 1_000;
                         continue;
                     }
                     let j = self.ci(a as usize, b as usize, c as usize);
                     if !open[j] { continue }
-                    sum += p[j];
-                    cnt += 1;
+                    let k = if dx + dy + dz > 0 { give_face[i][axis] } else { give_face[j][axis] };
+                    sum += p[j] * k;
+                    cnt += k;
                 }
-                q[i] = if cnt > 0 { (sum - div[i]) / cnt } else { 0 };
+                q[i] = if cnt > 0 { (sum - div[i] * 1_000) / cnt } else { 0 };
             }}}
             core::mem::swap(&mut p, &mut q);
         }
@@ -179,10 +199,66 @@ impl Flow {
                 }
                 let j = self.ci(r[0], r[1], r[2]);
                 if !(open[i] && open[j]) { self.vel[i][axis] = 0; continue }
-                let v = self.vel[i][axis] as i64 - (p[j] - p[i]);
+                let v = self.vel[i][axis] as i64 - (p[j] - p[i]) * give_face[i][axis] / 1_000;
                 self.vel[i][axis] = v.clamp(-MAX_SPEED, MAX_SPEED) as i32;
             }
         }}}
+    }
+
+    /// Every face's velocity after carrying the flow along itself for a tick:
+    /// trace back from the face along the local velocity and take what was
+    /// there (semi-Lagrangian, Stam 1999, "Stable fluids"). In fixed point,
+    /// 1/1024 of a block; a tick moves air at most a block (19 cm at the
+    /// fastest), so a trace never leaves the block next door.
+    fn carried(&self) -> Vec<[i32; 3]> {
+        const Q: i64 = 1_024;
+        let block_mm = FR as i64 * crate::substance::CELL_MM;
+        let n = [self.cx as i64, self.cy as i64, self.cz as i64];
+        // One component's velocity at a face index, clamped to the box.
+        let at = |p: [i64; 3], a: usize| -> i64 {
+            let mut q = p;
+            for k in 0..3 { q[k] = if k == a { q[k].clamp(-1, n[k] - 1) } else { q[k].clamp(0, n[k] - 1) } }
+            self.block_face(q[0], q[1], q[2], a)
+        };
+        let mut out = self.vel.clone();
+        for z in 0..n[2] { for y in 0..n[1] { for x in 0..n[0] {
+            for a in 0..3 {
+                let p = [x, y, z];
+                // The velocity at this face: its own component, and the
+                // others averaged from the four faces around it.
+                let mut u = [0i64; 3];
+                for b in 0..3 {
+                    if b == a { u[b] = at(p, a); continue }
+                    let mut s = 0;
+                    for (da, db) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                        let mut q = p;
+                        q[a] += da;
+                        q[b] -= db;
+                        s += at(q, b);
+                    }
+                    u[b] = s / 4;
+                }
+                // Where that air was a tick ago, in face-index units × Q.
+                let mut f = [0i64; 3];
+                for k in 0..3 { f[k] = p[k] * Q - u[k] * TICK.0 * Q / (1_000 * block_mm) }
+                // Trilinear interpolation of this component there.
+                let (base, frac) = (f.map(|v| v.div_euclid(Q)), f.map(|v| v.rem_euclid(Q)));
+                let mut v: i128 = 0;
+                for corner in 0..8 {
+                    let mut q = base;
+                    let mut wgt: i128 = 1;
+                    for k in 0..3 {
+                        let hi = corner >> k & 1 == 1;
+                        if hi { q[k] += 1 }
+                        wgt *= if hi { frac[k] } else { Q - frac[k] } as i128;
+                    }
+                    v += wgt * at(q, a) as i128;
+                }
+                let i = self.ci(x as usize, y as usize, z as usize);
+                out[i][a] = v.div_euclid((Q * Q * Q) as i128) as i32;
+            }
+        }}}
+        out
     }
 
     /// Largest speed anywhere, mm/s.
@@ -197,6 +273,32 @@ impl Flow {
         let block_mg = 1_200 * 8 * crate::substance::CELL_VOLUME_ML as i128 / 1_000;
         (e * block_mg / 2 / 1_000_000) as i64 // mg·(mm/s)² = 10⁻¹² J → µJ
     }
+}
+
+/// Drag of a fuel bed on the air through it, as a rate per metre of travel
+/// per m/s (1/m, × 1000): the force per volume is ρ·c·|u|·u, with
+/// c = ½·C_d·a and a the fuel's frontal area per volume. For thin, randomly
+/// oriented fuel (grass, twigs, leaves) a = σβ/4 (surface per volume σ,
+/// packing ratio β), as WFDS treats a grass bed (Mell et al. 2007, Int. J.
+/// Wildland Fire 16:1–22); C_d ≈ 1 for a cylinder at the Reynolds numbers
+/// of a fire's air through it (10–10³). So c = σβ/8: a kindling bed
+/// (σ = 700/m, β = 0.04) holds air rising at 2 m/s through it with
+/// ~14 m/s² of drag, more than its buoyancy.
+pub fn bed_drag(c: &crate::cell::Cell, subs: &[crate::substance::Substance]) -> i64 {
+    let s = &subs[c.substance as usize];
+    if !c.permeable(subs) || s.surface_per_volume == 0 { return 0 }
+    let beta = c.solid_share(subs).0 as i128; // of 2³²
+    (s.surface_per_volume as i128 * beta * 1_000 / (8 * (1i128 << 32))) as i64
+}
+
+/// Share of a face's velocity (and of the pressure's push on it) that drag
+/// leaves after a tick, permille: 1/(1 + c·|u|·dt), with c summed over the
+/// two blocks' drag (each block is half the way) in 1/m × 1000, u in mm/s.
+fn give(c_milli2: i64, u: i64) -> i64 {
+    if c_milli2 <= 0 { return 1_000 }
+    // c/2 [1/m] × |u| [m/s] × dt [s] = c_milli2/2000 × u/1000 × dt_ms/1000
+    let x = c_milli2 as i128 * u.unsigned_abs() as i128 * TICK.0 as i128 / 2;
+    (1_000_000_000_000i128 / (1_000_000_000 + x)) as i64
 }
 
 impl FaceVelocity for Flow {

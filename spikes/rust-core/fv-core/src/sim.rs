@@ -42,6 +42,9 @@ pub struct Sim {
     pub structure_every: u64,
     /// How radiation travels (packets or a field).
     pub radiation: Radiation,
+    /// When set, the heat each cell's flame released last tick, µJ (for
+    /// probes and tests that measure where flames are; not part of the state).
+    pub flames: Option<Vec<i64>>,
 }
 
 impl Sim {
@@ -49,7 +52,7 @@ impl Sim {
         let flow = Flow::new(&world);
         let books = Books::open(&world);
         let light = Light::new(world.cells.len());
-        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: crate::flow::ADVECT_STEPS, diffuse_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default() }
+        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: crate::flow::ADVECT_STEPS, diffuse_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default(), flames: None }
     }
 
     pub fn schedule(&mut self, s: Scheduled) {
@@ -93,6 +96,10 @@ impl Sim {
         self.flow.step(w);
         advect(w, &self.flow, self.advect_steps);
         chem::react(w);
+        if let Some(f) = self.flames.as_mut() {
+            f.resize(w.cells.len(), 0);
+            for (o, c) in f.iter_mut().zip(&w.cells) { *o = c.flame.0 }
+        }
         rad::radiate_by(self.radiation, w, &self.sky, &mut self.light);
         // What holds things up; whatever came loose starts to fall.
         if w.tick % self.structure_every == 0 {

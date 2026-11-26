@@ -231,3 +231,108 @@ fn a_puddle_dries_in_the_sun_but_barely_in_shade_or_at_night() {
         assert!(sun.0 > 2.0 * rate, "the sun dries it clearly faster than {name}: {:.2} against {rate:.2} mm/day", sun.0);
     }
 }
+
+/// A campfire burning in still air, measured once and shared by the flame
+/// and plume tests: its mean heat release, its flame height and its
+/// centreline gas temperatures, after the torch is taken away.
+struct Campfire { kw: f64, flame_m: f64, centreline_c: Vec<(f64, f64)>, ambient_c: f64 }
+
+fn campfire_in_still_air() -> &'static Campfire {
+    static ONCE: std::sync::OnceLock<Campfire> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let (n, nz, torch_ticks, ticks) = (32, 32, 200u64, 700u64);
+        let s = fv_core::scene::campfire(n, nz);
+        let (cx, cy, size) = s.fire;
+        let mut sim = Sim::new(s.world, Sky::NIGHT);
+        sim.flow.wind_mean = [0, 0];
+        sim.flames = Some(Vec::new());
+        let mut seq = 0;
+        for tick in 0..torch_ticks { for &(x, y, z) in &s.torch {
+            sim.schedule(Scheduled { tick, peer: 0, seq, command: Command::Heat { x: x as u16, y: y as u16, z: z as u16, energy: joules(500) } });
+            seq += 1;
+        }}
+        // A cell shows flame where it releases more than 200 kW/m³
+        // (Smokeview's default for drawing an FDS fire: 10 J a tick in a
+        // litre; its flame light is 35 % of that) or its gas is past 600 °C.
+        let visible_light = 0.35 * 200e3 * 1e-3 * 0.05 * 1e6;
+        let mut last = sim.totals().chemical - sim.books.edge_chemical();
+        let (mut heat, mut tops, mut temps) = (0.0, Vec::new(), vec![0.0f64; nz]);
+        for tick in 1..=ticks {
+            sim.step();
+            assert_eq!(sim.energy_gap(), 0);
+            assert_eq!(sim.mass_gap(), 0);
+            assert_eq!(sim.world.first_impossible(), None, "a store went negative");
+            let chem = sim.totals().chemical - sim.books.edge_chemical();
+            let released = (last - chem) as f64 * 1e-6;
+            last = chem;
+            if tick <= torch_ticks { continue }
+            heat += released;
+            let (w, flames) = (&sim.world, sim.flames.as_ref().unwrap());
+            let mut top = 4;
+            for z in 4..nz { for y in cy - 2..cy + size + 2 { for x in cx - 2..cx + size + 2 {
+                let i = w.idx(x, y, z);
+                let c = &w.cells[i];
+                if flames[i] as f64 > visible_light || (c.gas_volume_ml(&w.subs) > 0 && c.gas_temperature().celsius_f64() > 600.0) { top = top.max(z + 1) }
+            }}}
+            tops.push((top - 4) as f64 * 0.1);
+            for z in 4..nz { for y in cy + size / 2 - 1..cy + size / 2 + 1 { for x in cx + size / 2 - 1..cx + size / 2 + 1 {
+                temps[z] += w.get(x, y, z).gas_temperature().celsius_f64() / 4.0;
+            }}}
+        }
+        let count = (ticks - torch_ticks) as f64;
+        tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        Campfire {
+            kw: heat / (count * 0.05) / 1000.0,
+            flame_m: tops[tops.len() / 2],
+            centreline_c: (4..nz).map(|z| ((z - 4) as f64 * 0.1 + 0.05, temps[z] / count)).collect(),
+            ambient_c: 15.0,
+        }
+    })
+}
+
+#[test]
+fn a_campfires_flames_stand_as_tall_as_heskestad_says() {
+    // Heskestad's flame height (SFPE Handbook, ch. "Fire Plumes, Flame
+    // Height and Air Entrainment"): L = 0.235·Q^⅖ − 1.02·D, L and D in m,
+    // Q in kW, the mean height of the visible flame (50 % intermittency)
+    // above the fire's base. It holds within ~±15 % over pool, gas-burner
+    // and crib fires; this one's 40 cm across. A ×1.5 band: flames burning
+    // inside the fuel bed (the old fault: 0.1 m against 1.5 m) fall out.
+    let f = campfire_in_still_air();
+    let l = 0.235 * f.kw.powf(0.4) - 1.02 * 0.4;
+    eprintln!("campfire: {:.0} kW, flames {:.2} m, Heskestad {l:.2} m", f.kw, f.flame_m);
+    assert!(f.kw > 20.0, "the fire kept burning ({:.0} kW)", f.kw);
+    assert!(f.flame_m >= l / 1.5 && f.flame_m <= l * 1.5, "flames {:.2} m tall, Heskestad's L for {:.0} kW is {l:.2} m", f.flame_m, f.kw);
+}
+
+/// McCaffrey (1979, NBSIR 79-1910) centreline temperature rise above a
+/// fire, K: 2g·ΔT/T₀ = (κ/C)²·(z/Q^⅖)^(2η−1), C = 0.9, with κ, η = 6.8, ½ in
+/// the continuous flame (z/Q^⅖ < 0.08 m/kW^⅖), 1.9, 0 where it flickers
+/// (to 0.2) and 1.1, −⅓ in the plume above.
+fn mccaffrey_rise(z: f64, q: f64, t0: f64) -> f64 {
+    let s = z / q.powf(0.4);
+    let (k, eta) = if s < 0.08 { (6.8, 0.5) } else if s < 0.2 { (1.9, 0.0) } else { (1.1, -1.0 / 3.0) };
+    (k / 0.9f64).powi(2) * s.powf(2.0 * eta - 1.0) * t0 / (2.0 * 9.81)
+}
+
+#[test]
+#[ignore = "open: the plume is ~6x too cool (+119 K at 0.45 m over a 71 kW fire, McCaffrey +800 K); about two thirds of the heat leaves the bed as radiation and the plume draws too much air through the fuel (26 Nov)"]
+fn the_plume_over_a_campfire_is_as_hot_as_mccaffrey_measured() {
+    // Through the flickering flame and the plume above it (z/Q^⅖ from 0.08
+    // to 0.3), the centreline's mean temperature rise within ×2 of
+    // McCaffrey's (his data scatter ±20 %; a 10 cm cell averages over a
+    // plume a few cells wide, so the centreline reads low).
+    let f = campfire_in_still_air();
+    let t0 = f.ambient_c + 273.15;
+    let mut checked = 0;
+    for &(z, t) in &f.centreline_c {
+        let s = z / f.kw.powf(0.4);
+        if !(0.08..=0.3).contains(&s) { continue }
+        let want = mccaffrey_rise(z, f.kw, t0);
+        let got = t - f.ambient_c;
+        eprintln!("z {z:.2} m: centreline +{got:.0} K, McCaffrey +{want:.0} K");
+        assert!(got >= want / 2.0 && got <= want * 2.0, "at {z:.2} m the centreline is {got:.0} K over ambient; McCaffrey: {want:.0} K");
+        checked += 1;
+    }
+    assert!(checked > 0);
+}
