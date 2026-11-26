@@ -1,0 +1,590 @@
+[d1 050] world: Hunger(1, 700)
+[d1 050] world: Hunger(2, 800)
+[d1 050] world: Put(1, 5)
+[d1 050] world: Put(2, 7)
+[d1 050] Bo    · starts a conversation with Cal (familiarity 0, trust 460, affinity 0)
+[d1 050] Bo    · chooses to greet (924) over: let them speak 268
+[d1 050] Bo   (to Cal): «Hello.»   vol 500
+[d1 050] Cal   · starts a conversation with Bo (familiarity 0, trust 420, affinity 0)
+[d1 050] Cal   · chooses to greet (919) over: let them speak 254
+[d1 050] Cal  (to Bo): «...Hi.»   vol 500
+[d1 051] Bo    · chooses to I'm hungry and don't know where food is (767) over: let them speak 666, get to know them 646
+[d1 051] Bo   (to Cal): «Where can I find food?»   vol 500
+[d1 052] Cal   · chooses to send them away from my food (a lie) (1009) over: answer truthfully 631, leave 600
+[d1 052] Cal  (to Bo): «The well holds food.»   vol 500
+[d1 053] Ada   · overheard Cal: holds(the well, food) — holds it at conf 450 (stated 900 × trust 500)
+[d1 053] Bo    · told Cal: holds(the well, food) — holds it at conf 414 (stated 900 × trust 460)
+[d1 053] Bo    · chooses to leave (703) over: get to know them 629, tell them about myself 506
+[d1 053] Bo   (to Cal): «Goodbye.»   vol 500
+[d1 053] Cal   · chooses to leave (684) over: let them speak 653, tell them about myself 524
+[d1 053] Cal  (to Bo): «Goodbye.»   vol 500
+[d1 054] Bo    · conversation with Cal ends (we both said goodbye): I spoke 3 times, they 3
+[d1 054] Bo    · retrospection over 8 short-term traces: + belief holds(the well, food) (told by Cal, conf 414); Cal: familiarity 200, affinity 27, trust 460
+[d1 054] Bo    · hungry (700): heads for the well — from long-term belief, 'X holds food' form, conf 414
+[d1 054] Cal   · conversation with Bo ends (we both said goodbye): I spoke 3 times, they 3
+[d1 054] Cal   · retrospection over 7 short-term traces: Bo: familiarity 200, affinity 10, trust 420
+[d1 054] Cal   · hungry (800): heads for the cold box — from long-term belief, 'food is in X' form, conf 1000
+[d1 066] Cal   · sees that holds(the well, water)
+[d1 068] Bo    · sees that holds(the well, water)
+[d1 068] Bo    · Cal told me otherwise: trust in Cal 460 → 184, and I feel betrayed
+[d1 068] Bo    · hungry (700) but knows nowhere to find food
+[d1 070] world: Put(2, 140)
+[d1 100] Ada   · retrospection over 2 short-term traces: + belief holds(the well, food) (overheard Cal, conf 450)
+[d1 126] Cal   · retrospection over 1 short-term traces: + belief holds(the well, water) (seen, conf 1000)
+[d1 149] Cal   · sees that holds(the meadow, flowers)
+[d1 156] Bo    · sees that holds(the well, water)
+[d1 163] Bo    · retrospection over 2 short-term traces: + episode Betrayed with Cal (valence -600, strength 420); + belief holds(the well, water) (seen, conf 1000)
+[d1 169] Cal   · hungry (800) and food is here: eats
+[d1 200] world: Hunger(2, 0)
+[d1 226] Cal   · retrospection over 2 short-term traces: + belief holds(the meadow, flowers) (seen, conf 1000); habit: hungry → the cold box (strengthened by eating there)
+[d1 300] world: Put(0, 18)
+[d1 300] Ada   · starts a conversation with Bo (familiarity 0, trust 500, affinity 0)
+[d1 300] Ada   · chooses to greet (921) over: let them speak 255
+[d1 300] Ada  (to Bo): «Hello.»   vol 500
+[d1 300] Bo    · starts a conversation with Ada (familiarity 0, trust 460, affinity 0)
+[d1 300] Bo    · chooses to greet (906) over: let them speak 252
+[d1 300] Bo   (to Ada): «Hello.»   vol 500
+[d1 301] Bo    · chooses to I'm hungry and don't know where food is (769) over: let them speak 651, get to know them 635
+[d1 301] Bo   (to Ada): «Where can I find food?»   vol 500
+[d1 301] Cal   · mishears Ada (loudness 79): takes «Hello.» for «...Hi.»
+[d1 301] Cal   · mishears Bo (loudness 85): takes «Hello.» for «...Hi.»
+[d1 302] Ada   · chooses to answer truthfully (892) over: tell them about myself 540, get to know them 514
+[d1 302] Ada  (to Bo): «The cold box holds food.»   vol 500
+[d1 302] Cal   · misses what Bo said (loudness 85)
+[d1 303] Bo    · told Ada: holds(the cold box, food) — holds it at conf 460 (stated 1000 × trust 460)
+[d1 303] Bo    · chooses to leave (706) over: get to know them 653, tell them about myself 487
+[d1 303] Bo   (to Ada): «Goodbye.»   vol 500
+[d1 303] Cal   · misses what Ada said (loudness 79)
+[d1 304] Ada   · chooses to leave (1082) over: get to know them 528, tell them about myself 519
+[d1 304] Ada  (to Bo): «Goodbye.»   vol 500
+[d1 305] Ada   · conversation with Bo ends (we both said goodbye): I spoke 3 times, they 3
+[d1 305] Ada   · retrospection over 7 short-term traces: Bo: familiarity 200, affinity 9, trust 500
+[d1 305] Bo    · conversation with Ada ends (we both said goodbye): I spoke 3 times, they 3
+[d1 305] Bo    · retrospection over 8 short-term traces: + belief holds(the cold box, food) (told by Ada, conf 460); Ada: familiarity 200, affinity 32, trust 460
+[d1 305] Bo    · hungry (700): heads for the cold box — from long-term belief, 'X holds food' form, conf 460
+[d1 325] Bo    · sees that holds(the cold box, food)
+[d1 325] Bo    · Ada was right: trust in Ada → 527
+[d1 325] Bo    · hungry (700) and food is here: eats
+[d1 363] Bo    · retrospection over 2 short-term traces: habit: hungry → the cold box (strengthened by eating there)
+[d1 400] world: Put(0, 0)
+[d1 500] world: Put(1, 100)
+[d1 800] Ada   · goes to sleep
+[d1 800] Ada   · retrospection (sleep) over 0 short-term traces: compiles: hungry → the cold box (strength 800)
+[d1 800] Bo    · goes to sleep
+[d1 800] Bo    · retrospection (sleep) over 0 short-term traces
+[d1 800] Cal   · goes to sleep
+[d1 800] Cal   · retrospection (sleep) over 0 short-term traces
+
+=== memory after day 1 (d1 801) ===
+  Ada — mood 161, short-term 0 items
+    belief  likes(Ada, flowers)                founding         conf 1000
+    belief  fears(Ada, the dog)                founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, food)              overheard Cal    conf 450
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 200, trust 500, affinity    9, meetings 1, thinks they know 1 facts
+    rel     Cal  familiarity   0, trust 500, affinity    0, meetings 0, thinks they know 1 facts
+  Bo — mood 139, short-term 0 items
+    belief  likes(Bo, flowers)                 founding         conf 1000
+    belief  holds(the meadow, flowers)         founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the cold box, food)          seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    episode Betrayed with Cal, day 1 (valence -600, strength 368)
+    rel     Ada  familiarity 200, trust 527, affinity   32, meetings 1, thinks they know 1 facts
+    rel     Cal  familiarity 200, trust 184, affinity -328, meetings 1, thinks they know 1 facts
+  Cal — mood 64, short-term 0 items
+    belief  likes(Cal, water)                  founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the meadow, flowers)         seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 200, trust 420, affinity   10, meetings 1, thinks they know 1 facts
+
+[d2 000] Ada   · wakes up
+[d2 000] Bo    · wakes up
+[d2 000] Cal   · wakes up
+[d2 800] Ada   · goes to sleep
+[d2 800] Ada   · retrospection (sleep) over 0 short-term traces
+[d2 800] Bo    · goes to sleep
+[d2 800] Bo    · retrospection (sleep) over 0 short-term traces
+[d2 800] Cal   · goes to sleep
+[d2 800] Cal   · retrospection (sleep) over 0 short-term traces
+
+=== memory after day 2 (d2 801) ===
+  Ada — mood 161, short-term 0 items
+    belief  likes(Ada, flowers)                founding         conf 1000
+    belief  fears(Ada, the dog)                founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, food)              overheard Cal    conf 450
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 200, trust 500, affinity    9, meetings 1, thinks they know 1 facts
+    rel     Cal  familiarity   0, trust 500, affinity    0, meetings 0, thinks they know 1 facts
+  Bo — mood 139, short-term 0 items
+    belief  likes(Bo, flowers)                 founding         conf 1000
+    belief  holds(the meadow, flowers)         founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the cold box, food)          seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    episode Betrayed with Cal, day 1 (valence -600, strength 322)
+    rel     Ada  familiarity 200, trust 527, affinity   32, meetings 1, thinks they know 1 facts
+    rel     Cal  familiarity 200, trust 184, affinity -328, meetings 1, thinks they know 1 facts
+  Cal — mood 64, short-term 0 items
+    belief  likes(Cal, water)                  founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the meadow, flowers)         seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 200, trust 420, affinity   10, meetings 1, thinks they know 1 facts
+
+[d3 000] world: Pain(0, 900)
+[d3 000] Ada   · wakes up
+[d3 000] Bo    · wakes up
+[d3 000] Cal   · wakes up
+[d3 100] world: Put(0, 10)
+[d3 100] world: Put(1, 12)
+[d3 100] Ada   · starts a conversation with Bo (familiarity 200, trust 500, affinity 9)
+[d3 100] Ada   · chooses to I'm in a foul mood (1122) over: greet 913, let them speak 272
+[d3 100] Ada  (to Bo): «(snarls) Leave me alone!»   vol 1000
+[d3 100] Bo    · starts a conversation with Ada (familiarity 200, trust 527, affinity 32)
+[d3 100] Bo    · chooses to greet (908) over: let them speak 256
+[d3 100] Bo   (to Ada): «Hello.»   vol 500
+[d3 101] Bo    · feels stung (valence -800, arousal 900)
+[d3 101] Bo    · chooses to leave (857) over: let them speak 657, get to know them 571
+[d3 101] Bo   (to Ada): «Goodbye.»   vol 500
+[d3 101] Cal   · misses what Ada said (loudness 94)
+[d3 101] Cal   · misses what Bo said (loudness 53)
+[d3 102] Ada   · chooses to leave (1212) over: let them speak 78
+[d3 102] Ada  (to Bo): «Goodbye.»   vol 500
+[d3 102] Cal   · misses what Bo said (loudness 53)
+[d3 103] Ada   · conversation with Bo ends (we both said goodbye): I spoke 2 times, they 2
+[d3 103] Ada   · retrospection over 5 short-term traces: Bo: familiarity 360, affinity 20, trust 500
+[d3 103] Bo    · conversation with Ada ends (we both said goodbye): I spoke 2 times, they 2
+[d3 103] Bo    · retrospection over 5 short-term traces: + episode Snarl with Ada (valence -800, strength 720); Ada: familiarity 360, affinity -148, trust 527
+[d3 103] Cal   · misses what Ada said (loudness 47)
+[d3 160] world: Put(0, 0)
+[d3 160] world: Put(1, 100)
+[d3 800] Ada   · goes to sleep
+[d3 800] Ada   · retrospection (sleep) over 0 short-term traces
+[d3 800] Bo    · goes to sleep
+[d3 800] Bo    · retrospection (sleep) over 0 short-term traces
+[d3 800] Cal   · goes to sleep
+[d3 800] Cal   · retrospection (sleep) over 0 short-term traces
+
+=== memory after day 3 (d3 801) ===
+  Ada — mood -289, short-term 0 items
+    belief  likes(Ada, flowers)                founding         conf 1000
+    belief  fears(Ada, the dog)                founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, food)              overheard Cal    conf 450
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 360, trust 500, affinity   20, meetings 2, thinks they know 1 facts
+    rel     Cal  familiarity   0, trust 500, affinity    0, meetings 0, thinks they know 1 facts
+  Bo — mood 139, short-term 0 items
+    belief  likes(Bo, flowers)                 founding         conf 1000
+    belief  holds(the meadow, flowers)         founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the cold box, food)          seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    episode Betrayed with Cal, day 1 (valence -600, strength 282)
+    episode Snarl with Ada, day 3 (valence -800, strength 630)
+    rel     Ada  familiarity 360, trust 527, affinity -148, meetings 2, thinks they know 1 facts
+    rel     Cal  familiarity 200, trust 184, affinity -328, meetings 1, thinks they know 1 facts
+  Cal — mood 64, short-term 0 items
+    belief  likes(Cal, water)                  founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the meadow, flowers)         seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 200, trust 420, affinity   10, meetings 1, thinks they know 1 facts
+
+[d4 000] world: Pain(0, 0)
+[d4 000] Ada   · wakes up
+[d4 000] Bo    · wakes up
+[d4 000] Cal   · wakes up
+[d4 800] Ada   · goes to sleep
+[d4 800] Ada   · retrospection (sleep) over 0 short-term traces
+[d4 800] Bo    · goes to sleep
+[d4 800] Bo    · retrospection (sleep) over 0 short-term traces
+[d4 800] Cal   · goes to sleep
+[d4 800] Cal   · retrospection (sleep) over 0 short-term traces
+
+=== memory after day 4 (d4 801) ===
+  Ada — mood 139, short-term 0 items
+    belief  likes(Ada, flowers)                founding         conf 1000
+    belief  fears(Ada, the dog)                founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, food)              overheard Cal    conf 450
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 360, trust 500, affinity   20, meetings 2, thinks they know 1 facts
+    rel     Cal  familiarity   0, trust 500, affinity    0, meetings 0, thinks they know 1 facts
+  Bo — mood 139, short-term 0 items
+    belief  likes(Bo, flowers)                 founding         conf 1000
+    belief  holds(the meadow, flowers)         founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the cold box, food)          seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    episode Betrayed with Cal, day 1 (valence -600, strength 247)
+    episode Snarl with Ada, day 3 (valence -800, strength 552)
+    rel     Ada  familiarity 360, trust 527, affinity -148, meetings 2, thinks they know 1 facts
+    rel     Cal  familiarity 200, trust 184, affinity -328, meetings 1, thinks they know 1 facts
+  Cal — mood 64, short-term 0 items
+    belief  likes(Cal, water)                  founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the meadow, flowers)         seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 200, trust 420, affinity   10, meetings 1, thinks they know 1 facts
+
+[d5 000] Ada   · wakes up
+[d5 000] Bo    · wakes up
+[d5 000] Cal   · wakes up
+[d5 100] world: Put(0, 10)
+[d5 100] world: Put(1, 12)
+[d5 100] Ada   · starts a conversation with Bo (familiarity 360, trust 500, affinity 20)
+[d5 100] Ada   · chooses to greet (927) over: let them speak 261
+[d5 100] Ada  (to Bo): «Hello.»   vol 500
+[d5 100] Bo    · starts a conversation with Ada (familiarity 360, trust 527, affinity -148); recalls Snarl on day 3 (strength 552) → feeling -441
+[d5 100] Bo    · chooses to greet (911) over: let them speak 275, I'm in a foul mood 120
+[d5 100] Bo   (to Ada): «...Hi.»   vol 500
+[d5 101] Cal   · misses what Ada said (loudness 47)
+[d5 101] Cal   · misses what Bo said (loudness 53)
+[d5 102] Ada   · chooses to tell them about myself (520) over: get to know them 450, ask how they are 369
+[d5 102] Ada  (to Bo): «I like flowers.»   vol 500
+[d5 102] Bo    · chooses to leave (477) over: get to know them 467, tell them about myself 367
+[d5 102] Bo   (to Ada): «Goodbye.»   vol 500
+[d5 103] Ada   · chooses to leave (1102) over: let them speak 654, get to know them 450
+[d5 103] Ada  (to Bo): «Goodbye.»   vol 500
+[d5 103] Bo    · told Ada: likes(Ada, flowers) — holds it at conf 474 (stated 900 × trust 527)
+[d5 103] Cal   · misses what Ada said (loudness 47)
+[d5 103] Cal   · misses what Bo said (loudness 53)
+[d5 104] Ada   · conversation with Bo ends (we both said goodbye): I spoke 3 times, they 2
+[d5 104] Ada   · retrospection over 6 short-term traces: Bo: familiarity 488, affinity 15, trust 500
+[d5 104] Bo    · conversation with Ada ends (we both said goodbye): I spoke 2 times, they 3
+[d5 104] Bo    · retrospection over 6 short-term traces: + belief likes(Ada, flowers) (told by Ada, conf 474); we both like flowers: affinity with Ada +120; + belief likes(Ada, the meadow) (derived, conf 331); Ada: familiarity 488, affinity -18, trust 527
+[d5 104] Cal   · misses what Ada said (loudness 47)
+[d5 160] world: Put(0, 0)
+[d5 160] world: Put(1, 100)
+[d5 800] Ada   · goes to sleep
+[d5 800] Ada   · retrospection (sleep) over 0 short-term traces
+[d5 800] Bo    · goes to sleep
+[d5 800] Bo    · retrospection (sleep) over 0 short-term traces
+[d5 800] Cal   · goes to sleep
+[d5 800] Cal   · retrospection (sleep) over 0 short-term traces
+
+=== memory after day 5 (d5 801) ===
+  Ada — mood 139, short-term 0 items
+    belief  likes(Ada, flowers)                founding         conf 1000
+    belief  fears(Ada, the dog)                founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, food)              overheard Cal    conf 450
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 488, trust 500, affinity   15, meetings 3, thinks they know 2 facts
+    rel     Cal  familiarity   0, trust 500, affinity    0, meetings 0, thinks they know 1 facts
+  Bo — mood 139, short-term 0 items
+    belief  likes(Bo, flowers)                 founding         conf 1000
+    belief  holds(the meadow, flowers)         founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the cold box, food)          seen             conf 1000
+    belief  likes(Ada, flowers)                told by Ada      conf 474
+    belief  likes(Ada, the meadow)             derived          conf 331
+    habit   hungry → the cold box (strength 800)
+    episode Betrayed with Cal, day 1 (valence -600, strength 217)
+    episode Snarl with Ada, day 3 (valence -800, strength 483)
+    episode SharedLike with Ada, day 5 (valence 400, strength 350)
+    rel     Ada  familiarity 488, trust 527, affinity  -18, meetings 3, thinks they know 2 facts
+    rel     Cal  familiarity 200, trust 184, affinity -328, meetings 1, thinks they know 1 facts
+  Cal — mood 64, short-term 0 items
+    belief  likes(Cal, water)                  founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the meadow, flowers)         seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 200, trust 420, affinity   10, meetings 1, thinks they know 1 facts
+
+[d6 000] Ada   · wakes up
+[d6 000] Bo    · wakes up
+[d6 000] Cal   · wakes up
+[d6 100] world: Put(0, 10)
+[d6 100] world: Put(1, 12)
+[d6 100] Ada   · starts a conversation with Bo (familiarity 488, trust 500, affinity 15)
+[d6 100] Ada   · chooses to greet (911) over: let them speak 268
+[d6 100] Ada  (to Bo): «Hello.»   vol 500
+[d6 100] Bo    · starts a conversation with Ada (familiarity 488, trust 527, affinity -18); recalls Snarl on day 3 (strength 483), SharedLike on day 5 (strength 350) → feeling -246
+[d6 100] Bo    · chooses to greet (918) over: let them speak 264
+[d6 100] Bo   (to Ada): «...Hi.»   vol 500
+[d6 101] Cal   · misses what Ada said (loudness 47)
+[d6 101] Cal   · misses what Bo said (loudness 53)
+[d6 102] Ada   · chooses to get to know them (436) over: ask how they are 363, confide a fear 320
+[d6 102] Ada  (to Bo): «What do you like?»   vol 500
+[d6 102] Bo    · chooses to tell them about myself (443) over: ask how they are 349, share what I know 325
+[d6 102] Bo   (to Ada): «I like flowers.»   vol 500
+[d6 103] Ada   · told Bo: likes(Bo, flowers) — holds it at conf 450 (stated 900 × trust 500)
+[d6 103] Cal   · misses what Ada said (loudness 47)
+[d6 103] Cal   · misses what Bo said (loudness 53)
+[d6 104] Ada   · chooses to ask how they are (361) over: confide a fear 345, share a laugh 284
+[d6 104] Ada  (to Bo): «How are you?»   vol 500
+[d6 104] Bo    · chooses to ask how they are (347) over: leave 346, share what I know 324
+[d6 104] Bo   (to Ada): «How are you?»   vol 500
+[d6 105] Ada   · chooses to say how I am (717) over: let them speak 657, confide a fear 346
+[d6 105] Ada  (to Bo): «I'm glad.»   vol 500
+[d6 105] Bo    · chooses to say how I am (702) over: let them speak 669, leave 414
+[d6 105] Bo   (to Ada): «I'm glad.»   vol 500
+[d6 105] Cal   · misses what Ada said (loudness 47)
+[d6 105] Cal   · misses what Bo said (loudness 53)
+[d6 106] Ada   · told Bo: feels(Bo, glad) — holds it at conf 450 (stated 900 × trust 500)
+[d6 106] Bo    · told Ada: feels(Ada, glad) — holds it at conf 474 (stated 900 × trust 527)
+[d6 106] Cal   · misses what Ada said (loudness 47)
+[d6 106] Cal   · misses what Bo said (loudness 53)
+[d6 107] Ada   · chooses to leave (371) over: confide a fear 322, share a laugh 304
+[d6 107] Ada  (to Bo): «Goodbye.»   vol 500
+[d6 107] Bo    · chooses to leave (504) over: share what I know 337, share what I know 331
+[d6 107] Bo   (to Ada): «Goodbye.»   vol 500
+[d6 108] Ada   · conversation with Bo ends (we both said goodbye): I spoke 5 times, they 5
+[d6 108] Ada   · retrospection over 11 short-term traces: + belief likes(Bo, flowers) (told by Bo, conf 450); we both like flowers: affinity with Bo +120; + belief feels(Bo, glad) (told by Bo, conf 450); Bo: familiarity 590, affinity 138, trust 500
+[d6 108] Bo    · conversation with Ada ends (we both said goodbye): I spoke 5 times, they 5
+[d6 108] Bo    · retrospection over 11 short-term traces: + belief feels(Ada, glad) (told by Ada, conf 474); Ada: familiarity 590, affinity -8, trust 527
+[d6 108] Cal   · misses what Ada said (loudness 47)
+[d6 108] Cal   · misses what Bo said (loudness 53)
+[d6 160] world: Put(0, 0)
+[d6 160] world: Put(1, 100)
+[d6 800] Ada   · goes to sleep
+[d6 800] Ada   · retrospection (sleep) over 0 short-term traces
+[d6 800] Bo    · goes to sleep
+[d6 800] Bo    · retrospection (sleep) over 0 short-term traces
+[d6 800] Cal   · goes to sleep
+[d6 800] Cal   · retrospection (sleep) over 0 short-term traces
+
+=== memory after day 6 (d6 801) ===
+  Ada — mood 145, short-term 0 items
+    belief  likes(Ada, flowers)                founding         conf 1000
+    belief  fears(Ada, the dog)                founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, food)              overheard Cal    conf 450
+    belief  likes(Bo, flowers)                 told by Bo       conf 450
+    belief  feels(Bo, glad)                    told by Bo       conf 450
+    habit   hungry → the cold box (strength 800)
+    episode SharedLike with Bo, day 6 (valence 400, strength 350)
+    rel     Bo   familiarity 590, trust 500, affinity  138, meetings 4, thinks they know 5 facts
+    rel     Cal  familiarity   0, trust 500, affinity    0, meetings 0, thinks they know 1 facts
+  Bo — mood 139, short-term 0 items
+    belief  likes(Bo, flowers)                 founding         conf 1000
+    belief  holds(the meadow, flowers)         founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the cold box, food)          seen             conf 1000
+    belief  likes(Ada, flowers)                told by Ada      conf 474
+    belief  likes(Ada, the meadow)             derived          conf 331
+    belief  feels(Ada, glad)                   told by Ada      conf 474
+    habit   hungry → the cold box (strength 800)
+    episode Betrayed with Cal, day 1 (valence -600, strength 190)
+    episode Snarl with Ada, day 3 (valence -800, strength 423)
+    episode SharedLike with Ada, day 5 (valence 400, strength 307)
+    rel     Ada  familiarity 590, trust 527, affinity   -8, meetings 4, thinks they know 5 facts
+    rel     Cal  familiarity 200, trust 184, affinity -328, meetings 1, thinks they know 1 facts
+  Cal — mood 64, short-term 0 items
+    belief  likes(Cal, water)                  founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the meadow, flowers)         seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 200, trust 420, affinity   10, meetings 1, thinks they know 1 facts
+
+[d7 000] Ada   · wakes up
+[d7 000] Bo    · wakes up
+[d7 000] Cal   · wakes up
+[d7 100] world: Put(0, 10)
+[d7 100] world: Put(1, 12)
+[d7 100] Ada   · starts a conversation with Bo (familiarity 590, trust 500, affinity 138); recalls SharedLike on day 6 (strength 350) → feeling 140
+[d7 100] Ada   · chooses to greet (910) over: let them speak 268
+[d7 100] Ada  (to Bo): «Hello.»   vol 500
+[d7 100] Bo    · starts a conversation with Ada (familiarity 590, trust 527, affinity -8); recalls Snarl on day 3 (strength 423), SharedLike on day 5 (strength 307) → feeling -216
+[d7 100] Bo    · chooses to greet (904) over: let them speak 254
+[d7 100] Bo   (to Ada): «...Hi.»   vol 500
+[d7 101] Cal   · misses what Ada said (loudness 47)
+[d7 101] Cal   · misses what Bo said (loudness 53)
+[d7 102] Ada   · chooses to ask how they are (422) over: confide a fear 388, share a laugh 345
+[d7 102] Ada  (to Bo): «How are you?»   vol 500
+[d7 102] Bo    · chooses to ask how they are (363) over: share what I know 340, share what I know 315
+[d7 102] Bo   (to Ada): «How are you?»   vol 500
+[d7 103] Ada   · chooses to say how I am (719) over: let them speak 657, confide a fear 394
+[d7 103] Ada  (to Bo): «I'm glad.»   vol 500
+[d7 103] Bo    · chooses to say how I am (727) over: let them speak 655, share what I know 325
+[d7 103] Bo   (to Ada): «I'm glad.»   vol 500
+[d7 103] Cal   · misses what Ada said (loudness 47)
+[d7 103] Cal   · misses what Bo said (loudness 53)
+[d7 104] Ada   · told Bo: feels(Bo, glad) — holds it at conf 450 (stated 900 × trust 500)
+[d7 104] Bo    · told Ada: feels(Ada, glad) — holds it at conf 474 (stated 900 × trust 527)
+[d7 104] Cal   · misses what Ada said (loudness 47)
+[d7 104] Cal   · misses what Bo said (loudness 53)
+[d7 105] Ada   · chooses to confide a fear (383) over: share a laugh 341, let them speak 264
+[d7 105] Ada  (to Bo): «I'm afraid of the dog.»   vol 500
+[d7 105] Bo    · chooses to leave (381) over: share what I know 342, share what I know 329
+[d7 105] Bo   (to Ada): «Goodbye.»   vol 500
+[d7 106] Ada   · chooses to leave (1240) over: let them speak 659, share a laugh 338
+[d7 106] Ada  (to Bo): «Goodbye.»   vol 500
+[d7 106] Bo    · told Ada: fears(Ada, the dog) — holds it at conf 474 (stated 900 × trust 527)
+[d7 106] Cal   · misses what Ada said (loudness 47)
+[d7 106] Cal   · misses what Bo said (loudness 53)
+[d7 107] Ada   · conversation with Bo ends (we both said goodbye): I spoke 5 times, they 4
+[d7 107] Ada   · retrospection over 10 short-term traces: Bo: familiarity 672, affinity 142, trust 500
+[d7 107] Bo    · conversation with Ada ends (we both said goodbye): I spoke 4 times, they 5
+[d7 107] Bo    · retrospection over 10 short-term traces: + belief fears(Ada, the dog) (told by Ada, conf 474); Ada: familiarity 672, affinity 9, trust 527
+[d7 107] Cal   · misses what Ada said (loudness 47)
+[d7 160] world: Put(0, 0)
+[d7 160] world: Put(1, 100)
+[d7 300] world: Put(2, 10)
+[d7 300] world: Put(1, 12)
+[d7 300] Bo    · starts a conversation with Cal (familiarity 200, trust 184, affinity -328); recalls Betrayed on day 1 (strength 190) → feeling -114
+[d7 300] Bo    · chooses to greet (906) over: let them speak 259
+[d7 300] Bo   (to Cal): «...Hi.»   vol 500
+[d7 300] Cal   · starts a conversation with Bo (familiarity 200, trust 420, affinity 10)
+[d7 300] Cal   · chooses to greet (908) over: let them speak 266
+[d7 300] Cal  (to Bo): «...Hi.»   vol 500
+[d7 302] Bo    · chooses to get to know them (542) over: tell them about myself 412, leave 405
+[d7 302] Bo   (to Cal): «What do you like?»   vol 500
+[d7 302] Cal   · chooses to tell them about myself (527) over: get to know them 418, share what I know 310
+[d7 302] Cal  (to Bo): «I like water.»   vol 500
+[d7 303] Ada   · overheard Cal: likes(Cal, water) — holds it at conf 450 (stated 900 × trust 500)
+[d7 303] Bo    · told Cal: likes(Cal, water) — holds it at conf 165 (stated 900 × trust 184)
+[d7 304] Bo    · chooses to leave (499) over: tell them about myself 406, share what I know 321
+[d7 304] Bo   (to Cal): «Goodbye.»   vol 500
+[d7 304] Cal   · chooses to get to know them (404) over: share what I know 312, share what I know 310
+[d7 304] Cal  (to Bo): «What do you like?»   vol 500
+[d7 305] Cal   · chooses to leave (1182) over: let them speak 671, share what I know 308
+[d7 305] Cal  (to Bo): «Goodbye.»   vol 500
+[d7 306] Bo    · conversation with Cal ends (we both said goodbye): I spoke 3 times, they 4
+[d7 306] Bo    · retrospection over 8 short-term traces: + belief likes(Cal, water) (told by Cal, conf 165); + belief likes(Cal, the well) (derived, conf 115); Cal: familiarity 360, affinity -323, trust 184
+[d7 306] Cal   · conversation with Bo ends (we both said goodbye): I spoke 4 times, they 3
+[d7 306] Cal   · retrospection over 8 short-term traces: Bo: familiarity 360, affinity 10, trust 420
+[d7 360] world: Put(2, 140)
+[d7 360] world: Put(1, 100)
+[d7 400] Ada   · retrospection over 1 short-term traces: + belief likes(Cal, water) (overheard Cal, conf 450)
+[d7 800] Ada   · goes to sleep
+[d7 800] Ada   · retrospection (sleep) over 0 short-term traces
+[d7 800] Bo    · goes to sleep
+[d7 800] Bo    · retrospection (sleep) over 0 short-term traces
+[d7 800] Cal   · goes to sleep
+[d7 800] Cal   · retrospection (sleep) over 0 short-term traces
+
+=== memory after day 7 (d7 801) ===
+  Ada — mood 161, short-term 0 items
+    belief  likes(Ada, flowers)                founding         conf 1000
+    belief  fears(Ada, the dog)                founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, food)              overheard Cal    conf 450
+    belief  likes(Bo, flowers)                 told by Bo       conf 450
+    belief  feels(Bo, glad)                    told by Bo       conf 450
+    belief  likes(Cal, water)                  overheard Cal    conf 450
+    habit   hungry → the cold box (strength 800)
+    episode SharedLike with Bo, day 6 (valence 400, strength 307)
+    rel     Bo   familiarity 672, trust 500, affinity  142, meetings 5, thinks they know 6 facts
+    rel     Cal  familiarity   0, trust 500, affinity    0, meetings 0, thinks they know 2 facts
+  Bo — mood 139, short-term 0 items
+    belief  likes(Bo, flowers)                 founding         conf 1000
+    belief  holds(the meadow, flowers)         founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the cold box, food)          seen             conf 1000
+    belief  likes(Ada, flowers)                told by Ada      conf 474
+    belief  likes(Ada, the meadow)             derived          conf 331
+    belief  feels(Ada, glad)                   told by Ada      conf 474
+    belief  fears(Ada, the dog)                told by Ada      conf 474
+    belief  likes(Cal, water)                  told by Cal      conf 165
+    belief  likes(Cal, the well)               derived          conf 115
+    habit   hungry → the cold box (strength 800)
+    episode Betrayed with Cal, day 1 (valence -600, strength 167)
+    episode Snarl with Ada, day 3 (valence -800, strength 371)
+    episode SharedLike with Ada, day 5 (valence 400, strength 269)
+    rel     Ada  familiarity 672, trust 527, affinity    9, meetings 5, thinks they know 6 facts
+    rel     Cal  familiarity 360, trust 184, affinity -323, meetings 2, thinks they know 2 facts
+  Cal — mood 64, short-term 0 items
+    belief  likes(Cal, water)                  founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the meadow, flowers)         seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 360, trust 420, affinity   10, meetings 2, thinks they know 2 facts
+
+[d8 000] Ada   · wakes up
+[d8 000] Bo    · wakes up
+[d8 000] Cal   · wakes up
+[d8 100] world: Put(0, 10)
+[d8 100] world: Put(1, 12)
+[d8 100] Ada   · starts a conversation with Bo (familiarity 672, trust 500, affinity 142); recalls SharedLike on day 6 (strength 307) → feeling 122
+[d8 100] Ada   · chooses to greet (901) over: let them speak 263
+[d8 100] Ada  (to Bo): «Hello.»   vol 500
+[d8 100] Bo    · starts a conversation with Ada (familiarity 672, trust 527, affinity 9); recalls Snarl on day 3 (strength 371), SharedLike on day 5 (strength 269) → feeling -189
+[d8 100] Bo    · chooses to greet (908) over: let them speak 278
+[d8 100] Bo   (to Ada): «...Hi.»   vol 500
+[d8 102] Ada   · chooses to ask how they are (418) over: share a laugh 355, let them speak 277
+[d8 102] Ada  (to Bo): «How are you?»   vol 500
+[d8 102] Bo    · chooses to ask how they are (360) over: share what I know 342, share what I know 339
+[d8 102] Bo   (to Ada): «How are you?»   vol 500
+[d8 103] Ada   · chooses to say how I am (719) over: let them speak 675, share a laugh 343
+[d8 103] Ada  (to Bo): «I'm glad.»   vol 500
+[d8 103] Bo    · chooses to say how I am (715) over: let them speak 660, share what I know 335
+[d8 103] Bo   (to Ada): «I'm glad.»   vol 500
+[d8 104] Ada   · told Bo: feels(Bo, glad) — holds it at conf 450 (stated 900 × trust 500)
+[d8 104] Bo    · told Ada: feels(Ada, glad) — holds it at conf 474 (stated 900 × trust 527)
+[d8 105] Ada   · chooses to share a laugh (360) over: let them speak 275, leave 245
+[d8 105] Ada  (to Bo): «(laughs)»   vol 500
+[d8 105] Bo    · chooses to leave (361) over: share what I know 326, share what I know 319
+[d8 105] Bo   (to Ada): «Goodbye.»   vol 500
+[d8 106] Ada   · chooses to leave (1235) over: let them speak 660
+[d8 106] Ada  (to Bo): «Goodbye.»   vol 500
+[d8 106] Bo    · feels warmed (valence 600, arousal 600)
+[d8 107] Ada   · conversation with Bo ends (we both said goodbye): I spoke 5 times, they 4
+[d8 107] Ada   · retrospection over 10 short-term traces: Bo: familiarity 737, affinity 147, trust 500
+[d8 107] Bo    · conversation with Ada ends (we both said goodbye): I spoke 4 times, they 5
+[d8 107] Bo    · retrospection over 11 short-term traces: + episode Laugh with Ada (valence 600, strength 360); Ada: familiarity 737, affinity 116, trust 527
+[d8 160] world: Put(0, 0)
+[d8 160] world: Put(1, 100)
+[d8 800] Ada   · goes to sleep
+[d8 800] Ada   · retrospection (sleep) over 0 short-term traces
+[d8 800] Bo    · goes to sleep
+[d8 800] Bo    · retrospection (sleep) over 0 short-term traces
+[d8 800] Cal   · goes to sleep
+[d8 800] Cal   · retrospection (sleep) over 0 short-term traces
+
+=== memory after day 8 (d8 801) ===
+  Ada — mood 161, short-term 0 items
+    belief  likes(Ada, flowers)                founding         conf 1000
+    belief  fears(Ada, the dog)                founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, food)              overheard Cal    conf 450
+    belief  likes(Bo, flowers)                 told by Bo       conf 450
+    belief  feels(Bo, glad)                    told by Bo       conf 450
+    belief  likes(Cal, water)                  overheard Cal    conf 450
+    habit   hungry → the cold box (strength 800)
+    episode SharedLike with Bo, day 6 (valence 400, strength 269)
+    rel     Bo   familiarity 737, trust 500, affinity  147, meetings 6, thinks they know 6 facts
+    rel     Cal  familiarity   0, trust 500, affinity    0, meetings 0, thinks they know 2 facts
+  Bo — mood 161, short-term 0 items
+    belief  likes(Bo, flowers)                 founding         conf 1000
+    belief  holds(the meadow, flowers)         founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the cold box, food)          seen             conf 1000
+    belief  likes(Ada, flowers)                told by Ada      conf 474
+    belief  likes(Ada, the meadow)             derived          conf 331
+    belief  feels(Ada, glad)                   told by Ada      conf 474
+    belief  fears(Ada, the dog)                told by Ada      conf 474
+    belief  likes(Cal, water)                  told by Cal      conf 165
+    belief  likes(Cal, the well)               derived          conf 115
+    habit   hungry → the cold box (strength 800)
+    episode Betrayed with Cal, day 1 (valence -600, strength 147)
+    episode Snarl with Ada, day 3 (valence -800, strength 325)
+    episode SharedLike with Ada, day 5 (valence 400, strength 236)
+    episode Laugh with Ada, day 8 (valence 600, strength 315)
+    rel     Ada  familiarity 737, trust 527, affinity  116, meetings 6, thinks they know 6 facts
+    rel     Cal  familiarity 360, trust 184, affinity -323, meetings 2, thinks they know 2 facts
+  Cal — mood 64, short-term 0 items
+    belief  likes(Cal, water)                  founding         conf 1000
+    belief  is_in(food, the cold box)          founding         conf 1000
+    belief  holds(the well, water)             seen             conf 1000
+    belief  holds(the meadow, flowers)         seen             conf 1000
+    habit   hungry → the cold box (strength 800)
+    rel     Bo   familiarity 360, trust 420, affinity   10, meetings 2, thinks they know 2 facts
+
+[d9 000] Ada   · wakes up
+[d9 000] Bo    · wakes up
+[d9 000] Cal   · wakes up
+state hash 0xe0446299640004ef

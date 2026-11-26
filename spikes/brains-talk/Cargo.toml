@@ -1,0 +1,8 @@
+[package]
+name = "fv-brains-talk"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: two people talk, and learn about each other across memory layers"
+
+[dependencies]
