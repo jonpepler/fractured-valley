@@ -31,6 +31,9 @@ pub struct Sim {
     pub queue: Vec<Scheduled>,
     /// Air motion sub-steps per tick (each can carry one cell's worth).
     pub advect_steps: i64,
+    /// Replaces the diffusion phase (used to split it between peers). It
+    /// must leave the world exactly as `transport::diffuse` would.
+    pub diffuse_hook: Option<Box<dyn FnMut(&mut World, &Flow) + Send>>,
 }
 
 impl Sim {
@@ -38,7 +41,7 @@ impl Sim {
         let flow = Flow::new(&world);
         let books = Books::open(&world);
         let light = Light::new(world.cells.len());
-        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: 2 }
+        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: 2, diffuse_hook: None }
     }
 
     pub fn schedule(&mut self, s: Scheduled) {
@@ -57,7 +60,10 @@ impl Sim {
         for s in due { apply(w, &mut self.books, s.command) }
         self.flow.step(w);
         advect(w, &self.flow, self.advect_steps);
-        diffuse(w, &self.flow);
+        match self.diffuse_hook.as_mut() {
+            Some(hook) => hook(w, &self.flow),
+            None => diffuse(w, &self.flow),
+        }
         chem::react(w);
         rad::radiate(w, &self.sky, &mut self.light);
         for t in &w.tallies { self.books.record(t) }

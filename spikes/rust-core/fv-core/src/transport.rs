@@ -214,37 +214,69 @@ impl FaceVelocity for Uniform { fn face(&self, _: i64, _: i64, _: i64, axis: usi
 pub fn diffuse(world: &mut World, vel: &dyn FaceVelocity) {
     let sides = sides(world);
     let outside = side(&world.outside_air, &world.subs, world.ambient);
-    world.run_phase(|w, b, out, tally| {
-        let (ox, oy, oz) = w.brick_origin(b);
-        let base = b * BRICK_CELLS;
-        for l in 0..BRICK_CELLS {
-            let (lx, ly, lz) = World::local_xyz(l);
-            let (x, y, z) = (ox + lx, oy + ly, oz + lz);
-            let me = &w.cells[base + l];
-            let my = &sides[base + l];
-            let mut next = *me;
-            for axis in 0..3 {
-                for dir in [-1i64, 1] {
-                    let speed = face_speed(w, vel, x, y, z, axis, dir);
-                    match w.neighbour(x, y, z, axis, dir) {
-                        Neighbour::Inside(n) => {
-                            let ni = neighbour_index(w, x, y, z, axis, dir);
-                            let ns = &sides[ni];
-                            let flux = if dir > 0 { diffuse_face(me, my, n, ns, speed) } else { diffuse_face(n, ns, me, my, speed) };
-                            apply(&mut next, my, &flux, -dir);
-                        }
-                        Neighbour::Outside(o) => {
-                            let flux = if dir > 0 { diffuse_face(me, my, o, &outside, speed) } else { diffuse_face(o, &outside, me, my, speed) };
-                            apply(&mut next, my, &flux, -dir);
-                            tally_edge(tally, &flux, -dir);
-                        }
-                        Neighbour::Mirror => {}
+    world.run_phase(|w, b, out, tally| diffuse_brick(w, &sides, &outside, vel, b, out, tally));
+}
+
+/// One brick of the diffusion phase, from the previous state only. Any peer
+/// or thread computing brick `b` gets exactly these cells and this tally.
+pub fn diffuse_brick(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVelocity, b: usize, out: &mut [Cell], tally: &mut Tally) {
+    let (ox, oy, oz) = w.brick_origin(b);
+    let base = b * BRICK_CELLS;
+    for l in 0..BRICK_CELLS {
+        let (lx, ly, lz) = World::local_xyz(l);
+        let (x, y, z) = (ox + lx, oy + ly, oz + lz);
+        let me = &w.cells[base + l];
+        let my = &sides[base + l];
+        let mut next = *me;
+        for axis in 0..3 {
+            for dir in [-1i64, 1] {
+                let speed = face_speed(w, vel, x, y, z, axis, dir);
+                match w.neighbour(x, y, z, axis, dir) {
+                    Neighbour::Inside(n) => {
+                        let ni = neighbour_index(w, x, y, z, axis, dir);
+                        let ns = &sides[ni];
+                        let flux = if dir > 0 { diffuse_face(me, my, n, ns, speed) } else { diffuse_face(n, ns, me, my, speed) };
+                        apply(&mut next, my, &flux, -dir);
                     }
+                    Neighbour::Outside(o) => {
+                        let flux = if dir > 0 { diffuse_face(me, my, o, outside, speed) } else { diffuse_face(o, outside, me, my, speed) };
+                        apply(&mut next, my, &flux, -dir);
+                        tally_edge(tally, &flux, -dir);
+                    }
+                    Neighbour::Mirror => {}
                 }
             }
-            out[l] = next;
         }
-    });
+        out[l] = next;
+    }
+}
+
+/// A brick's result for one phase, as a peer would send it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrickResult { pub brick: usize, pub cells: Vec<Cell>, pub tally: Tally }
+
+/// Computes only the given bricks of the diffusion phase (one peer's share).
+pub fn diffuse_part(w: &World, vel: &dyn FaceVelocity, bricks: &[usize]) -> Vec<BrickResult> {
+    let sides = sides(w);
+    let outside = side(&w.outside_air, &w.subs, w.ambient);
+    bricks.iter().map(|&b| {
+        let mut cells = vec![Cell::default(); BRICK_CELLS];
+        let mut tally = Tally::default();
+        diffuse_brick(w, &sides, &outside, vel, b, &mut cells, &mut tally);
+        BrickResult { brick: b, cells, tally }
+    }).collect()
+}
+
+/// Finishes a phase from every brick's result (ours and the other peers'):
+/// the results become the state, and their tallies are added.
+pub fn apply_parts(w: &mut World, parts: &[BrickResult]) {
+    let mut next = core::mem::take(&mut w.next);
+    for p in parts {
+        next[p.brick * BRICK_CELLS..(p.brick + 1) * BRICK_CELLS].copy_from_slice(&p.cells);
+        w.tallies[p.brick].add(&p.tally);
+    }
+    core::mem::swap(&mut w.cells, &mut next);
+    w.next = next;
 }
 
 /// Air carried by the flow, as `steps` sub-steps (each moves at most one
