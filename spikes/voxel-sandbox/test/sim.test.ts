@@ -25,7 +25,10 @@ function burnThePost() {
   sim.schedule({ tick: 1, peer: 0, seq: 0, command: { kind: 'ignite', x: gx, y: gy, z: groundAt(sim, gx, gy) } })
   sim.schedule({ tick: 5, peer: 1, seq: 0, command: { kind: 'drop', x: 30, y: 70, z: 60 } })
   // The dry post (same wood as the trees, 12% moisture) gives way ~30 s in.
+  // Then run on until every falling piece has come to rest: the fire also
+  // reaches trees further off, whose branches fall later (up to 70 s).
   for (let i = 0; i < 900; i++) sim.step()
+  while (sim.bodies.length > 0 && sim.tick < 1400) sim.step()
   return sim
 }
 let burnt: Sim | undefined

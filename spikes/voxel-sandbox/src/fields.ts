@@ -35,16 +35,19 @@ export const KINDS = 6
  * slowly disperses). Oxygen used doesn't fade: fresh air only comes back by
  * mixing in from around, so a closed space stays starved.
  */
-const FADE = [14, 9, 12, 24, 0, 0]
+const FADE = [14, 9, 12, 0, 0, 0] // vapour's fade depends on temperature: see VAPOUR_FADE_*
 /** Oxygen in fresh air, in the same units as O2Used (21% of air ≈ 2100). */
 const O2_FRESH = 2100
 /** Oxygen used per unit of vapour burnt. */
-const O2_PER_FUEL = 2
+const O2_PER_FUEL = 1
+/** Out of 256 per tick: vapour in air hot enough to burn it barely condenses; in cooler air it soon condenses into smoke. */
+const VAPOUR_FADE_HOT = 10
+const VAPOUR_FADE_COOL = 48
 /** Vapour burns where the air is at least this hot (°C), given oxygen. */
 const VAPOUR_IGNITES = 420
 /** Share of the vapour in a cell that burns per tick, out of 256, and heat released per unit burnt. */
 const BURN_SHARE = 220
-const HEAT_PER_FUEL = 6
+const HEAT_PER_FUEL = 3
 /** Soot made per unit of vapour burnt, out of 256 (a well-fed flame makes little). */
 const SOOT_PER_FUEL = 40
 /** Heat a cell gains from flame in the cells around it, per unit of flame, in 1/16 °C. */
@@ -95,6 +98,24 @@ export class Fields {
 
   index(fx: number, fy: number, fz: number): number {
     return (fz * this.ny + fy) * this.nx + fx
+  }
+
+  /**
+   * Of the field cells within `r` of the one holding world cell (x, y, z),
+   * the share (out of 256) where `kind` is at least `min`. Outside the field
+   * and solid cells count as not.
+   */
+  shareAtLeast(kind: F, x: number, y: number, z: number, r: number, min: number): number {
+    const fx = Math.floor(x / FR), fy = Math.floor(y / FR), fz = Math.floor(z / FR)
+    const a = this.cur[kind]!
+    let hit = 0
+    for (let dz = -r; dz <= r; dz++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const gx = fx + dx, gy = fy + dy, gz = fz + dz
+      if (gx < 0 || gy < 0 || gz < 0 || gx >= this.nx || gy >= this.ny || gz >= this.nz) continue
+      if (a[this.index(gx, gy, gz)]! >= min) hit++
+    }
+    const n = (2 * r + 1) ** 3
+    return ((hit * 256) / n) | 0
   }
 
   /** Field value at a world cell. */
@@ -453,13 +474,15 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
         const mixMore = vel ? Math.min(3, (Math.abs(vel[0]![i]!) + Math.abs(vel[1]![i]!) + Math.abs(vel[2]![i]!)) >> 7) : 0
         const nbShare = (k === F.Soot || k === F.Steam ? 3 : 2) + mixMore // out of 8
         let x = (adv * (8 - nbShare) + nb * nbShare + 4) >> 3
-        const faded = (x * FADE[k]! + 255) >> 8
+        const fadeRate = k === F.Fuel ? (val[F.Heat]! >= VAPOUR_IGNITES ? VAPOUR_FADE_HOT : VAPOUR_FADE_COOL) : FADE[k]!
+        const faded = (x * fadeRate + 255) >> 8
         x -= faded
         val[k] = x < 24 ? 0 : x
         lostFuel = k === F.Fuel ? faded : lostFuel
       }
-      // Vapour that cools and thins before it finds air doesn't vanish: it
-      // condenses into tarry droplets, which is smoke.
+      // Vapour that cools before it finds air doesn't vanish: it condenses
+      // into tarry droplets, which is smoke. In a big fire's hot plume it
+      // survives to burn higher up, so bigger fires have taller flames.
       val[F.Soot] = Math.min(CAP, val[F.Soot]! + (lostFuel >> 1))
       // Radiation: flame next door (last tick) heats this cell, most from the
       // flame beside and below it. This is how flame reaches fuel it isn't in.

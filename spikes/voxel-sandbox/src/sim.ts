@@ -28,7 +28,13 @@ const DRYING_HEAT = 100
 const MAX_EMBERS = 150
 /** Temperature (°C) of the air touching a burning, dry surface. */
 const SURFACE_GLOW = 700
-const GLOW_LOST_PER_FINENESS = 40
+const GLOW_LOST_PER_FINENESS = 140
+/** How much faster fuel gives off vapour in the hottest air than in air at its own glow (×1 + this). */
+const FEEDBACK_MAX = 8
+/** Field cells either side counted for feedback (2 → a 1 m cube). */
+const FEEDBACK_RADIUS = 2
+/** Air this hot (°C) counts as flame for feedback. */
+const FLAME_HEAT = 800
 /** Downward pull on an ember per tick (1/256 cells per tick²). */
 const EMBER_GRAVITY = 6
 /** Which side of a burning cell its heat goes to: up first, then around. */
@@ -266,12 +272,22 @@ export class Sim {
       if (boil) w.setMoisture(x, y, z, wet - 1)
       // A quarter of the energy is direct heat from glowing char; the rest
       // leaves as burnable vapour, which burns in the air as flame.
-      f.emit(ax, ay, az, fl.heat >> 2, fl.soot >> 1, boil * 240, fl.heat >> 3)
+      // Feedback: fuel inside a big fire is heated by radiation from all the
+      // flame around it, so it gives off vapour faster, up to ×(1 + FEEDBACK_MAX),
+      // and burns through faster to match. What counts is how much of the
+      // space around (about 1 m across) is at flame heat: a thin grass fire or
+      // a lone log fills little of it and stays near ×1; a bonfire or a
+      // burning crown fills most of it. Thick fuel feels this most: it burns
+      // only as fast as heat soaks in, while thin blades and leaves burn in
+      // their own flame either way, so the gain is divided by fineness.
+      const engulfed = f.shareAtLeast(F.Heat, ax, ay, az, FEEDBACK_RADIUS, FLAME_HEAT) // 0..256
+      const feed = 256 + (((engulfed * engulfed * FEEDBACK_MAX) >> 8) / fl.fineness | 0) // ×1 … ×(1 + FEEDBACK_MAX / fineness), out of 256
+      f.emit(ax, ay, az, fl.heat >> 2, fl.soot >> 1, boil * 240, ((fl.heat >> 3) * feed) >> 8)
       // Once dry, the burning surface glows and the air touching it is that
       // hot, so its own vapour lights (a lone log keeps burning).
-      // Thick fuel chars and glows hottest; fine fuel (blades, leaves) has
-      // little char, so the air it touches is less hot.
-      if (!boil) f.warm(ax, ay, az, SURFACE_GLOW - (fl.fineness - 1) * GLOW_LOST_PER_FINENESS)
+      // Thick fuel chars and glows; fine fuel (blades, leaves) has almost no
+      // char to glow, so its surface adds nothing beyond its own flame.
+      if (!boil) f.warm(ax, ay, az, Math.max(0, SURFACE_GLOW - (fl.fineness - 1) * GLOW_LOST_PER_FINENESS))
       const h = hash32(this.seed, this.tick, p, 0xb0)
       if (this.embers.length < MAX_EMBERS && fl.fineness >= 5 && chance(h >>> 8, fl.fineness, 40000)) {
         // An ember leaves upward with a little random push.
@@ -279,7 +295,7 @@ export class Sim {
         this.embers.push({ x: ax * 256 + 128, y: ay * 256 + 128, z: az * 256 + 128, vx: r(0) * 3, vy: r(5) * 3, vz: 120 + ((h >>> 10) & 63), life: 60 + ((h >>> 16) & 63) })
       }
       // Progress 1→255 over burnTicks, advanced by chance so any duration fits a byte.
-      if (!wet && chance(h, 255, fl.burnTicks)) {
+      if (!wet && chance(h, (255 * feed) >> 8, fl.burnTicks)) {
         if (s + 1 >= 255) {
           this.burning.delete(p)
           w.set(x, y, z, fl.becomes, 0, 0)
