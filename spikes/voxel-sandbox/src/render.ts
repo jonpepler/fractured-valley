@@ -87,8 +87,13 @@ const FLAME_PX = [[0xff, 0xf6, 0xc8], [0xff, 0xdc, 0x60], [0xff, 0xb0, 0x34], [0
 const CHAR_PX = rgb(0x26, 0x1d, 0x1a)
 const EMBER_PX = [[0xff, 0x8a, 0x24], [0xe8, 0x52, 0x18], [0xff, 0xc0, 0x50]].map(packed)
 // Smoke from steam (light) to soot (dark).
-const SMOKE_PX = [[0xd6, 0xd2, 0xc8], [0xa8, 0xa3, 0x9c], [0x6e, 0x6a, 0x66], [0x3c, 0x38, 0x36]].map(packed)
-const MAX_FLAME_PARTICLES = 8000
+const SMOKE_PX = [[0xb4, 0xb0, 0xa8], [0x96, 0x92, 0x8c], [0x66, 0x62, 0x5e], [0x3c, 0x38, 0x36]].map(packed)
+const MAX_FLAME_PARTICLES = 12000
+/** Splatted weight a pixel needs to show as flame. */
+const FLAME_THRESHOLD = 7
+const FIRELIGHT = rgb(0xff, 0x9a, 0x40)
+/** Smoke opacity steps, out of 255: thin, medium, thick. */
+const SMOKE_OPACITY = [0, 70, 140, 210]
 interface FlameParticle { x: number; y: number; z: number; vx: number; vy: number; vz: number; heat: number; cool: number; life: number }
 // The 14 pixels of a cube sprite: [dx, dy, face] with face 0 top, 1 left, 2 right.
 const SPRITE: readonly (readonly [number, number, number])[] = [
@@ -343,11 +348,12 @@ export class IsoRenderer {
     const W = this.width, H = this.height
     if (this.gasSmoke.length !== W * H) {
       this.gasSmoke = new Uint32Array(W * H); this.gasSoot = new Uint32Array(W * H)
-      this.gasHeat = new Uint16Array(W * H); this.gasMark = new Uint8Array(W * H)
+      this.gasHeat = new Uint32Array(W * H); this.gasMark = new Uint8Array(W * H); this.gasWeight = new Uint32Array(W * H)
     }
-    const { gasSmoke, gasSoot, gasHeat, gasMark } = this
+    const { gasSmoke, gasSoot, gasHeat, gasMark, gasWeight } = this
     const touched: number[] = []
     if (tick !== this.particleTick) { this.stepFlames(fields, tick); this.particleTick = tick }
+    this.drawFirelight(fields, tick)
     // Pass 1: add up the gas over every pixel, each field cell spreading as a
     // soft blob (stronger at its centre). Gas behind the world is hidden.
     for (const [fx, fy, fz, heat, soot, steam] of fields.cells()) {
@@ -365,25 +371,31 @@ export class IsoRenderer {
         if (!gasMark[i]) { gasMark[i] = 1; touched.push(i) }
         gasSmoke[i]! += (smoke * wt) >> 3
         gasSoot[i]! += (soot * wt) >> 3
-        const h = heat - r * 40
-        if (h > gasHeat[i]!) gasHeat[i] = h
+        // Heat is averaged, weighted towards blob centres, so the glow it
+        // casts on smoke has no edges to trace.
+        gasHeat[i]! += heat * wt
+        gasWeight[i]! += wt
       }
     }
-    // Pass 2: decide each pixel once. Flame where it's hot enough, as solid
-    // tongues scrolling upward; otherwise dithered smoke, light (steam) to
-    // dark (soot), lit orange by heat beneath.
+    // Pass 2: decide each pixel once. Smoke is laid over what's behind it in a
+    // few steps of opacity (pixel-art shading, not a screen-door dither), with
+    // a clumpy texture that scrolls upward with the rising smoke. Its shade
+    // runs light (steam) to dark (soot), with a soft orange wash from hot gas.
     for (const i of touched) {
       const px = i % W, py = (i / W) | 0
-      const heat = gasHeat[i]!, smoke = gasSmoke[i]!, soot = gasSoot[i]!
-      gasMark[i] = 0; gasSmoke[i] = 0; gasSoot[i] = 0; gasHeat[i] = 0
-      const cover = Math.min(200, smoke >> 3)
-      if (cover < 6) continue
-      const churn = hash32(px >> 1, (py + (tick >> 1)) >> 1) & 63
-      if (cover <= BAYER[(px & 3) + ((py & 3) << 2)]! * 14 + churn - 32) continue
+      const heat = gasWeight[i]! ? gasHeat[i]! / gasWeight[i]! : 0
+      const smoke = gasSmoke[i]!, soot = gasSoot[i]!
+      gasMark[i] = 0; gasSmoke[i] = 0; gasSoot[i] = 0; gasHeat[i] = 0; gasWeight[i] = 0
+      // Clumps ~4 px across, drifting up 1 px a tick, re-rolled slowly.
+      const clump = (hash32(px >> 2, (py + tick) >> 2, tick >> 4) & 127) - 64
+      const density = (smoke >> 2) + (clump * Math.min(smoke >> 2, 120)) / 160
+      const step = density > 150 ? 3 : density > 90 ? 2 : density > 40 ? 1 : 0
+      if (!step) continue
       const dark = smoke ? Math.min(3, Math.floor((soot * 4) / smoke)) : 0
-      const col = SMOKE_PX[dark]!
-      const lit = heat > 650 ? Math.min(90, (heat - 650) >> 2) : 0
-      this.px[i] = lit ? blend(col, FLAME_PX[3]!, lit) : col
+      let col = SMOKE_PX[dark]!
+      const lit = heat > 600 ? Math.min(110, (heat - 600) >> 2) : 0
+      if (lit) col = blend(col, FLAME_PX[3]!, lit)
+      this.px[i] = blend(this.px[i]!, col, SMOKE_OPACITY[step]!)
     }
     this.drawFlames()
   }
@@ -400,46 +412,117 @@ export class IsoRenderer {
     const kept: FlameParticle[] = []
     for (const q of this.flames) {
       q.x += q.vx; q.y += q.vy; q.z += q.vz
-      q.vz += 0.04 // still buoyant
+      q.vz += 0.03 // still buoyant, so tongues accelerate upward
       q.heat -= q.cool
-      if (--q.life > 0 && q.heat > 380) kept.push(q)
+      if (--q.life > 0 && q.heat > 500) kept.push(q)
     }
     for (const [fx, fy, fz, heat, , , , flame] of fields.cells()) {
       if (!flame) continue
-      const n = Math.min(5, 1 + (flame >> 5))
+      const n = Math.min(3, 1 + (flame >> 7))
       const [gx, gy, gz] = fields.velocity(this.seed, tick, fx, fy, fz, heat)
       for (let k = 0; k < n && kept.length < MAX_FLAME_PARTICLES; k++) {
+        // Each cell feeds up to 4 streams; a stream's foot moves slowly (every
+        // 6 ticks), so successive sparks line up into a tongue.
+        const foot = hash32(fx * 131 + fy, fz * 977 + k, Math.floor(tick / 6))
         const h = hash32(fx * 131 + fy, fz * 977 + k, tick)
-        const r = (bits: number) => ((h >>> bits) & 255) / 256
+        const r = (x: number, bits: number) => ((x >>> bits) & 255) / 256
         kept.push({
-          x: fx * FR + r(0) * FR, y: fy * FR + r(8) * FR, z: fz * FR + r(16) * FR,
+          x: fx * FR + r(foot, 0) * FR, y: fy * FR + r(foot, 8) * FR, z: fz * FR + r(foot, 16) * 0.6,
           // field velocity is 1/256 field cells per tick: ×FR/256 for world cells
-          vx: (gx * FR) / 256 + (r(4) - 0.5) * 0.15, vy: (gy * FR) / 256 + (r(12) - 0.5) * 0.15,
-          vz: (gz * FR) / 256 + 0.15 + r(20) * 0.25,
-          heat: Math.min(1050, heat + 30), cool: 40 + r(24) * 50, life: 3 + ((h >>> 28) & 7),
+          vx: (gx * FR) / 256 + (r(h, 4) - 0.5) * 0.05, vy: (gy * FR) / 256 + (r(h, 12) - 0.5) * 0.05,
+          vz: Math.max(0.12, (gz * FR) / 256) + r(h, 20) * 0.12,
+          heat: Math.min(1000, heat - 40), cool: 45 + r(h, 24) * 45, life: 4 + ((h >>> 28) & 7),
         })
       }
     }
     this.flames = kept
   }
 
+  /**
+   * Firelight: ground and walls near burning vapour get a warm wash, scaled
+   * by how much is burning there and pulsing gently. Driven by the
+   * simulation's Flame field; it only changes pixels (view).
+   */
+  private drawFirelight(fields: Fields, tick: number) {
+    const W = this.width, H = this.height
+    if (this.glow.length !== W * H) this.glow = new Uint32Array(W * H)
+    const glow = this.glow, lit: number[] = []
+    const R = 14
+    for (const [fx, fy, fz, , , , , flame] of fields.cells()) {
+      if (flame < 8) continue
+      const [cx, cy] = this.anchor(fx * FR + 1, fy * FR + 1, fz * FR)
+      for (let dy = -2; dy <= R; dy += 1) for (let dx = -R * 2; dx <= R * 2; dx += 1) { // ground at and below the flame
+        const r = Math.abs(dx) / 2 + Math.abs(dy)
+        if (r >= R) continue
+        const px = cx + 2 + dx, py = cy + 3 + dy
+        if (px < 0 || py < 0 || px >= W || py >= H) continue
+        const i = py * W + px
+        if (!glow[i]) lit.push(i)
+        glow[i]! += ((R - r) * Math.min(flame, 64)) | 0
+      }
+    }
+    const pulse = 220 + (hash32(tick >> 1, 0x9100) & 31)
+    for (const i of lit) {
+      const a = Math.min(70, (glow[i]! * pulse) >> 14)
+      glow[i] = 0
+      // Light, not paint: a modest warm wash, and never over moving bodies (whose faces we can't orient yet).
+      if (a > 4 && this.px[i] !== BG && this.pick[i] !== -2) this.px[i] = blend(this.px[i]!, FIRELIGHT, a)
+    }
+  }
+
+  private glow = new Uint32Array(0)
+
+  /**
+   * Flames as connected shapes: every spark splats a small upright blob of
+   * weight and heat into a buffer; a pixel becomes flame only where enough
+   * weight gathers, coloured by the average heat there. Sparks close together
+   * merge into tongues with a smooth yellow → orange → red gradient; a lone
+   * spark is too faint to show, except as a hot tip.
+   */
   private drawFlames() {
+    const W = this.width, H = this.height
+    if (this.fAcc.length !== W * H) { this.fAcc = new Uint32Array(W * H); this.fHeat = new Uint32Array(W * H); this.fDepth = new Int32Array(W * H) }
+    const { fAcc, fHeat, fDepth } = this
     const [bx, by] = this.anchor(0, 0, 0)
+    const hit: number[] = []
     for (const q of this.flames) {
       const px = Math.round(bx + 2 * (q.x - q.y)) + 1, py = Math.round(by + q.x + q.y - 2 * q.z) + 1
       const d = Math.round(q.x + q.y + q.z)
-      const c = FLAME_PX[q.heat > 1020 ? 0 : q.heat > 880 ? 1 : q.heat > 740 ? 2 : q.heat > 600 ? 3 : q.heat > 480 ? 4 : 5]!
-      this.putPixel(px, py, d, c)
-      if (q.heat > 700) { this.putPixel(px + 1, py, d, c); this.putPixel(px, py - 1, d, c) }
+      // An upright blob 3 px wide, 5 px tall, heaviest at its centre.
+      for (let dy = -3; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const x = px + dx, y = py + dy
+        if (x < 0 || y < 0 || x >= W || y >= H) continue
+        const i = y * W + x
+        if (d < this.depth[i]!) continue
+        const wt = 4 - Math.abs(dx) - (dy < -1 ? -dy - 1 : 0) - (dy > 0 ? 1 : 0)
+        if (wt <= 0) continue
+        if (!fAcc[i]) { hit.push(i); fDepth[i] = d }
+        fAcc[i]! += wt
+        fHeat[i]! += q.heat * wt
+      }
+    }
+    for (const i of hit) {
+      const acc = fAcc[i]!, heat = fHeat[i]! / acc
+      fAcc[i] = 0; fHeat[i] = 0
+      if (acc < FLAME_THRESHOLD) continue
+      // Denser flame is hotter-looking at its core; thin edges take a redder shade.
+      const shown = acc < FLAME_THRESHOLD + 3 ? heat - 140 : heat + Math.min(80, (acc - FLAME_THRESHOLD) * 6)
+      this.px[i] = FLAME_PX[shown > 1000 ? 0 : shown > 880 ? 1 : shown > 760 ? 2 : shown > 640 ? 3 : shown > 540 ? 4 : 5]!
+      this.depth[i] = fDepth[i]!
     }
   }
+
+  private fAcc = new Uint32Array(0)
+  private fHeat = new Uint32Array(0)
+  private fDepth = new Int32Array(0)
 
   private flames: FlameParticle[] = []
   private particleTick = -1
 
+  private gasWeight = new Uint32Array(0)
   private gasSmoke = new Uint32Array(0)
   private gasSoot = new Uint32Array(0)
-  private gasHeat = new Uint16Array(0)
+  private gasHeat = new Uint32Array(0)
   private gasMark = new Uint8Array(0)
 
   /**

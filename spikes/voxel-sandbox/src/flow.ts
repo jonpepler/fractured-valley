@@ -15,6 +15,7 @@
 // fixed number of rounds: decision 2.7b, so regions can still be split.
 // Units: velocity in 1/256 field cells per tick; heat in °C.
 import { BRICK } from './grid'
+import { valueNoise2 } from './rng'
 import { prevailing, windAt } from './wind'
 
 const FB = 8 // field cells per brick edge
@@ -26,6 +27,8 @@ const KEEP = 248
 export const PRESSURE_ROUNDS = 12
 /** Speed limit, so gas never skips more than one brick boundary a tick. */
 const MAX_SPEED = 400
+/** Strongest swirl pushed into warm air per tick (1/256 field cells per tick). */
+const TURBULENCE = 90
 
 export interface FlowView {
   nx: number; ny: number; nz: number
@@ -100,6 +103,18 @@ export function stepFlow(v: FlowView, bricks: readonly number[], seed: number, t
     u1[i] = clamp((sample(u0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8)
     v1[i] = clamp((sample(v0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8)
     w1[i] = clamp(((sample(w0, nx, ny, nz, sx, sy, sz) * KEEP) >> 8) + ((v.heat[i]! * BUOYANCY) >> 8))
+    // Turbulence: warm air gets a small seeded swirl, slowly changing, which
+    // the pressure step turns into rolling eddies. Plumes billow and widen
+    // instead of rising as straight pillars.
+    const heat = v.heat[i]!
+    if (heat > 40) {
+      const amp = Math.min(TURBULENCE, heat >> 2)
+      const t = tick >> 2
+      const n1 = valueNoise2(seed ^ 0x7a1, fx * 3 + fz * 7, fy * 3 + t * 5, 5) - 32768
+      const n2 = valueNoise2(seed ^ 0x7a2, fy * 3 + fz * 5, fx * 3 + t * 3, 5) - 32768
+      u1[i] = clamp(u1[i]! + ((n1 * amp) >> 15))
+      v1[i] = clamp(v1[i]! + ((n2 * amp) >> 15))
+    }
   })
 
   // 3. Pressure. Outside the computed bricks the air is open (pressure 0);

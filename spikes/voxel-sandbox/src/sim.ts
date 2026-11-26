@@ -21,6 +21,8 @@ export type Command =
 
 /** Broken-off pieces smaller than this fall as debris rather than as rigid bodies. */
 export const SMALL_PIECE = 8
+/** The most cells a loose pile (ash) can hold up; bigger structures fall through it. */
+const LOOSE_CAN_HOLD = 32
 /** Air hotter than this (°C) dries fuel next to it. */
 const DRYING_HEAT = 100
 const MAX_EMBERS = 600
@@ -508,7 +510,7 @@ export class Sim {
     const seen = new Set<number>([start])
     const stack = [start]
     const cells: number[] = []
-    let anchored = false
+    let anchored = false, onLoose = false
     while (stack.length) {
       const p = stack.pop()!
       cells.push(p)
@@ -523,7 +525,7 @@ export class Sim {
         if (md.terrain) { anchored = true; continue }
         // Lying on a pile of loose material (ash, say) is supported too;
         // if the pile moves, stepLoose re-checks whatever was on it.
-        if (dz === -1 && md.loose && md.solid) { anchored = true; continue }
+        if (dz === -1 && md.loose && md.solid) { onLoose = true; continue }
         if (!this.isStructure(m)) continue
         const q = pack(nx, ny, nz)
         if (seen.has(q)) continue
@@ -532,6 +534,10 @@ export class Sim {
       }
     }
     cells.sort((a, b) => a - b)
+    // A small crumb can rest on a loose pile (ash), but a pile can't hold up a
+    // big structure: a post burnt to an ash column must not keep its block
+    // aloft. (Stopgap until bonds, brief 05 decision 5, decide this properly.)
+    if (!anchored && onLoose && cells.length <= LOOSE_CAN_HOLD) anchored = true
     return { cells, anchored, capped: false }
   }
 

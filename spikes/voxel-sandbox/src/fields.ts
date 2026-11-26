@@ -31,11 +31,11 @@ export const enum F { Heat = 0, Soot = 1, Steam = 2, Fuel = 3, Flame = 4 }
 export const KINDS = 5
 
 /** How fast each field fades per tick, out of 256 (vapour that never burns slowly disperses). */
-const FADE = [14, 3, 6, 10, 0]
+const FADE = [14, 9, 12, 10, 0]
 /** Vapour burns where the air is at least this hot (°C), given oxygen. */
 const VAPOUR_IGNITES = 420
 /** Share of the vapour in a cell that burns per tick, out of 256, and heat released per unit burnt. */
-const BURN_SHARE = 90
+const BURN_SHARE = 150
 const HEAT_PER_FUEL = 3
 /** Soot made per unit of vapour burnt, out of 256 (a well-fed flame makes little). */
 const SOOT_PER_FUEL = 40
@@ -397,7 +397,8 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
           (c011 ? a[base0 + nxy + nx]! * w011 : 0) + (c111 ? a[base0 + nxy + nx + 1]! * w111 : 0)) >> 8
         const nb = ((ixp >= 0 ? a[ixp]! : 0) + (ixm >= 0 ? a[ixm]! : 0) + (iyp >= 0 ? a[iyp]! : 0) +
           (iym >= 0 ? a[iym]! : 0) + (izp >= 0 ? a[izp]! : 0) + (izm >= 0 ? a[izm]! : 0)) / 6 | 0
-        let x = (adv * 3 + nb) >> 2
+        // Smoke (soot, steam) mixes into the air around it faster than heat or vapour, so plumes widen and thin.
+        let x = k === F.Soot || k === F.Steam ? (adv * 5 + nb * 3) >> 3 : (adv * 3 + nb) >> 2
         x -= (x * FADE[k]! + 255) >> 8
         val[k] = x < 24 ? 0 : x
       }
