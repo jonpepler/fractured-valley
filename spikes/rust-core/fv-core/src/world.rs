@@ -67,6 +67,20 @@ pub struct World {
 }
 
 impl World {
+    /// The first cell holding an impossible amount (a negative mass or a
+    /// negative energy store), if any. The books can balance with energy in
+    /// the wrong place; this catches the worst of that.
+    pub fn first_impossible(&self) -> Option<(usize, usize, usize)> {
+        let i = self.cells.iter().position(|c| {
+            c.gas.iter().any(|m| m.0 < 0) || c.solid.iter().any(|m| m.0 < 0) || c.water.0 < 0
+                || c.energy.0 < 0 || c.solid_energy.0 < 0 || c.skin.0 < 0 || c.nuclear.0 < 0
+        })?;
+        let b = i / crate::world::BRICK_CELLS;
+        let (ox, oy, oz) = self.brick_origin(b);
+        let (lx, ly, lz) = World::local_xyz(i % crate::world::BRICK_CELLS);
+        Some((ox + lx, oy + ly, oz + lz))
+    }
+
     /// An empty box of fresh air. Sizes are rounded up to whole bricks.
     pub fn new(nx: usize, ny: usize, nz: usize, seed: u64, ambient: Temperature) -> World {
         let (bx, by, bz) = (nx.div_ceil(B), ny.div_ceil(B), nz.div_ceil(B));

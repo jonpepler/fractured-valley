@@ -11,7 +11,17 @@ fn main() {
     let t0 = std::time::Instant::now();
     let ticks: u64 = std::env::var("TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(1600);
     for tick in 0..=ticks {
+        let before = sim.world.cells.clone();
         sim.step();
+        if std::env::var("CATCH").is_ok() {
+            let w = &sim.world;
+            if let Some(i) = (0..w.cells.len()).find(|&i| w.cells[i].gas_mass().0 > 20_000_000 || w.first_impossible().is_some() && w.cells[i].gas.iter().any(|m| m.0 < 0) || w.cells[i].skin.0 < 0 || w.cells[i].energy.0 < 0 || w.cells[i].solid_energy.0 < 0) {
+                let (c, b) = (&w.cells[i], &before[i]);
+                println!("tick {tick}: pieces {} landed? cell {i} sub {} gasT {:.0}C E {} -> {} gas mass {} -> {} skin {} -> {} | before gasT {:.0}C", sim.bodies.pieces.len(), c.substance, c.gas_temperature().celsius_f64(), b.energy.0, c.energy.0, b.gas_mass().0, c.gas_mass().0, b.skin.0, c.skin.0, b.gas_temperature().celsius_f64());
+                println!("  gas now {:?}\n  gas before {:?}", c.gas.map(|m| m.0), b.gas.map(|m| m.0));
+                break;
+            }
+        }
         if tick % 200 == 0 {
             let w = &sim.world;
             let (mut leaves_burnt, mut leaves, mut hot_top, mut wood_vol, mut maxt) = (0, 0, 0usize, 0i64, 0i64);

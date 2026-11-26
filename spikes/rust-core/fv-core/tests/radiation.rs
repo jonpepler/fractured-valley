@@ -43,6 +43,7 @@ fn at_night_a_fire_lights_only_what_is_near_it() {
     for _ in 0..800 {
         sim.step();
         assert_eq!(sim.energy_gap(), 0);
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative");
         let w = &sim.world;
         let lit = |x: usize, y: usize| { let l = sim.light.incident[w.idx(x, y, 3)]; l[0] + l[1] + l[2] };
         near += lit(13, 15) + lit(19, 16) + lit(16, 13);
@@ -74,6 +75,7 @@ fn a_wall_beside_a_fire_gets_hot_and_the_heat_soaks_in() {
     // Two minutes of fire.
     for _ in 0..2400 { sim.step() }
     assert_eq!(sim.energy_gap(), 0);
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative");
     let (face1, core1) = (hottest(&sim, &face), hottest(&sim, &core));
     // Stone's face (its outer centimetre) heats within minutes; the heat
     // soaks into the rest over tens of minutes (10 cm of stone: L²/α ≈ 40 min).
@@ -123,6 +125,7 @@ fn kindling_fire(lit: &[(u16, u16)]) -> (Sim, f64, f64, i64) {
     for _ in 0..600 {
         sim.step();
         assert_eq!(sim.energy_gap(), 0);
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative");
         let c = sim.world.get(8, 8, 4);
         if sim.world.tick > 150 { solid = solid.max(c.surface_temperature(&sim.world.subs).celsius_f64()) }
         gas = gas.max(c.gas_temperature().celsius_f64());

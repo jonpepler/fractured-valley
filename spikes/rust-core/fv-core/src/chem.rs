@@ -247,10 +247,14 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     // (at the surface's own temperature) is more than the air around it
     // already has; faster for fine fuel (more surface).
     let sat = t.saturated_ug_per_l[k_index(ts.0)].saturating_mul(ml) / CELL_VOLUME_ML;
-    if c.water.0 > 0 && c.gas[vap].0 < sat {
+    // (At or above boiling, the boiling step above has already done this.)
+    if c.water.0 > 0 && ts < BOIL && c.gas[vap].0 < sat {
         let room = sat - c.gas[vap].0;
         let speed = s.surface_per_volume.min(FINE_SIGMA).max(1);
-        let dm = Mass((room as i128 * speed as i128 / (FINE_SIGMA as i128 * 4)) as i64).min(c.water);
+        // Only the water the surface layer holds can leave from it.
+        let skin_cap = c.skin_capacity(subs);
+        let held = if skin_cap.0 > 0 { Mass((c.water.0 as i128 * skin_cap.0 as i128 / c.solid_capacity(subs).0.max(1) as i128) as i64).max(Mass(1)) } else { c.water };
+        let dm = Mass((room as i128 * speed as i128 / (FINE_SIGMA as i128 * 4)) as i64).min(held).min(c.water);
         evaporate(&mut c, subs, dm, ts);
     }
     // Vapour beyond what the air holds condenses into drops (mist, white

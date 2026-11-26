@@ -34,6 +34,7 @@ fn a_sealed_room_keeps_every_joule_and_milligram() {
         let now = Totals::of(&w);
         assert_eq!(books.energy_gap(&now), 0, "energy gap at tick {tick}");
         assert_eq!(books.mass_gap(&now), 0, "mass gap at tick {tick}");
+        assert_eq!(w.first_impossible(), None, "a store went negative at tick {tick}");
     }
     // Hot air expands: some gas seeps out through the stone's pores and
     // leaves the box, and the books account for every milligram of it.
@@ -62,6 +63,7 @@ fn wind_through_an_open_box_balances_with_what_crossed_the_edge() {
         let now = Totals::of(&w);
         assert_eq!(books.energy_gap(&now), 0, "energy gap at tick {tick}");
         assert_eq!(books.mass_gap(&now), 0, "mass gap at tick {tick}");
+        assert_eq!(w.first_impossible(), None, "a store went negative at tick {tick}");
     }
     assert!(books.edge_energy != 0, "the warm air blew out of the box");
     assert!(books.edge_energy < 0, "more heat left than came in");

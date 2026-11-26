@@ -201,33 +201,42 @@ pub(crate) fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 
 
 /// One part of a cell that radiates: its area (faces of 0.01 m², Q16), its
 /// temperature, its albedo per band, and which store it draws from.
-pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool }
+/// `most`: the most it may send this tick (µJ): half the heat its store holds
+/// above the surroundings. A thin hot layer radiating for a whole tick at its
+/// starting temperature could otherwise send more than it has.
+pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool, pub most: i64 }
 
 /// The radiating parts of a cell. A surface radiates from its exposed
 /// faces; airy matter radiates from 4κV (the same κ light is stopped by):
 /// blades (σ·share/4 per metre), soot (1 per metre per mg/L) and water drops
 /// (0.15 per metre per mg/L), none more than a black cube (six faces).
-pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64) -> Vec<Emitter> {
+pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temperature) -> Vec<Emitter> {
     let s = &subs[c.substance as usize];
+    // What the surface store and the gas hold above the surroundings, halved
+    // (the gas's shared between soot and drops).
+    let surface_cap = { let k = c.skin_capacity(subs); if k.0 > 0 { k } else { c.solid_capacity(subs) } };
+    let surface_store = if c.skin_capacity(subs).0 > 0 { c.skin } else { c.solid_energy };
+    let solid_most = ((surface_store - surface_cap * ambient).0 / 2).max(0);
+    let gas_most = ((c.energy - c.latent() - c.gas_capacity() * ambient).0 / 4).max(0);
     let one = Fraction::ONE.0 as i128;
     let solid_albedo = [0, 1, 2, 3].map(|b| band_albedo(s, b));
     if c.opaque(subs) {
-        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false }];
+        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most }];
     }
     let cap = 6 * ONE as i128;
     let share = c.solid_share(subs).0 as i128;
     let mut out = Vec::new();
     if c.has_solid() {
         // 4κV = σ·share·0.001 m³ = σ·share·0.1 faces.
-        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 / 10).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false });
+        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 / 10).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most });
     }
     let tg = c.gas_temperature();
     // Soot: 4κV = 4 × (mg/L per m) × 0.001 m³ = 0.4 faces per mg = µg/2500.
     let soot = c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / 2_500;
-    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true }) }
+    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most }) }
     // Drops: 4 × 0.15 × mg × 0.001 m³ = 0.06 faces per mg = µg/16 667.
     let drops = c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128 / 16_667;
-    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true }) }
+    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most }) }
     out
 }
 
@@ -253,12 +262,12 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
     }
     if faces == 0 { return (0, 0, glow, local_decay) }
     let (mut from_solid, mut from_gas) = (0, 0);
-    for e in emitters(c, subs, faces) {
+    for e in emitters(c, subs, faces, w.ambient) {
         let net = net_sigma(e.t, w.ambient) as i128;
         if net <= 0 { continue }
         // Blackbody power over this area (µW): net µW/m² × faces × 0.01 m².
         let power = (net * e.area_q16 / ONE as i128 / 100) as i64;
-        let energy = (Power(power) * TICK).0;
+        let energy = (Power(power) * TICK).0.min(e.most);
         let from_face = opaque && !e.from_gas;
         let sent = send(w, x, y, z, from_face, energy, e.t, e.albedo, &mut stream, &mut glow, out);
         if e.from_gas { from_gas += sent } else { from_solid += sent }

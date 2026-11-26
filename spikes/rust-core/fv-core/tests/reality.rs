@@ -49,6 +49,7 @@ fn burning_twigs_and_their_embers_stay_at_real_temperatures() {
     for _ in 0..2400 {
         sim.step();
         assert_eq!(sim.energy_gap(), 0);
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative");
         for y in c - 2..=c + 2 { for x in c - 2..=c + 2 {
             hottest = hottest.max(sim.world.get(x, y, 4).surface_temperature(&sim.world.subs).celsius_f64());
         }}
@@ -78,6 +79,7 @@ fn a_line_of_fire_creeps_through_twigs_at_rothermels_rate() {
     for x in 4..20 { torch(&mut sim, x as u16, 4, 4, 100) }
     for _ in 0..7200 { sim.step() }
     assert_eq!(sim.energy_gap(), 0);
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative");
     let w = &sim.world;
     let front = (4..20).filter(|&y| (6..18).any(|x| burning(w.get(x, y, 4)))).max().unwrap_or(0);
     let advanced = front.saturating_sub(4);
@@ -107,6 +109,7 @@ fn a_log_over_burning_kindling_catches_within_minutes() {
         }
     }
     assert_eq!(sim.energy_gap(), 0);
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative");
     assert!(caught.is_some(), "the log never started giving off gas in five minutes");
 }
 

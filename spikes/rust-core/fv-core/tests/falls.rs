@@ -42,8 +42,15 @@ fn a_post_burnt_through_falls_with_its_block_and_the_books_balance() {
                 let subs = sim.world.subs.clone();
                 let before = sim.world.get(x, y, z).chemical(&subs).0 + sim.world.get(x, y, z).solid_mass().0;
                 let c = sim.world.get_mut(x, y, z);
+                // The matter takes its share of the solid's heat with it.
+                let solid = c.solid[0].0 + c.solid[1].0 + c.solid[2].0;
+                let heat = (c.skin.0 as i128 * (gone + char_gone) as i128 / solid.max(1) as i128) as i64
+                    + (c.solid_energy.0 as i128 * (gone + char_gone) as i128 / solid.max(1) as i128) as i64;
+                c.skin.0 -= (c.skin.0 as i128 * (gone + char_gone) as i128 / solid.max(1) as i128) as i64;
+                c.solid_energy.0 -= (c.solid_energy.0 as i128 * (gone + char_gone) as i128 / solid.max(1) as i128) as i64;
                 c.solid[VOLATILE].0 -= gone;
                 c.solid[CHAR].0 -= char_gone;
+                sim.books.commands -= heat as i128;
                 let after = sim.world.get(x, y, z).chemical(&subs).0 + sim.world.get(x, y, z).solid_mass().0;
                 let _ = (before, after);
                 sim.books.commands -= (gone * 15_600 + char_gone * 32_800) as i128;
@@ -52,6 +59,7 @@ fn a_post_burnt_through_falls_with_its_block_and_the_books_balance() {
         }
         sim.step();
         assert_eq!(sim.energy_gap(), 0, "energy gap at tick {tick} ({} pieces in flight)", sim.bodies.pieces.len());
+        if let Some((x, y, z)) = sim.world.first_impossible() { panic!("a store went negative at tick {tick} at ({x},{y},{z}): {:?}", sim.world.get(x, y, z)) }
         assert_eq!(sim.mass_gap(), 0, "mass gap at tick {tick}");
         // Wait for the block itself to fall (charred crumbs may drop first).
         let iron_flying = sim.bodies.cells().any(|(_, _, c)| c.substance == IRON);

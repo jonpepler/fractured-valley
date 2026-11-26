@@ -482,11 +482,11 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize) -> Option<Emission> {
     let faces = if opaque { exposed(w, x, y, z) } else { 6 };
     if faces == 0 { return (out.vol[IONISING] != 0 || out.decay_heat != 0).then_some(out) }
     let mut bands = [0i64; 4]; // what goes as volume or face emission, per band
-    for e in emitters(c, subs, faces) {
+    for e in emitters(c, subs, faces, w.ambient) {
         let net = net_sigma(e.t, w.ambient) as i128;
         if net <= 0 { continue }
         let power = (net * e.area_q16 / ONE as i128 / 100) as i64;
-        let energy = (Power(power) * TICK).0;
+        let energy = (Power(power) * TICK).0.min(e.most);
         let sent = bands_of(energy, e.t, e.albedo);
         let total: i64 = sent.iter().sum();
         if e.from_gas { out.from_gas += total } else { out.from_solid += total }
