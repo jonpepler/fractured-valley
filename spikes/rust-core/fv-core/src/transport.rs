@@ -62,6 +62,10 @@ pub struct Side {
 const FLAME_LEAN_PERMILLE: i64 = 500;
 /// Mean temperature of a flame's continuous region (McCaffrey 1979).
 const FLAME_CONTACT: Temperature = Temperature(1_173_000);
+/// A solid face inside a flame takes ~50–150 kW/m² (its convection plus the
+/// thick flame's radiation; e.g. crib and wall-fire measurements, Babrauskas,
+/// Ignition Handbook): about 80 W/(m²·K) at flame temperature, mW/(m²·K).
+const FLAME_ON_FACE: i64 = 80_000;
 
 /// Thermal conductivity of still air, mW/(m·K).
 const AIR_CONDUCTIVITY: i64 = 26;
@@ -96,7 +100,7 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
     let fuel_g = if volatile && sigma > 0 {
         let area = if c.permeable(subs) { c.inner_surface_mm2(subs) } else { 10_000 };
         // h [mW/(m²·K)] × A [mm²] = 10⁻⁹ W/K = 10⁻³ µW/K
-        let h = if c.permeable(subs) { crate::chem::surface_h(sigma, t, ambient) * sigma } else { 15_000 };
+        let h = if c.permeable(subs) { crate::chem::surface_h(sigma, t, ambient) * sigma } else { FLAME_ON_FACE };
         (h as i128 * area as i128 / 1_000) as i64
     } else { 0 };
     Side {
@@ -151,15 +155,19 @@ fn carried(k: usize, m: Mass, t: Temperature) -> Energy {
 /// `speed` is the air speed at the face (mm/s, unsigned).
 pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: usize) -> Flux {
     let mut f = Flux::default();
-    // Flame contact, sideways only (upward, the plume itself carries the
-    // flame's gas over what's above).
-    if axis != 2 {
-        let touch = |from: &Side, to: &Side| -> i64 {
+    // Flame contact.
+    // Sideways, a flame leans over its neighbour part of the time; upward,
+    // a solid face above a flame is always bathed (gas can't flow into it,
+    // so the plume itself doesn't carry the heat); downward, never.
+    {
+        let touch = |from: &Side, to: &Side, up: bool| -> i64 {
             if from.flame_t.0 == 0 || to.fuel_g == 0 || to.t_skin >= from.flame_t { return 0 }
-            let g = Conductance(to.fuel_g * FLAME_LEAN_PERMILLE / 1_000);
+            let share = if axis != 2 { FLAME_LEAN_PERMILLE } else if up && !to.permeable { 1_000 } else { 0 };
+            if share == 0 { return 0 }
+            let g = Conductance(to.fuel_g * share / 1_000);
             ((g * (from.flame_t - to.t_skin)) * TICK).0.min(from.flame_heat.0)
         };
-        f.flame = Energy(touch(a, b) - touch(b, a));
+        f.flame = Energy(touch(a, b, true) - touch(b, a, false));
     }
     // Conduction: two half-cells in series; a solid meeting air goes through the film.
     let (ga, gb) = (a.half.0.max(1) as i128, b.half.0.max(1) as i128);

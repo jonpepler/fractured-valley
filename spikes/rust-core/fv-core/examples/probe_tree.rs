@@ -9,9 +9,10 @@ fn main() {
     let mut sim = Sim::new(w, Sky::afternoon());
     for t in 0..200 { for (i, p) in torch.iter().enumerate().filter(|(i, _)| i % 3 == 0) { sim.schedule(Scheduled { tick: t, peer: 0, seq: i as u32, command: Command::Heat { x: p[0] as u16, y: p[1] as u16, z: p[2] as u16, energy: joules(500) } }) } }
     let t0 = std::time::Instant::now();
-    for tick in 0..=1600u64 {
+    let ticks: u64 = std::env::var("TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(1600);
+    for tick in 0..=ticks {
         sim.step();
-        if tick % 100 == 0 {
+        if tick % 200 == 0 {
             let w = &sim.world;
             let (mut leaves_burnt, mut leaves, mut hot_top, mut wood_vol, mut maxt) = (0, 0, 0usize, 0i64, 0i64);
             for z in 0..w.nz { for y in 0..w.ny { for x in 0..w.nx {
