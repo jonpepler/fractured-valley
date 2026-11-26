@@ -239,6 +239,11 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
         let sent = send(w, x, y, z, from_face, energy, e.t, e.albedo, &mut stream, &mut glow, out);
         if e.from_gas { from_gas += sent } else { from_solid += sent }
     }
+    // A flame's own light, set from the heat it released (see chem).
+    if c.flame.0 > 0 {
+        let flame = c.flame.0.min((c.energy - c.latent()).0.max(0));
+        from_gas += send(w, x, y, z, false, flame, crate::chem::FLAME_GLOW, [0; 4], &mut stream, &mut glow, out);
+    }
     (from_solid, from_gas, glow, local_decay)
 }
 
@@ -553,6 +558,7 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
             *c.surface_store(&wr.subs) += Energy(to_solid[i] - emitted[i][0]);
             if c.has_solid() { c.solid_energy += Energy(decay_heat[i]) } else { c.energy += Energy(decay_heat[i]) }
             c.energy += Energy(to_gas[i] - emitted[i][1]);
+            c.flame = Energy::ZERO;
             out[l] = c;
         }
         tally.radiation_out += traced[b].radiation_out;

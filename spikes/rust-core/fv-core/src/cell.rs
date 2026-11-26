@@ -52,6 +52,10 @@ pub struct Cell {
     pub skin: Energy,
     /// Radioactive decay energy still to come.
     pub nuclear: Energy,
+    /// A flame's light still to be sent this tick: set where gas burns with
+    /// a flame, sent out by radiation the same tick, so always zero between
+    /// ticks (not part of the saved or shared state). Held in the gas's energy.
+    pub flame: Energy,
 }
 
 impl Cell {

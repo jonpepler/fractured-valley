@@ -109,3 +109,44 @@ fn a_radioactive_rock_warms_what_is_near_it_and_stone_stops_its_rays() {
     assert!(dose_stone_near > 10 * dose_stone_deep.max(1), "stone stops them: {dose_stone_near} µJ 1 cell down, {dose_stone_deep} µJ 5 cells down");
     let _ = dose_air;
 }
+
+/// A bed of kindling lit at one point, or all over (the same torch per cell):
+/// the centre's peak temperature and glow over 30 s.
+fn kindling_fire(lit: &[(u16, u16)]) -> (Sim, f64, f64, i64) {
+    let mut w = ground(16, 16, 4);
+    let subs = w.subs.clone();
+    let kindling = Cell::solid_of(KINDLING, 1000, 80, celsius(15), &subs);
+    for y in 6..11 { for x in 6..11 { w.set(x, y, 4, kindling) } }
+    let mut sim = Sim::new(w, Sky::NIGHT);
+    for &(x, y) in lit { light_torch(&mut sim, x, y, 4, 100) }
+    let (mut solid, mut gas, mut glow) = (0f64, 0f64, 0i64);
+    for _ in 0..600 {
+        sim.step();
+        assert_eq!(sim.energy_gap(), 0);
+        let c = sim.world.get(8, 8, 4);
+        if sim.world.tick > 150 { solid = solid.max(c.solid_temperature(&sim.world.subs).celsius_f64()) }
+        gas = gas.max(c.gas_temperature().celsius_f64());
+        glow += sim.light.glow[sim.world.idx(8, 8, 4)].iter().sum::<i64>();
+    }
+    (sim, solid, gas, glow)
+}
+
+#[test]
+fn a_bigger_fire_burns_hotter_and_brighter() {
+    // Nothing sets this: burning twigs surrounded by burning twigs take in
+    // each other's heat and light, so lose less and run hotter.
+    let (_, small_solid, small_gas, small_glow) = kindling_fire(&[(8, 8)]);
+    let all: Vec<(u16, u16)> = (7..10).flat_map(|y| (7..10).map(move |x| (x, y))).collect();
+    let (sim, big_solid, big_gas, big_glow) = kindling_fire(&all);
+    assert!(big_solid > small_solid + 30.0, "twigs: {small_solid:.0} °C alone, {big_solid:.0} °C in a bigger fire");
+    assert!(big_gas > small_gas + 30.0, "gas: {small_gas:.0} °C alone, {big_gas:.0} °C in a bigger fire");
+    assert!(big_glow > small_glow * 6 / 5, "glow: {small_glow} µJ alone, {big_glow} µJ in a bigger fire");
+    // And the heat stays near the fire: books that balance can still hide
+    // energy put in the wrong place, so bound it too.
+    let w = &sim.world;
+    for z in 0..w.nz { for y in 0..w.ny { for x in 0..w.nx {
+        let far = x.abs_diff(8).max(y.abs_diff(8)) >= 5 || z >= 12;
+        let t = w.get(x, y, z).temperature(&w.subs).celsius_f64();
+        if far { assert!(t < 150.0, "{t:.0} °C at ({x}, {y}, {z}), far from the fire") }
+    }}}
+}

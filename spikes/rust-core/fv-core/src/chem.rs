@@ -39,6 +39,14 @@ const CRITICAL_FLAME: Temperature = Temperature(1_700_000);
 /// a surface at about 350 °C (Babrauskas, Ignition Handbook, 2003). The
 /// gas or the surface it leaves must be this hot.
 pub const IGNITION: Temperature = Temperature(623_000);
+/// Share of a flame's heat it gives off as light, mostly from glowing soot
+/// (FDS's RADIATIVE_FRACTION, 0.35 for wood; Tewarson, SFPE Handbook). A
+/// 10 cm cell can't resolve the thin sheet that glows, so its light is set
+/// from the heat the flame releases, not from the cell's average temperature.
+pub const RADIATIVE_FRACTION: Fraction = Fraction(1_503_238_554); // 0.35
+/// Temperature a flame's soot glows at, for the colour of its light: about
+/// 1 400 K in wood and other sooty flames.
+pub const FLAME_GLOW: Temperature = Temperature(1_400_000);
 /// Share of a flammable mix that burns per tick when the flame holds: fuel
 /// and air mix in ~0.1 s at this scale (1 − e^(−0.5)).
 const MIXING: Fraction = Fraction(1_690_000_000);
@@ -292,6 +300,8 @@ pub fn react_cell(mut c: Cell, subs: &[Substance], t: &Tables) -> Cell {
             let to_solid = if c.has_solid() { share.of_energy(heat) } else { Energy::ZERO };
             *c.surface_store(subs) += to_solid;
             c.energy += heat - to_solid;
+            // A flame (not slow oxidation) glows: part of its heat leaves as light.
+            if mixed > 0 { c.flame += RADIATIVE_FRACTION.of_energy(heat).min(heat - to_solid) }
         }
     }
 
