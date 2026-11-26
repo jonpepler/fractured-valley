@@ -16,11 +16,12 @@
 //!   --torch-j N     joules the torch puts into each lit cell per tick, default 250
 //!   --torch-ticks N how many ticks the torch is held, default 80
 //!   --focus F       world (frame the whole box, default) or crib (close up on the fire)
+//!   --radiation M   packets (Monte Carlo) or field (discrete ordinates); default: the sim's
 //!   --out DIR       output directory
 //! Writes DIR/<scene>.mp4 and DIR/<scene>-tNNNN.png (with -crib after the
 //! scene name for the close-up).
 
-use fv_core::rad::Sky;
+use fv_core::rad::{Radiation, Sky};
 use fv_core::scene::valley;
 use fv_core::cell::Cell;
 use fv_core::sim::{Command, Scheduled, Sim};
@@ -48,11 +49,12 @@ struct Args {
     torch_j: i64,
     torch_ticks: u64,
     focus: String,
+    radiation: Option<Radiation>,
     out: String,
 }
 
 fn args() -> Args {
-    let mut a = Args { scene: "tree".into(), sky: "day".into(), size: 64, height: 64, seed: 7, ticks: 600, step: 4, scale: 3, stills: 4, fps: 20, torch_j: 250, torch_ticks: 80, focus: "close".into(), out: DEFAULT_OUT.into() };
+    let mut a = Args { scene: "tree".into(), sky: "day".into(), size: 64, height: 64, seed: 7, ticks: 600, step: 4, scale: 3, stills: 4, fps: 20, torch_j: 250, torch_ticks: 80, focus: "close".into(), radiation: None, out: DEFAULT_OUT.into() };
     let raw: Vec<String> = std::env::args().skip(1).collect();
     for pair in raw.chunks(2) {
         let (key, value) = (pair[0].as_str(), pair.get(1).map(String::as_str).unwrap_or(""));
@@ -72,6 +74,7 @@ fn args() -> Args {
             "--torch-ticks" => a.torch_ticks = num(),
             "--focus" => a.focus = value.into(),
             "--out" => a.out = value.into(),
+            "--radiation" => a.radiation = Some(match value { "field" => Radiation::Field, "packets" => Radiation::Packets, _ => panic!("--radiation is packets or field") }),
             _ => panic!("unknown option {key}"),
         }
     }
@@ -158,6 +161,7 @@ fn main() {
     let scene = build_scene(&a);
     let base = scene.world.cells.len();
     let mut sim = Sim::new(scene.world, sky);
+    if let Some(r) = a.radiation { sim.radiation = r }
     let mut seq = 0;
     for tick in 0..a.torch_ticks {
         for &(x, y, z) in &scene.torch {
@@ -172,7 +176,7 @@ fn main() {
     let width = (native_w as u32 * a.scale).next_multiple_of(2);
     let height = (native_h as u32 * a.scale).next_multiple_of(2);
     let camera = Camera { centre, scale: a.scale };
-    let tag = format!("{}-{}-{}", a.scene, a.sky, a.focus);
+    let tag = match a.radiation { Some(r) => format!("{}-{}-{}-{}", a.scene, a.sky, a.focus, format!("{r:?}").to_lowercase()), None => format!("{}-{}-{}", a.scene, a.sky, a.focus) };
     let mut renderer = Renderer::new_headless(width, height).expect("GPU");
     // Tell the camera how bright the sky is, so it knows day from night.
     renderer.exposure.sky_w_m2 = Some((sim.sky.sun_w_m2 + sim.sky.sky_w_m2) as f32);

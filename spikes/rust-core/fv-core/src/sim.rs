@@ -5,7 +5,7 @@ use crate::chem;
 use crate::structure;
 use crate::flow::Flow;
 use crate::ledger::{Books, Totals};
-use crate::rad::{self, Light, Sky};
+use crate::rad::{self, Light, Radiation, Sky};
 use crate::transport::{advect, diffuse};
 use crate::units::*;
 use crate::world::World;
@@ -40,6 +40,8 @@ pub struct Sim {
     pub bodies: Bodies,
     /// Look at what holds things up every this many ticks.
     pub structure_every: u64,
+    /// How radiation travels (packets or a field).
+    pub radiation: Radiation,
 }
 
 impl Sim {
@@ -47,7 +49,7 @@ impl Sim {
         let flow = Flow::new(&world);
         let books = Books::open(&world);
         let light = Light::new(world.cells.len());
-        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: 2, diffuse_hook: None, bodies: Bodies::new(), structure_every: 10 }
+        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: 2, diffuse_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default() }
     }
 
     pub fn schedule(&mut self, s: Scheduled) {
@@ -87,7 +89,7 @@ impl Sim {
     pub fn step_after_diffuse(&mut self) {
         let w = &mut self.world;
         chem::react(w);
-        rad::radiate(w, &self.sky, &mut self.light);
+        rad::radiate_by(self.radiation, w, &self.sky, &mut self.light);
         // What holds things up; whatever came loose starts to fall.
         if w.tick % self.structure_every == 0 {
             let report = structure::settle(w);

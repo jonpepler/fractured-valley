@@ -46,7 +46,7 @@ const VISIBLE_QUANTUM: i64 = 500;
 const MAX_PER_CELL: i64 = 48;
 const MAX_STEPS: usize = 200;
 const MAX_BOUNCES: u8 = 4;
-const ONE: i64 = 1 << 16;
+pub(crate) const ONE: i64 = 1 << 16;
 
 /// Light from the sky, per tick.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -87,10 +87,34 @@ pub struct Light {
     pub glow: Vec<[i64; 3]>,
     /// Ionising energy absorbed by each cell this tick (dose), µJ.
     pub dose: Vec<i64>,
+    /// Working space for the field method, kept between ticks.
+    pub(crate) field: Option<Box<crate::field::Scratch>>,
 }
 
 impl Light {
-    pub fn new(n: usize) -> Light { Light { incident: vec![[0; 3]; n], glow: vec![[0; 3]; n], dose: vec![0; n] } }
+    pub fn new(n: usize) -> Light { Light { incident: vec![[0; 3]; n], glow: vec![[0; 3]; n], dose: vec![0; n], field: None } }
+}
+
+/// How radiation travels. Both keep the same books and give the same kind
+/// of [`Light`]; they differ in how light gets from where it is emitted to
+/// where it lands.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Radiation {
+    /// Monte Carlo packets (this file).
+    #[cfg_attr(not(feature = "field-light"), default)]
+    Packets,
+    /// A field of radiant energy in fixed directions (discrete ordinates,
+    /// [`crate::field`]).
+    #[cfg_attr(feature = "field-light", default)]
+    Field,
+}
+
+/// One tick of radiation, by the chosen method.
+pub fn radiate_by(mode: Radiation, w: &mut World, sky: &Sky, light: &mut Light) {
+    match mode {
+        Radiation::Packets => radiate(w, sky, light),
+        Radiation::Field => crate::field::radiate(w, sky, light),
+    }
 }
 
 struct Trig { cos: Vec<i64>, sin: Vec<i64> }
@@ -107,7 +131,7 @@ fn trig() -> &'static Trig {
 }
 
 /// 1 − e^(−τ) for τ = i/256, i < 4096, out of 2³².
-fn absorb_table() -> &'static Vec<u64> {
+pub(crate) fn absorb_table() -> &'static Vec<u64> {
     static T: OnceLock<Vec<u64>> = OnceLock::new();
     T.get_or_init(|| (0..4096).map(|i| Fraction::from_f64(-libm::expm1(-(i as f64) / 256.0)).0).collect())
 }
@@ -145,7 +169,7 @@ fn lambert(s: &mut Stream, axis: usize, sign: i64) -> [i64; 3] {
 }
 
 /// How many of a cell's six faces look onto something light passes through.
-fn exposed(w: &World, x: usize, y: usize, z: usize) -> i64 {
+pub(crate) fn exposed(w: &World, x: usize, y: usize, z: usize) -> i64 {
     let mut n = 0;
     for axis in 0..3 { for dir in [-1i64, 1] {
         let mut p = [x as i64, y as i64, z as i64];
@@ -157,7 +181,7 @@ fn exposed(w: &World, x: usize, y: usize, z: usize) -> i64 {
 }
 
 /// σ(T⁴ − T_ambient⁴), µW/m².
-fn net_sigma(t: Temperature, ambient: Temperature) -> i64 {
+pub(crate) fn net_sigma(t: Temperature, ambient: Temperature) -> i64 {
     let tab = tables();
     (tab.sigma_t4[k_index(t.0)] - tab.sigma_t4[k_index(ambient.0)]).max(0)
 }
@@ -173,17 +197,17 @@ pub fn band_albedo(s: &Substance, band: usize) -> u64 {
 
 /// Albedo of water drops: they scatter light almost entirely and absorb
 /// about 60 % of infrared.
-fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 * 2 / 5 } else { Fraction::ONE.0 * 99 / 100 } }
+pub(crate) fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 * 2 / 5 } else { Fraction::ONE.0 * 99 / 100 } }
 
 /// One part of a cell that radiates: its area (faces of 0.01 m², Q16), its
 /// temperature, its albedo per band, and which store it draws from.
-struct Emitter { area_q16: i128, t: Temperature, albedo: [u64; 4], from_gas: bool }
+pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool }
 
 /// The radiating parts of a cell. A surface radiates from its exposed
 /// faces; airy matter radiates from 4κV (the same κ light is stopped by):
 /// blades (σ·share/4 per metre), soot (1 per metre per mg/L) and water drops
 /// (0.15 per metre per mg/L), none more than a black cube (six faces).
-fn emitters(c: &Cell, subs: &[Substance], faces: i64) -> Vec<Emitter> {
+pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64) -> Vec<Emitter> {
     let s = &subs[c.substance as usize];
     let one = Fraction::ONE.0 as i128;
     let solid_albedo = [0, 1, 2, 3].map(|b| band_albedo(s, b));
@@ -543,6 +567,15 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
     }
     let to_gas: Vec<i64> = dep.gas.iter().map(|a| a.load(Relaxed)).collect();
     let to_solid: Vec<i64> = dep.solid.iter().map(|a| a.load(Relaxed)).collect();
+    let edge: Vec<(i64, i64)> = (0..bricks).map(|b| (sky_in[b], traced[b].radiation_out)).collect();
+    settle(w, &to_solid, &to_gas, &emitted, &decay_heat, &edge);
+}
+
+/// The end of a tick's radiation, whichever way it travelled: each cell
+/// gives up what it emitted and keeps what it absorbed (indices are cell
+/// indices), decay is taken from the nuclear store, the flame is spent, and
+/// `edge[brick]` = (came in, went out) is booked on that brick's tally.
+pub(crate) fn settle(w: &mut World, to_solid: &[i64], to_gas: &[i64], emitted: &[[i64; 2]], decay_heat: &[i64], edge: &[(i64, i64)]) {
     w.run_phase(|wr, b, out, tally| {
         let base = b * BRICK_CELLS;
         for l in 0..BRICK_CELLS {
@@ -561,7 +594,9 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
             c.flame = Energy::ZERO;
             out[l] = c;
         }
-        tally.radiation_out += traced[b].radiation_out;
-        tally.radiation_in += sky_in[b];
+        if let Some(&(i, o)) = edge.get(b) {
+            tally.radiation_out += o;
+            tally.radiation_in += i;
+        }
     });
 }

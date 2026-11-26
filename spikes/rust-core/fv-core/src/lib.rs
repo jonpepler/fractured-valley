@@ -7,6 +7,7 @@ pub mod bodies;
 pub mod cell;
 pub mod checkpoint;
 pub mod chem;
+pub mod field;
 pub mod flow;
 pub mod ledger;
 pub mod rad;

@@ -13,3 +13,5 @@ rayon = { version = "1.10", optional = true }
 [features]
 default = ["parallel"]
 parallel = ["dep:rayon"]
+# Make the radiation field the default way light travels (instead of packets).
+field-light = []
