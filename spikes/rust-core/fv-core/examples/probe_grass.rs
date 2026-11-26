@@ -15,6 +15,8 @@ fn main() {
     for y in 2..30 { for x in 2..30 { w.set(x, y, 4, grass) } }
     let full = grass.solid[VOLATILE].0;
     let mut sim = Sim::new(w, Sky::NIGHT);
+    let wind: i64 = std::env::var("WIND").ok().and_then(|v| v.parse().ok()).unwrap_or(-1);
+    if wind >= 0 { sim.flow.wind_mean = [0, wind] }
     for t in 0..100 { for x in 2..30u16 { sim.schedule(Scheduled { tick: t, peer: 0, seq: x as u32, command: Command::Heat { x, y: 2, z: 4, energy: joules(400) } }) } }
     for tick in 0..2400 {
         sim.step();
