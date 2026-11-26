@@ -1,11 +1,18 @@
 # Does every browser and CPU compute exactly the same world?
 # Runs one scenario (fire, toppling post, falling tree, rigid bodies) in
-# Chromium, Firefox, WebKit and Node on x86 Linux, ARM macOS and Windows,
-# then compares the state hashes. Lockstep play depends on this.
+# Chromium, Firefox, WebKit and Node, then compares the state hashes.
+# Lockstep play depends on this.
+#
+# Every push: Linux only (cheap, and catches most mistakes).
+# Full check (Linux, Apple Silicon macOS, Windows): run it by hand from the
+# Actions tab ("Run workflow"), and once a month as a checkpoint. macOS
+# minutes cost ~10x Linux on a private repo; on a public repo all are free.
 name: determinism
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 4 1 * *'
   push:
     branches: [main]
     paths: ['spikes/voxel-sandbox/src/**', 'ci/determinism/**', '.github/workflows/determinism.yml', 'pnpm-lock.yaml']
@@ -15,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
