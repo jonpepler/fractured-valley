@@ -2,6 +2,7 @@
 // differ from freshly generated ones (palette-packed), and the simulation's
 // small sets. Taken only while nothing is moving, so physics is empty.
 // A joiner restores it and replays the input frames since.
+import { KINDS } from './fields'
 import { generate, type WorldSpec } from './gen'
 import { BRICK_CELLS, type Grid } from './grid'
 import type { Command, Scheduled, SimState } from './sim'
@@ -36,9 +37,9 @@ class Reader {
   ascending() { const n = this.uint(), out: number[] = []; let prev = 0; for (let i = 0; i < n; i++) { prev += this.uint(); out.push(prev) } return out }
 }
 
-const MAGIC = 0x46564333 // "FVC3": with moisture, gas, embers and moving air
-/** Values per gas brick: 8³ field cells × (heat, soot, steam). */
-const GAS_VALUES = 8 * 8 * 8 * 3
+const MAGIC = 0x46564334 // "FVC4": with moisture, five gases, embers and moving air
+/** Values per gas brick: 8³ field cells × each kind of gas. */
+const GAS_VALUES = 8 * 8 * 8 * KINDS
 
 function cellsOf(g: Grid, b: number, into: Uint8Array, state: Uint8Array, wet: Uint8Array) {
   const brick = g.bricks[b]

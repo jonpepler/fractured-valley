@@ -254,7 +254,9 @@ export class Sim {
       const h0 = hash32(this.seed, this.tick, p, 0xb1)
       const boil = wet && (h0 & 1) ? 1 : 0
       if (boil) w.setMoisture(x, y, z, wet - 1)
-      f.emit(ax, ay, az, fl.heat, fl.soot, boil * 240)
+      // A quarter of the energy is direct heat from glowing char; the rest
+      // leaves as burnable vapour, which burns in the air as flame.
+      f.emit(ax, ay, az, fl.heat >> 2, fl.soot >> 1, boil * 240, (fl.heat * 3) >> 2)
       const h = hash32(this.seed, this.tick, p, 0xb0)
       if (this.embers.length < MAX_EMBERS && fl.fineness >= 5 && chance(h >>> 8, fl.fineness, 12000)) {
         // An ember leaves upward with a little random push.

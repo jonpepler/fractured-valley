@@ -22,11 +22,25 @@ const CAP = 65535
 const rise = (heat: number) => Math.max(56, Math.min(300, heat >> 1))
 const FACES: readonly [number, number, number][] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
 
-export const enum F { Heat = 0, Soot = 1, Steam = 2 }
-const KINDS = 3
+/**
+ * What the air carries. Fuel is burnable vapour given off by hot fuel; where
+ * the air is hot enough it burns, adding heat and a little soot, and the
+ * amount burning this tick is Flame (not carried: it is made fresh each tick).
+ */
+export const enum F { Heat = 0, Soot = 1, Steam = 2, Fuel = 3, Flame = 4 }
+export const KINDS = 5
 
-/** How fast each field fades per tick, out of 256. */
-const FADE = [14, 3, 6]
+/** How fast each field fades per tick, out of 256 (vapour that never burns slowly disperses). */
+const FADE = [14, 3, 6, 10, 0]
+/** Vapour burns where the air is at least this hot (°C), given oxygen. */
+const VAPOUR_IGNITES = 420
+/** Share of the vapour in a cell that burns per tick, out of 256, and heat released per unit burnt. */
+const BURN_SHARE = 90
+const HEAT_PER_FUEL = 3
+/** Soot made per unit of vapour burnt, out of 256 (a well-fed flame makes little). */
+const SOOT_PER_FUEL = 40
+/** Heat a cell gains from flame in the cells around it, per unit of flame, in 1/16 °C. */
+const RADIANT = 8
 /** Gas can't get hotter than a flame (°C). */
 const MAX_HEAT = 1100
 
@@ -82,13 +96,14 @@ export class Fields {
   }
 
   /** Add gas at a world cell (saturating; order-independent). */
-  emit(x: number, y: number, z: number, heat: number, soot: number, steam: number) {
+  emit(x: number, y: number, z: number, heat: number, soot: number, steam: number, fuel = 0) {
     const fx = Math.floor(x / FR), fy = Math.floor(y / FR), fz = Math.floor(z / FR)
     if (fx < 0 || fy < 0 || fz < 0 || fx >= this.nx || fy >= this.ny || fz >= this.nz) return
     const i = this.index(fx, fy, fz)
     if (heat) this.cur[F.Heat]![i] = Math.min(MAX_HEAT, this.cur[F.Heat]![i]! + heat)
     if (soot) this.cur[F.Soot]![i] = Math.min(CAP, this.cur[F.Soot]![i]! + soot)
     if (steam) this.cur[F.Steam]![i] = Math.min(CAP, this.cur[F.Steam]![i]! + steam)
+    if (fuel) this.cur[F.Fuel]![i] = Math.min(CAP, this.cur[F.Fuel]![i]! + fuel)
     this.active.add(this.world.brickIndex(fx * FR, fy * FR, fz * FR))
   }
 
@@ -213,15 +228,14 @@ export class Fields {
         const fx = bx * FB + lx, fy = by * FB + ly, fz = bz * FB + lz
         if (fx >= this.nx || fy >= this.ny || fz >= this.nz) continue
         const i = this.index(fx, fy, fz)
-        h = mix(h, this.cur[0]![i]! | (this.cur[1]![i]! << 16))
-        h = mix(h, this.cur[2]![i]!)
+        for (let k = 0; k < KINDS; k += 2) h = mix(h, this.cur[k]![i]! | ((this.cur[k + 1]?.[i] ?? 0) << 16))
       }
     }
     return h
   }
 
-  /** Every field cell with gas, for drawing and inspection: [fx, fy, fz, heat, soot, steam]. */
-  *cells(): Generator<[number, number, number, number, number, number]> {
+  /** Every field cell with gas, for drawing and inspection: [fx, fy, fz, heat, soot, steam, fuel, flame]. */
+  *cells(): Generator<[number, number, number, number, number, number, number, number]> {
     const w = this.world
     for (const b of this.active) {
       const bx = b % w.bx, by = Math.floor(b / w.bx) % w.by, bz = Math.floor(b / (w.bx * w.by))
@@ -229,8 +243,8 @@ export class Fields {
         const fx = bx * FB + lx, fy = by * FB + ly, fz = bz * FB + lz
         if (fx >= this.nx || fy >= this.ny || fz >= this.nz) continue
         const i = this.index(fx, fy, fz)
-        const hh = this.cur[0]![i]!, s = this.cur[1]![i]!, st = this.cur[2]![i]!
-        if (hh | s | st) yield [fx, fy, fz, hh, s, st]
+        const hh = this.cur[0]![i]!, s = this.cur[1]![i]!, st = this.cur[2]![i]!, fu = this.cur[3]![i]!, fl = this.cur[4]![i]!
+        if (hh | s | st | fu | fl) yield [fx, fy, fz, hh, s, st, fu, fl]
       }
     }
   }
@@ -285,9 +299,9 @@ export class Fields {
       const values: number[] = []
       for (let lz = 0; lz < FB; lz++) for (let ly = 0; ly < FB; ly++) for (let lx = 0; lx < FB; lx++) {
         const fx = bx * FB + lx, fy = by * FB + ly, fz = bz * FB + lz
-        if (fx >= this.nx || fy >= this.ny || fz >= this.nz) { values.push(0, 0, 0); continue }
+        if (fx >= this.nx || fy >= this.ny || fz >= this.nz) { for (let k = 0; k < KINDS; k++) values.push(0); continue }
         const i = this.index(fx, fy, fz)
-        values.push(this.cur[0]![i]!, this.cur[1]![i]!, this.cur[2]![i]!)
+        for (let k = 0; k < KINDS; k++) values.push(this.cur[k]![i]!)
       }
       out.push({ brick: b, values })
     }
@@ -301,9 +315,9 @@ export class Fields {
       let k = 0
       for (let lz = 0; lz < FB; lz++) for (let ly = 0; ly < FB; ly++) for (let lx = 0; lx < FB; lx++) {
         const fx = bx * FB + lx, fy = by * FB + ly, fz = bz * FB + lz
-        if (fx >= this.nx || fy >= this.ny || fz >= this.nz) { k += 3; continue }
+        if (fx >= this.nx || fy >= this.ny || fz >= this.nz) { k += KINDS; continue }
         const i = this.index(fx, fy, fz)
-        this.cur[0]![i] = values[k++]!; this.cur[1]![i] = values[k++]!; this.cur[2]![i] = values[k++]!
+        for (let kind = 0; kind < KINDS; kind++) this.cur[kind]![i] = values[k++]!
       }
       this.active.add(b)
     }
@@ -337,8 +351,7 @@ export interface FieldView {
 export function computeBricks(v: FieldView, bricks: readonly number[], seed: number, tick: number): number[] {
   const { nx, ny, nz } = v
   const nxy = nx * ny
-  const cur0 = v.cur[0]!, cur1 = v.cur[1]!, cur2 = v.cur[2]!
-  const nx0 = v.next[0]!, nx1 = v.next[1]!, nx2 = v.next[2]!
+  const cur0 = v.cur[0]!
   const base = prevailing(seed, tick)
   const withGas: number[] = []
   for (const b of bricks) {
@@ -351,7 +364,7 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
       const fx = bx * FB + lx, fy = by * FB + ly, fz = bz * FB + lz
       if (fx >= nx || fy >= ny || fz >= nz) continue
       const i = (fz * ny + fy) * nx + fx
-      if (v.solid[i]) { nx0[i] = 0; nx1[i] = 0; nx2[i] = 0; continue }
+      if (v.solid[i]) { for (let k = 0; k < KINDS; k++) v.next[k]![i] = 0; continue }
       // Where did the gas now here come from? The wind plus the air's own
       // motion, or (without moving air) the wind plus a fixed rise for hot gas.
       const vel = v.vel
@@ -374,21 +387,38 @@ export function computeBricks(v: FieldView, bricks: readonly number[], seed: num
       const ixp = fx + 1 < nx ? i + 1 : -1, ixm = fx > 0 ? i - 1 : -1
       const iyp = fy + 1 < ny ? i + nx : -1, iym = fy > 0 ? i - nx : -1
       const izp = fz + 1 < nz ? i + nxy : -1, izm = fz > 0 ? i - nxy : -1
-      for (let k = 0; k < KINDS; k++) {
-        const a = k === 0 ? cur0 : k === 1 ? cur1 : cur2
+      // Carry, blur and fade each gas (flame is not carried: it is made below).
+      const val = [0, 0, 0, 0]
+      for (let k = 0; k < 4; k++) {
+        const a = v.cur[k]!
         const adv = ((c000 ? a[base0]! * w000 : 0) + (c100 ? a[base0 + 1]! * w100 : 0) +
           (c010 ? a[base0 + nx]! * w010 : 0) + (c110 ? a[base0 + nx + 1]! * w110 : 0) +
           (c001 ? a[base0 + nxy]! * w001 : 0) + (c101 ? a[base0 + nxy + 1]! * w101 : 0) +
           (c011 ? a[base0 + nxy + nx]! * w011 : 0) + (c111 ? a[base0 + nxy + nx + 1]! * w111 : 0)) >> 8
         const nb = ((ixp >= 0 ? a[ixp]! : 0) + (ixm >= 0 ? a[ixm]! : 0) + (iyp >= 0 ? a[iyp]! : 0) +
           (iym >= 0 ? a[iym]! : 0) + (izp >= 0 ? a[izp]! : 0) + (izm >= 0 ? a[izm]! : 0)) / 6 | 0
-        // A little blur with the neighbours, then fade.
-        let val = (adv * 3 + nb) >> 2
-        val -= (val * FADE[k]! + 255) >> 8
-        if (val < 24) val = 0
-        ;(k === 0 ? nx0 : k === 1 ? nx1 : nx2)[i] = val
-        if (val) any = true
+        let x = (adv * 3 + nb) >> 2
+        x -= (x * FADE[k]! + 255) >> 8
+        val[k] = x < 24 ? 0 : x
       }
+      // Radiation: flame next door (last tick) heats this cell, most from the
+      // flame beside and below it. This is how flame reaches fuel it isn't in.
+      const fl0 = v.cur[F.Flame]!
+      const glow = (ixp >= 0 ? fl0[ixp]! : 0) + (ixm >= 0 ? fl0[ixm]! : 0) + (iyp >= 0 ? fl0[iyp]! : 0) +
+        (iym >= 0 ? fl0[iym]! : 0) + (izm >= 0 ? fl0[izm]! : 0) * 2 + (izp >= 0 ? fl0[izp]! : 0)
+      if (glow) val[F.Heat] = Math.min(MAX_HEAT, val[F.Heat]! + ((glow * RADIANT) >> 4))
+      // Combustion: vapour in hot air burns, adding heat and a little soot.
+      // (Oxygen is assumed plentiful for now; brief 05 has it in the air.)
+      let flame = 0
+      if (val[F.Fuel]! > 0 && val[F.Heat]! >= VAPOUR_IGNITES) {
+        flame = Math.max(Math.min(val[F.Fuel]!, 24), (val[F.Fuel]! * BURN_SHARE) >> 8)
+        val[F.Fuel]! -= flame
+        val[F.Heat] = Math.min(MAX_HEAT, val[F.Heat]! + flame * HEAT_PER_FUEL)
+        val[F.Soot] = Math.min(CAP, val[F.Soot]! + ((flame * SOOT_PER_FUEL) >> 8))
+      }
+      for (let k = 0; k < 4; k++) v.next[k]![i] = val[k]!
+      v.next[F.Flame]![i] = Math.min(CAP, flame)
+      if (val[0]! | val[1]! | val[2]! | val[3]! | flame) any = true
     }
     if (any) withGas.push(b)
   }

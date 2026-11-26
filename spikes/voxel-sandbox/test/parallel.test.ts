@@ -2,7 +2,7 @@
 // several threads, or split between peers, is bit-identical to one thread.
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { FieldPool } from '../src/field-pool'
-import { computeBricks, type FieldView } from '../src/fields'
+import { computeBricks, type FieldView, KINDS } from '../src/fields'
 import { DEFAULT_SPEC, generate } from '../src/gen'
 import { M } from '../src/materials'
 import { initPhysics } from '../src/physics'
@@ -54,12 +54,12 @@ describe('threads', () => {
 
 /** One brick's gas values from `next`, as they would travel on the network. */
 function pack(v: FieldView, b: number): Uint16Array {
-  const out = new Uint16Array(3 * CELLS)
-  each(v, b, (i, k) => { out[k * 3] = v.next[0]![i]!; out[k * 3 + 1] = v.next[1]![i]!; out[k * 3 + 2] = v.next[2]![i]! })
+  const out = new Uint16Array(KINDS * CELLS)
+  each(v, b, (i, k) => { for (let g = 0; g < KINDS; g++) out[k * KINDS + g] = v.next[g]![i]! })
   return out
 }
 function unpack(v: FieldView, b: number, data: Uint16Array) {
-  each(v, b, (i, k) => { v.next[0]![i] = data[k * 3]!; v.next[1]![i] = data[k * 3 + 1]!; v.next[2]![i] = data[k * 3 + 2]! })
+  each(v, b, (i, k) => { for (let g = 0; g < KINDS; g++) v.next[g]![i] = data[k * KINDS + g]! })
 }
 function each(v: FieldView, b: number, f: (i: number, k: number) => void) {
   const bx = b % v.bx, by = Math.floor(b / v.bx) % v.by, bz = Math.floor(b / (v.bx * v.by))
@@ -103,7 +103,7 @@ function runPeers(corruptAt = -1) {
       // Spot-check: recompute a seeded sample (1 in 4) of the other's bricks.
       // Recomputing reads only `cur`, which both peers hold identically.
       const check = theirs.mine.filter(b => hash32(seed, tick, b, 0xc4ec) % 4 === 0)
-      const scratch = { ...p.fields.view(), next: [0, 1, 2].map(() => new Uint16Array(p.fields.cur[0]!.length)) }
+      const scratch = { ...p.fields.view(), next: Array.from({ length: KINDS }, () => new Uint16Array(p.fields.cur[0]!.length)) }
       computeBricks(scratch, check, seed, tick)
       for (const b of check) {
         const got = theirs.data[theirs.mine.indexOf(b)]!, want = pack(scratch, b)

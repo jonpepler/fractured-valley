@@ -2,12 +2,12 @@
 // It waits on a shared counter; each round it computes its slice of the
 // planned bricks with the same kernel as the main thread, then signals done.
 import { workerData } from 'node:worker_threads'
-import { computeBricks, type FieldView } from './fields'
+import { computeBricks, type FieldView, KINDS } from './fields'
 
 interface Init {
   index: number
   dims: { nx: number; ny: number; nz: number; bx: number; by: number }
-  /** [cur0, cur1, cur2] for parity 0, then the other three. */
+  /** Every kind's buffer for parity 0, then every kind's for parity 1. */
   buffers: SharedArrayBuffer[]
   solid: SharedArrayBuffer
   /** [generation, done, seed, tick, parity] */
@@ -26,8 +26,8 @@ const out = new Int32Array(d.out)
 const arr = d.buffers.map(b => new Uint16Array(b))
 const view = (parity: number): FieldView => ({
   ...d.dims,
-  cur: parity === 0 ? arr.slice(0, 3) : arr.slice(3, 6),
-  next: parity === 0 ? arr.slice(3, 6) : arr.slice(0, 3),
+  cur: parity === 0 ? arr.slice(0, KINDS) : arr.slice(KINDS),
+  next: parity === 0 ? arr.slice(KINDS) : arr.slice(0, KINDS),
   solid: new Uint8Array(d.solid),
 })
 
