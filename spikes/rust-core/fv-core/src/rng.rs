@@ -37,7 +37,7 @@ impl Hasher {
     #[inline]
     pub fn u64(&mut self, v: u64) { self.0 = mix(self.0 ^ v).wrapping_add(0x9e37_79b9_7f4a_7c15) }
     pub fn cell(&mut self, c: &Cell) {
-        self.u64(c.substance as u64 | (c.bonds as u64) << 8 | (c.lit as u64) << 16);
+        self.u64(c.substance as u64 | (c.bonds as u64) << 8 | (c.lit as u64) << 16 | (c.front as u64) << 24);
         for m in c.solid { self.u64(m.0 as u64) }
         self.u64(c.water.0 as u64);
         for m in c.gas { self.u64(m.0 as u64) }

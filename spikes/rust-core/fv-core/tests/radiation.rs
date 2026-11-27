@@ -150,7 +150,9 @@ fn a_bigger_fire_burns_hotter_and_brighter() {
     // visible light is its flame's, set by the heat it releases rather than by
     // temperature (soot's spectrum makes flames ~3× brighter in the visible
     // than a grey body would), and only the hot twigs' share grows with heat.
-    assert!(big_glow > small_glow * 104 / 100, "glow: {small_glow} µJ alone, {big_glow} µJ in a bigger fire");
+    // (Since fine fuel catches a few cm at a time, 27 Nov, the lone fire
+    // spreads to its neighbours sooner and the gap is ~4 %.)
+    assert!(big_glow > small_glow * 103 / 100, "glow: {small_glow} µJ alone, {big_glow} µJ in a bigger fire");
     // And the heat stays near the fire: books that balance can still hide
     // energy put in the wrong place, so bound it too.
     let w = &sim.world;

@@ -166,7 +166,7 @@ fn main() {
             print!("{:>3}s", (tick + 1) * TICK.0 / 1_000);
             for dy in 0..4 { for z in z0..z1 {
                 let c = w.get(x, lo + lit - 1 + dy, z);
-                print!(" | y+{dy} z{}: skin {:>4.0} gas {:>4.0} vol {:>3}% fuel {:>5}", z - z0, c.surface_temperature(&w.subs).celsius_f64(), c.gas_temperature().celsius_f64(), c.solid[VOLATILE].0 * 100 / full.max(1), c.gas[Gas::Fuel as usize].0);
+                print!(" | y+{dy}: skin {:>4.0} gas {:>4.0} vol {:>3}% front {:>3}%", c.surface_temperature(&w.subs).celsius_f64(), c.gas_temperature().celsius_f64(), c.solid[VOLATILE].0 * 100 / full.max(1), c.front as u32 * 100 / 65535);
             }}
             println!();
         }

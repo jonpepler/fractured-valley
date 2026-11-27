@@ -187,10 +187,49 @@ pub fn flame_reach(world: &World) -> Vec<bool> {
     lit
 }
 
+/// Fine fuel (grass, twigs, leaves): a fuel bed air blows through, whose
+/// flame front works across a cell rather than lighting it whole. Not a
+/// dense solid that has burnt porous.
+pub fn fine_fuel(c: &Cell, subs: &[Substance]) -> bool { subs[c.substance as usize].permeable && c.substance != NONE }
+
+/// The heat that brings a fine-fuel cell's heated share from the
+/// surroundings' temperature to ignition, the water it holds boiled off:
+/// Rothermel's heat of preignition ρ_b·ε·Q_ig over the cell, µJ.
+pub fn ignite_energy(c: &Cell, subs: &[Substance], ambient: Temperature) -> i64 {
+    let skin = c.skin_capacity(subs);
+    let water = (c.water.0 as i128 * skin.0 as i128 / c.solid_capacity(subs).0.max(1) as i128) as i64;
+    ((skin * (IGNITION - ambient)).0.max(0) + (Mass(water) * LATENT_HEAT_VAPOUR).0).max(1)
+}
+
+/// A flame front works into fine fuel as the fuel takes in heat, whatever
+/// brings it (a flame touching it, hot gas, radiation, its own flame).
+/// Heated from one side, fuel reaches ignition a slab at a time, so the
+/// share reached is the heat the fuel holds above the surroundings over the
+/// heat that brings all of it to ignition (the water still in it boiled
+/// off): Rothermel's spread, R = I_p/(ρ_b·ε·Q_ig), cell by cell, with the
+/// sim's own fluxes as I_p. Net heat, so cooling counts against it; but a
+/// front never goes back (what has caught keeps burning).
+pub fn advance_front(c: &mut Cell, subs: &[Substance], ambient: Temperature) {
+    if c.front >= FRONT_FULL || !fine_fuel(c, subs) || c.solid[VOLATILE].0 <= 0 { return }
+    let skin = c.skin_capacity(subs);
+    let held = (c.skin - skin * ambient).0.max(0);
+    let need = ignite_energy(c, subs, ambient);
+    // Heat soaks into a fuel bed over about 1/(σβ), the depth at which its
+    // particles' surface per volume has met the heat (σβ: surface per
+    // volume of the bed): no thinner slab than that can be brought to
+    // ignition, so no front until the heat held could light that much.
+    let s = &subs[c.substance as usize];
+    let beta_sigma = (s.surface_per_volume as i128 * (1_000_000_000 - s.porosity.0 as i128 * 1_000_000_000 / (1u128 << 32) as i128) / 1_000_000_000).max(1);
+    let slab = (FRONT_FULL as i128 * 1_000 / (beta_sigma * CELL_MM as i128)).min(FRONT_FULL as i128);
+    let share = (held as i128 * FRONT_FULL as i128 / need as i128).min(FRONT_FULL as i128);
+    if share >= slab { c.front = c.front.max(share as u16) }
+}
+
 /// Whether a cell can light burnable gas: its gas is past ignition, or it
 /// holds fuel whose surface is (a burning or glowing surface is a pilot).
 pub fn lights(c: &Cell, subs: &[Substance]) -> bool {
     c.lit
+        || (c.front > 0 && c.solid[VOLATILE].0 > 0 && fine_fuel(c, subs))
         || (c.gas_capacity().0 > 0 && c.gas_temperature() >= IGNITION)
         || (c.solid[VOLATILE].0 + c.solid[CHAR].0 > 0 && c.surface_temperature(subs) >= IGNITION)
 }
@@ -255,7 +294,12 @@ pub fn pyrolysis_rate(c: &Cell, subs: &[Substance], t: &Tables) -> Mass {
         // ρ × face area × depth charred per tick: full mass × (β·dt / edge)
         (full as i128 * CHAR_UM_PER_MIN as i128 * TICK.0 as i128 / (60_000i128 * CELL_MM as i128 * 1_000)) as i64
     };
-    t.pyrolysis[k_index(c.surface_temperature(subs).0)].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)))
+    let kinetic = t.pyrolysis[k_index(c.surface_temperature(subs).0)].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)));
+    // The share of a fine-fuel cell the flame front has reached is at
+    // ignition and burns over the residence time, whatever the rest of the
+    // cell's average surface temperature says.
+    let reached = if fine_fuel(c, subs) && c.front > 0 { Mass((cap as i128 * c.front as i128 / FRONT_FULL as i128) as i64) } else { Mass(0) };
+    kinetic.max(reached).min(c.solid[VOLATILE])
 }
 
 /// Whether a flame holds in a cell's gas, how much fuel it could burn (as
@@ -312,6 +356,7 @@ pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature,
 fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool, wind: i64) -> Cell {
     // Whether a flame burns here this tick is decided below, afresh.
     c.lit = false;
+    advance_front(&mut c, subs, ambient);
     let ml = c.gas_volume_ml(subs);
     let s = &subs[c.substance as usize];
     let vap = Gas::Vapour as usize;
@@ -535,7 +580,13 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
         let kinetic = t.gas_burn[k_index(anchored.0)].of_mass(c.gas[fuel]).0;
         // Fuel and air must meet before they burn, however fast the
         // chemistry: no more than mixing brings together burns in a tick.
-        let mixable = MIXING.of_mass(Mass(could)).0;
+        let mut mixable = MIXING.of_mass(Mass(could)).0;
+        // In fine fuel the flame burns at its front: in a tuft the front
+        // hasn't reached, gas burns only in the share it has (fuel gas that
+        // drifts further in waits, unburnt, for the front).
+        if fine_fuel(&c, subs) && c.solid[VOLATILE].0 > 0 && c.front < FRONT_FULL && c.surface_temperature(subs) < IGNITION {
+            mixable = (mixable as i128 * c.front as i128 / FRONT_FULL as i128) as i64;
+        }
         let mixed = if holds { mixable } else { 0 };
         let want = if holds { mixed } else { kinetic.min(mixable) };
         // Short of oxygen, it burns dirty: up to a tenth of it becomes soot.

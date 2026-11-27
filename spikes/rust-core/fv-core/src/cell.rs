@@ -64,7 +64,15 @@ pub struct Cell {
     /// the gas it meets next tick without a hot neighbour (see
     /// `chem::lights`). Saved and shared like the stores.
     pub lit: bool,
+    /// How far a flame front has worked into this cell's fine fuel, out of
+    /// `FRONT_FULL` (zero: untouched; full: all of it reached). A 10 cm tuft doesn't
+    /// catch at once: flame touching one side lights it a few cm at a time,
+    /// and only the reached share burns (see `transport` and `chem`).
+    pub front: u16,
 }
+
+/// A fine-fuel cell the flame front has fully reached.
+pub const FRONT_FULL: u16 = u16::MAX;
 
 impl Cell {
     pub fn solid_mass(&self) -> Mass { self.solid[0] + self.solid[1] + self.solid[2] }

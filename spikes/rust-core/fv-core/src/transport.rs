@@ -62,6 +62,10 @@ pub struct Side {
     /// Conductance from gas to this cell's fuel surface (h·A), µW/K, if it
     /// has fuel that can catch; zero otherwise.
     pub fuel_g: i64,
+    /// Share of this cell's fuel the flame front has reached, per mille
+    /// (1 000 for a cell burning throughout): its flame leans over only
+    /// that share of a face.
+    pub reached: i64,
     /// Open water lies here: heat conducted across its faces is the water's.
     pub wet: bool,
     /// Conductance from the middle of open water down to what it lies on
@@ -94,6 +98,10 @@ const FLAME_CONTACT: Temperature = Temperature(1_173_000);
 /// thick flame's radiation; e.g. crib and wall-fire measurements, Babrauskas,
 /// Ignition Handbook): about 80 W/(m²·K) at flame temperature, mW/(m²·K).
 const FLAME_ON_FACE: i64 = 80_000;
+/// That over one face, µW/K: the most a flame beside a cell can hand the
+/// fuel across the face between them (its flux into a surface in flame
+/// times the face's area, not into every blade of a 10 cm tuft at once).
+const FLAME_FACE_G: i64 = FLAME_ON_FACE * FACE_MM2 / 1_000;
 /// Heat a turbulent flame releases per volume of flame: about 1.2 MW/m³,
 /// whatever the fuel or the fire's size (Orloff & De Ris, from pool fires,
 /// as cited with a recalibration to 1.5 ± 0.2 MW/m³ in Fire Technology
@@ -144,7 +152,9 @@ pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool)
     // What fits at this temperature (ideal gas at constant pressure).
     let fits = if t.0 > 0 { div_i128(fresh as i128 * gas_ml as i128 * ambient.0 as i128, CELL_VOLUME_ML as i128 * t.0 as i128) as i64 } else { i64::MAX };
     let volatile = c.solid[crate::cell::VOLATILE].0 > 0;
-    let flaming = volatile && t_skin >= crate::chem::IGNITION && t >= crate::chem::IGNITION;
+    // Burning with a flame: hot fuel in hot gas, or a front working through
+    // fine fuel with a flame over it.
+    let flaming = volatile && ((t_skin >= crate::chem::IGNITION && t >= crate::chem::IGNITION) || (c.front > 0 && c.lit && crate::chem::fine_fuel(c, subs)));
     // What touches the fuel is the flame itself, not the cell's average gas:
     // the continuous flame region averages ~900 °C (McCaffrey 1979).
     let flame_t = if flaming { FLAME_CONTACT } else { Temperature(0) };
@@ -168,6 +178,7 @@ pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool)
     } else { 0 };
     Side {
         flame_t, flame_heat, flame_fill, fuel_g, wet, water_g,
+        reached: if crate::chem::fine_fuel(c, subs) && t_skin < crate::chem::IGNITION { c.front as i64 * 1_000 / crate::cell::FRONT_FULL as i64 } else { 1_000 },
         t, t_cond, t_skin, gas_ml, permeable: c.permeable(subs),
         // k × face / half an edge = k·L²/(L/2) = 2·k·L: k [mW/(m·K)] × L [mm]
         // is µW/K (200·k at 10 cm).
@@ -232,9 +243,9 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: 
             // through its own gas, and the leaning flame of fuel beside it.
             let share = if !to.permeable { from.flame_fill }
                 else if from.flame_t.0 == 0 { 0 }
-                else if axis != 2 { FLAME_LEAN_PERMILLE } else { 0 };
+                else if axis != 2 { FLAME_LEAN_PERMILLE * from.reached / 1_000 } else { 0 };
             if share == 0 || to.t_skin >= FLAME_CONTACT { return 0 }
-            let g = Conductance(to.fuel_g * share / 1_000);
+            let g = Conductance(to.fuel_g.min(FLAME_FACE_G) * share / 1_000);
             ((g * (FLAME_CONTACT - to.t_skin)) * TICK).0.min(from.flame_heat.0)
         };
         f.flame = Energy(touch(a, b) - touch(b, a));
@@ -307,7 +318,9 @@ pub fn apply(out: &mut Cell, me: &Side, f: &Flux, sign: i64) {
     // Flame contact: the giver's flame gas loses it, the taker's fuel surface gains it.
     let flame = f.flame.0 * sign;
     // (Fuel that can catch always has a surface layer.)
-    if flame < 0 { out.energy += Energy(flame) } else { out.skin += Energy(flame) }
+    if flame < 0 { out.energy += Energy(flame) } else {
+        out.skin += Energy(flame);
+    }
     out.energy += Energy(f.carried.0 * sign);
     for k in 0..GASES { out.gas[k] += Mass(f.gas[k].0 * sign) }
 }

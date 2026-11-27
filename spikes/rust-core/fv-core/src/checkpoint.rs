@@ -12,7 +12,7 @@ use crate::substance::GASES;
 use crate::units::*;
 use crate::world::World;
 
-const MAGIC: &[u8; 4] = b"FVR3";
+const MAGIC: &[u8; 4] = b"FVR4";
 
 struct W(Vec<u8>);
 impl W {
@@ -78,6 +78,7 @@ pub fn export(sim: &Sim) -> Vec<u8> {
         w.u8(c.substance);
         w.u8(c.bonds);
         w.u8(c.lit as u8);
+        for b in c.front.to_le_bytes() { w.u8(b) }
         for m in c.solid { w.i64(m.0) }
         w.i64(c.water.0);
         for m in c.gas { w.i64(m.0) }
@@ -123,7 +124,7 @@ pub fn import(bytes: &[u8]) -> Sim {
         queue.push(Scheduled { tick: t, peer, seq, command });
     }
     for c in world.cells.iter_mut() {
-        let mut n = Cell { substance: r.u8(), bonds: r.u8(), lit: r.u8() != 0, ..Cell::default() };
+        let mut n = Cell { substance: r.u8(), bonds: r.u8(), lit: r.u8() != 0, front: u16::from_le_bytes([r.u8(), r.u8()]), ..Cell::default() };
         for m in n.solid.iter_mut() { *m = Mass(r.i64()) }
         n.water = Mass(r.i64());
         for m in n.gas.iter_mut() { *m = Mass(r.i64()) }

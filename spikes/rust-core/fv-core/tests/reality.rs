@@ -60,7 +60,7 @@ fn burning_twigs_and_their_embers_stay_at_real_temperatures() {
 }
 
 #[test]
-#[ignore = "open: spreads ~26 cm/min, 3.1x Rothermel (8.5 cm/min). Flame contact hands the unburnt fuel ~2x Rothermel's propagating flux; capping it at a flame's flux over the face brings twigs to 19.5 cm/min but stops grass, because a 10 cm cell must ignite whole within its neighbour's burn time. Needs the front tracked inside each cell (research 27 Nov, section 21)"]
+#[ignore = "open: spreads ~29 cm/min, 3.4x Rothermel (8.5 cm/min); grass now 0.33 m/min against 0.5. Fine fuel catches a few cm at a time (a front per cell); suspected: a reached share of twigs feeds 30 % of its flame back into the rest of its cell and finishes it quickly (research 27 Nov, section 24)"]
 fn a_line_of_fire_creeps_through_twigs_at_rothermels_rate() {
     // Rothermel's spread model (1972, with Albini's 1976 forms) for a line
     // of fire, no wind or slope, in this bed: σ = 700/m (213/ft), 50 kg/m³
