@@ -92,3 +92,40 @@ fn reach_follows_cost_and_stress() {
     assert!(b.ask(map, rec_of(&[(F::Place, 1), (F::Goal, 2)]), 5, scared).is_none());
     assert_eq!(b.stats.refused, 1);
 }
+
+/// Adversarial descriptions: caps of 1, nested blends of chains, paths with avoid, and two tools
+/// that ask each other (a cycle, cut at depth 4). The bound still covers every call.
+#[test]
+fn the_bound_covers_nasty_tools() {
+    let srcs = [
+        r#"(tool "a" (uses b) (slot s (key place) (votes 4) place 1) (slot c (key place) count int 1)
+            (observe (if (= kind moved) (put s (place) next 1) (put s (next) place 1) (put c (place) 0 val)))
+            (ask (blend (500 (chain s (it) place 16)) (300 (path s place goal 32 (avoid c 1))) (200 (sub b "" ((place place) (goal goal)))))))"#,
+        r#"(tool "b" (uses a) (slot s (key place) (votes 4) place 2)
+            (observe (if (= kind moved) (put s (place) next 1) (drop s (next) place)))
+            (ask (first (if (< (sub a "" ((place place)) 0) 3) (top s (place) 4) (val (sub a "" ((place next) (goal goal)) 1))) (path s place goal 32)))
+            (view deep (blend (1 (sub a "" ((place place) (goal goal)))) (1 (sub a "" ((place goal) (goal place)))))))"#,
+        r#"(tool "h" (slot s (key entity tod) (hist 8) tod 1) (slot r (key) (ring 3) int 1)
+            (observe (push r) (put s (who tod) (% tod 8) 1) (fade s 1))
+            (ask (blend (1 (top s (who tod) 8)) (2 (top s (who (+ tod 1)) 8)) (3 (chain s (who it) tod 16)))) (forget (fade s 1)))"#,
+    ];
+    let ds: Vec<Desc> = srcs.iter().map(|s| fv_mind_lab::tools::lang::parse(s).unwrap_or_else(|e| panic!("{e}"))).collect();
+    let envr: Vec<&Desc> = ds.iter().collect();
+    let mut tools: Vec<Tool> = ds.iter().map(|d| Tool::from(d.clone())).collect();
+    let mut worst = vec![0i64; ds.len()];
+    for i in 0..4000u64 {
+        let mut r = random_rec(11, i);
+        r[F::Place as usize] %= 6; r[F::Next as usize] %= 6; r[F::Goal as usize] %= 6;
+        for t in tools.iter_mut() { let b = cost::bound(&t.desc, &envr); let u = t.observe(&r, i64::MAX / 4).unwrap(); assert!(u <= b.observe, "{} observe {u} > {}", t.desc.name, b.observe); }
+        let q = random_rec(12, i);
+        for (k, t) in tools.iter().enumerate() {
+            for v in std::iter::once("").chain(t.desc.views.iter().map(|x| x.0.as_str())) {
+                let b = cost::view_bound(&t.desc, v, &envr);
+                let (_, u) = t.query(v, &q, i64::MAX / 4, &tools);
+                assert!(u <= b, "{} view '{v}': {u} > {b}", t.desc.name);
+                worst[k] = worst[k].max(u);
+            }
+        }
+    }
+    for (d, w) in ds.iter().zip(&worst) { println!("{}: worst {w}, bound {}", d.name, cost::bound(d, &envr).ask); }
+}
