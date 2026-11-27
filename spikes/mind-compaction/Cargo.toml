@@ -1,0 +1,15 @@
+[package]
+name = "fv-mind-compaction"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: a benchmark lab for cheaper, smaller minds, measured against the thought-graph reference"
+
+[dependencies]
+
+[profile.release]
+debug = false
+codegen-units = 1
+
+[profile.test]
+opt-level = 3
