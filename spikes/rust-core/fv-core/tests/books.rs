@@ -82,3 +82,32 @@ fn threads_give_the_same_bits_as_one_thread() {
     fv_core::world::THREADS.store(0, core::sync::atomic::Ordering::Relaxed);
     assert_eq!(one, many);
 }
+
+#[test]
+fn wind_through_a_sealed_room_never_overheats_a_drained_cell() {
+    // Uniform wind through the sealed room with its hot block, carried in
+    // one sub-step, with diffusion: the cells on the upwind walls drain to
+    // almost no gas, and those on the downwind walls fill. Conduction
+    // through a drained cell's air once moved far more heat than it held,
+    // sending it below absolute zero and then to ~1 900 °C. With no heat
+    // coming in, no cell may get hotter than the hottest air started (400
+    // °C) or colder than the coldest (20 °C), whatever little gas it holds.
+    let mut w = sealed_room();
+    let mut books = Books::open(&w);
+    let (cold, hot) = (celsius(20).0 - 1_000, celsius(400).0 + 1_000);
+    for tick in 0..300 {
+        for t in w.tallies.iter_mut() { *t = Default::default() }
+        advect(&mut w, &Uniform([300, -200, 400]), 1);
+        diffuse(&mut w, &Still);
+        record(&mut books, &w);
+        let now = Totals::of(&w);
+        assert_eq!(books.energy_gap(&now), 0, "energy gap at tick {tick}");
+        assert_eq!(books.mass_gap(&now), 0, "mass gap at tick {tick}");
+        assert_eq!(w.first_impossible(), None, "a store went negative at tick {tick}");
+        for (i, c) in w.cells.iter().enumerate() {
+            if c.substance != NONE || c.gas_capacity().0 == 0 { continue }
+            let t = c.gas_temperature().0;
+            assert!((cold..=hot).contains(&t), "tick {tick}: cell {i}'s air at {:.0} °C with {} µg of gas, outside 20–400 °C", t as f64 / 1000.0 - 273.15, c.gas_mass().0);
+        }
+    }
+}

@@ -39,7 +39,7 @@ pub fn constants() -> String {
 }
 
 pub const CELL_WORDS: usize = 20;
-pub const SIDE_WORDS: usize = 25;
+pub const SIDE_WORDS: usize = 29;
 pub const FLUX_WORDS: usize = 21;
 pub const EDGE_WORDS: usize = 16;
 
@@ -54,7 +54,7 @@ pub fn pack_cell(v: &mut Vec<u32>, c: &Cell) {
 }
 
 pub fn pack_side(v: &mut Vec<u32>, s: &Side) {
-    for x in [s.t.0, s.t_cond.0, s.t_skin.0, s.gas_ml, s.half.0, s.excess.0, s.flame_t.0, s.flame_heat.0, s.flame_fill, s.fuel_g, s.reached, s.water_g] { push64(v, x) }
+    for x in [s.t.0, s.t_cond.0, s.t_skin.0, s.gas_ml, s.half.0, s.excess.0, s.flame_t.0, s.flame_heat.0, s.flame_fill, s.fuel_g, s.reached, s.water_g, s.cap_cond, s.cap_skin] { push64(v, x) }
     v.push(s.permeable as u32 | (s.wet as u32) << 1);
 }
 

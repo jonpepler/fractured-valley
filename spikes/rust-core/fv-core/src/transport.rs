@@ -71,6 +71,12 @@ pub struct Side {
     /// Conductance from the middle of open water down to what it lies on
     /// (half its depth of water), µW/K; zero without open water.
     pub water_g: i64,
+    /// Heat capacity of the store conduction draws on and feeds (see
+    /// `apply`): the gas of an airy cell, the solid's core otherwise, nJ/K.
+    pub cap_cond: i64,
+    /// Heat capacity of an opaque cell's surface layer (what the air film
+    /// touches), nJ/K.
+    pub cap_skin: i64,
 }
 
 /// Share of the time a flame leans over the fuel beside it (flame fingers
@@ -191,7 +197,27 @@ pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool)
         half: Conductance(k * 2 * CELL_MM),
         excess: Mass((c.gas_mass().0 - fits).max(0)),
         ambient,
+        cap_cond: if !wet && c.permeable(subs) { c.gas_capacity().0 } else { c.core_capacity(subs).0 },
+        cap_skin: c.skin_capacity(subs).0,
     }
+}
+
+/// Heat conducted across a face in one tick, given the linear rate's
+/// `g·ΔT·dt` (µJ), the face's conductance `g` (µW/K) and the heat
+/// capacities of the two stores it joins (nJ/K). Taken implicitly (backward
+/// Euler for two stores relaxing toward each other): `g·ΔT·dt / (1 + x)`
+/// with `x = 6·g·dt·(1/C_a + 1/C_b)`, each face drawing on a sixth of each
+/// cell's store. For a full cell x is ~0.001 and this is the linear rate;
+/// for a store holding almost nothing (a cell drained of its gas) it can
+/// never pass more heat than brings the two to one temperature, where the
+/// explicit rate overshoots and drives the store below absolute zero.
+#[inline]
+pub fn conducted(linear: i64, g: i64, ca: i64, cb: i64) -> i64 {
+    if ca <= 0 || cb <= 0 { return 0 }
+    // g·dt in nJ/K (µW/K × ms), × 6 faces, in units of 2⁻³².
+    let gdt = (6 * g * TICK.0) as i128 * (1i128 << 32);
+    let x = div_i128(gdt, ca as i128) + div_i128(gdt, cb as i128);
+    div_i128(linear as i128 * (1i128 << 32), (1i128 << 32) + x) as i64
 }
 
 /// The surroundings' temperature, which every side carries.
@@ -271,7 +297,8 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: 
         if !a.permeable { ta = a.t_skin }
         if !b.permeable { tb = b.t_skin }
     }
-    f.energy = (Conductance(g as i64) * (ta - tb)) * TICK;
+    let (ca, cb) = (if f.film && !a.permeable { a.cap_skin } else { a.cap_cond }, if f.film && !b.permeable { b.cap_skin } else { b.cap_cond });
+    f.energy = Energy(conducted(((Conductance(g as i64) * (ta - tb)) * TICK).0, g as i64, ca, cb));
 
     // Mixing: each side sends a share of its gas, by concentration. Eddies
     // come from the wind and from heat itself: hot gas churns at about

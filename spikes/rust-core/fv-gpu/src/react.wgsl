@@ -525,10 +525,10 @@ fn flame_release_gpu(x: C, s: S, reach: u32) -> I {
     return muli(of_f(mixing_at(reach), fh.could), C_GAS_CHEM_FUEL);
 }
 
-fn put_side(c: u32, v: array<I, 12>, flags: u32) {
+fn put_side(c: u32, v: array<I, 14>, flags: u32) {
     let o = c * SS;
-    for (var j = 0u; j < 12u; j++) { sides_rw[o + 2u * j] = v[j].x; sides_rw[o + 2u * j + 1u] = v[j].y; }
-    sides_rw[o + 24u] = flags;
+    for (var j = 0u; j < 14u; j++) { sides_rw[o + 2u * j] = v[j].x; sides_rw[o + 2u * j + 1u] = v[j].y; }
+    sides_rw[o + 28u] = flags;
 }
 
 @compute @workgroup_size(64)
@@ -578,7 +578,8 @@ fn sides_main(@builtin(global_invocation_id) id: vec3<u32>) {
     var over = I(0u, 0u);
     if (lt(fits, gm)) { over = sub(gm, fits); }
     let half = muli(k, 2 * C_CELL_MM);
-    put_side(c, array<I, 12>(t, t_cond, t_skin, gas_ml, half, over, flame_t, flame_heat, flame_fill, fuel_g, reached, water_g),
+    let cap_cond = select(core_capacity(x, s), gas_capacity(x), !wet && perm);
+    put_side(c, array<I, 14>(t, t_cond, t_skin, gas_ml, half, over, flame_t, flame_heat, flame_fill, fuel_g, reached, water_g, cap_cond, skin_capacity(x, s)),
         select(0u, 1u, perm) | select(0u, 2u, wet));
 }
 

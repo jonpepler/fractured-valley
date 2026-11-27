@@ -239,6 +239,7 @@ fn isqrt(v: I) -> I {
 struct Side {
     t: I, t_cond: I, t_skin: I, gas_ml: I, half: I, excess: I, flame_t: I,
     flame_heat: I, flame_fill: I, fuel_g: I, reached: I, water_g: I,
+    cap_cond: I, cap_skin: I,
     permeable: bool, wet: bool,
 }
 fn gas_mass(c: u32) -> I { var m = I(0u, 0u); for (var k = 0u; k < 7u; k++) { m = add(m, gas(c, k)); } return m; }
@@ -250,6 +251,15 @@ fn carried(k: u32, m: I, t: I) -> I {
     var e = mul_div_1e6(muli(m, C_GAS_SH[k]), t);
     if (k == C_VAPOUR) { e = add(e, muli(m, C_LATENT)); }
     return e;
+}
+// transport::conducted: the linear g·ΔT·dt taken implicitly between two
+// stores of heat capacity ca and cb (nJ/K), each face on a sixth of each.
+fn conducted(linear: I, g: I, ca: I, cb: I) -> I {
+    if (!gt0(ca) || !gt0(cb)) { return I(0u, 0u); }
+    let one = I(0u, 1u);
+    let gdt = muli(g, 6 * C_TICK);
+    let x = add(mul_div(gdt, one, ca), mul_div(gdt, one, cb));
+    return mul_div(linear, one, add(one, x));
 }
 // conductance × ΔT × tick, µJ.
 fn heat(g: I, dt: I) -> I { return mul_div(mul_div(g, dt, i_(1000)), i_(C_TICK), i_(1000)); }
@@ -292,7 +302,9 @@ fn diffuse_face(lo: u32, a: Side, hi: u32, b: Side, speed: I, axis: u32) -> Flux
         if (!a.permeable) { ta = a.t_skin; }
         if (!b.permeable) { tb = b.t_skin; }
     }
-    f.energy = heat(narrow(g), sub(ta, tb));
+    let ca = select(a.cap_cond, a.cap_skin, f.film && !a.permeable);
+    let cb = select(b.cap_cond, b.cap_skin, f.film && !b.permeable);
+    f.energy = conducted(heat(narrow(g), sub(ta, tb)), narrow(g), ca, cb);
 
     let both_gas = gt0(a.gas_ml) && gt0(b.gas_ml);
     if (both_gas) {

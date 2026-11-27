@@ -7,7 +7,7 @@ fn ldc(o: u32) -> I { return I(cells[o], cells[o + 1u]); }
 //   flame_heat, flame_fill, fuel_g, reached, water_g, then flags (1 permeable, 2 wet).
 // A flux (stride 21): energy, carried, gas[7], flame, then flags (1 present, 2 film).
 const CS: u32 = 20u;
-const SS: u32 = 25u;
+const SS: u32 = 29u;
 const FS: u32 = 21u;
 const ENERGY: u32 = 14u;
 const SOLID_E: u32 = 16u;
@@ -46,7 +46,8 @@ fn side(i: u32) -> Side {
     s.t = lds(o); s.t_cond = lds(o + 2u); s.t_skin = lds(o + 4u); s.gas_ml = lds(o + 6u);
     s.half = lds(o + 8u); s.excess = lds(o + 10u); s.flame_t = lds(o + 12u); s.flame_heat = lds(o + 14u);
     s.flame_fill = lds(o + 16u); s.fuel_g = lds(o + 18u); s.reached = lds(o + 20u); s.water_g = lds(o + 22u);
-    let f = sides[o + 24u];
+    s.cap_cond = lds(o + 24u); s.cap_skin = lds(o + 26u);
+    let f = sides[o + 28u];
     s.permeable = (f & 1u) != 0u; s.wet = (f & 2u) != 0u;
     return s;
 }

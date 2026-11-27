@@ -36,7 +36,7 @@ struct Params {
 
 const OUT: u32 = 0xffffffffu;
 const NONE: u32 = 0xfffffffeu;
-const SS: u32 = 25u;
+const SS: u32 = 29u;
 
 fn ambient() -> I { return I(P.ambient_lo, P.ambient_hi); }
 fn st(o: u32) -> I { return I(state[o], state[o + 1u]); }
@@ -77,7 +77,8 @@ fn side(c: u32) -> Side {
         s.t = tsd(o); s.t_cond = tsd(o + 2u); s.t_skin = tsd(o + 4u); s.gas_ml = tsd(o + 6u);
         s.half = tsd(o + 8u); s.excess = tsd(o + 10u); s.flame_t = tsd(o + 12u); s.flame_heat = tsd(o + 14u);
         s.flame_fill = tsd(o + 16u); s.fuel_g = tsd(o + 18u); s.reached = tsd(o + 20u); s.water_g = tsd(o + 22u);
-        let f = table[o + 24u];
+        s.cap_cond = tsd(o + 24u); s.cap_skin = tsd(o + 26u);
+        let f = table[o + 28u];
         s.permeable = (f & 1u) != 0u; s.wet = (f & 2u) != 0u;
         return s;
     }
@@ -85,7 +86,8 @@ fn side(c: u32) -> Side {
     s.t = lsd(o); s.t_cond = lsd(o + 2u); s.t_skin = lsd(o + 4u); s.gas_ml = lsd(o + 6u);
     s.half = lsd(o + 8u); s.excess = lsd(o + 10u); s.flame_t = lsd(o + 12u); s.flame_heat = lsd(o + 14u);
     s.flame_fill = lsd(o + 16u); s.fuel_g = lsd(o + 18u); s.reached = lsd(o + 20u); s.water_g = lsd(o + 22u);
-    let f = sides_rw[o + 24u];
+    s.cap_cond = lsd(o + 24u); s.cap_skin = lsd(o + 26u);
+    let f = sides_rw[o + 28u];
     s.permeable = (f & 1u) != 0u; s.wet = (f & 2u) != 0u;
     return s;
 }
@@ -534,7 +536,7 @@ fn temp_of(c: u32) -> I {
     return I(limits[2u * c], limits[2u * c + 1u]);
 }
 fn total_of(c: u32) -> I { return I(faces[2u * c], faces[2u * c + 1u]); }
-fn permeable_of(c: u32) -> bool { return (sides_rw[c * SS + 24u] & 1u) != 0u; }
+fn permeable_of(c: u32) -> bool { return (sides_rw[c * SS + 28u] & 1u) != 0u; }
 
 @compute @workgroup_size(64)
 fn carry_prepare(@builtin(global_invocation_id) id: vec3<u32>) {
