@@ -3,8 +3,9 @@
 //! recommendations (8.6) made the definition:
 //!
 //! - **Fixed point is the reference.** Per think, the gain is one multiplier per (link type,
-//!   target's gain tags) and sign of felt valence ([`Gain`]); the flow is one multiply-shift, with
-//!   one division per sender. Integer only and deterministic by definition.
+//!   target's gain tags) and sign of felt valence ([`Gain`]); the flow is a multiply-shift plus
+//!   a division by a constant (which compilers turn into a multiply), with one variable division
+//!   per sender. Integer only and deterministic by definition.
 //! - **Ties are broken by each node's stable key**, never by its array index, so renumbering or
 //!   compacting a mind cannot change what it thinks.
 //! - **Activation is swap-in state.** [`Activation`] is dense scratch used only while a mind is

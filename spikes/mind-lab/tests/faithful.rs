@@ -91,7 +91,12 @@ fn each_new_choice_alone_how_far_it_moves_the_fox() {
             let (o, mut n) = mk();
             apply(&mut n, c);
             let r = compare(o, n, ticks);
-            println!("  {name:28}: {}", match r { None => format!("identical over {ticks} ticks"), Some((t, _)) => format!("first differs at tick {t}") });
+            let (mut o, mut n) = mk();
+            apply(&mut n, c);
+            let (mut same, mut first) = (0, None);
+            for t in 0..ticks { if act_old(o.step()) == act_new(n.step()) { same += 1; } else if first.is_none() { first = Some(t); } }
+            println!("  {name:28}: full state {}; same action on {same} of {ticks} ticks, first different action {first:?}",
+                match r { None => format!("identical over {ticks} ticks"), Some((t, _)) => format!("first differs at tick {t}") });
         }
     }
 }

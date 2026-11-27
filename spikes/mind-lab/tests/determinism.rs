@@ -7,8 +7,9 @@ use fv_mind_lab::fox::scenarios::{self, DAY, SEED};
 use fv_mind_lab::hashes::{pack, runs};
 use fv_mind_lab::rng::hash;
 
-/// Pinned: if behaviour changes, these move (and the change must be explained).
-const PINNED: [u64; 6] = [0x774c_db89_8d51_570e, 0xe1f8_51b7_0348_c0a9, 0xf984_def7_c489_56c0, 0xfeff_d817_59d5_4707, 0x8605_a6ff_f89f_1056, 0xcfcb_a766_bfc0_98ed];
+/// Pinned: if behaviour changes, these move (and the change must be explained). Moved once
+/// after review: the hash now covers settings, and temperament links are stored in steps of 4.
+const PINNED: [u64; 6] = [0x95a7_970d_7038_9ad3, 0xf650_5fac_abd9_7e96, 0x7aee_81c0_ee1f_24af, 0xa4e2_4034_c072_aade, 0x46b5_8ace_81a1_3728, 0xabe0_07f9_42f0_8d29];
 
 #[test]
 fn identical_runs_give_identical_pinned_hashes() {

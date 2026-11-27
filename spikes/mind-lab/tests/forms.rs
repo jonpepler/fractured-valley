@@ -192,3 +192,39 @@ fn many_minds_share_one_base() {
     println!("{differ} of 100 differ from the base at birth (their temperament's anger links)");
     let _ = Action::Stay;
 }
+
+/// Reviewer finding 1: recompiling a mind's overlay into a base of its own must keep every link
+/// (including an added duplicate of a base link) in its place, with its fast weight.
+#[test]
+fn recompile_keeps_links_and_fast_weights_in_place() {
+    let mut s = scenarios::dog_day(SEED);
+    s.run(200);
+    let m = &mut s.m;
+    let water = m.node("water");
+    let k = m.store.add_link(water, 0, lt::ASSOC, 400, 0);
+    m.store.set_fast(k, 300);
+    let base_dup = m.store.links_vec(water)[0];
+    let kd = m.store.add_link(water, base_dup.to, base_dup.ty, 500, 0); // same (source, target, type) as a base link
+    m.store.set_fast(kd, 77);
+    let before = m.store.expand();
+    let r = m.store.recompile(99);
+    let after = r.expand();
+    assert_eq!(before.targets, after.targets);
+    assert_eq!(before.ltype, after.ltype);
+    assert_eq!(before.fast, after.fast, "fast weights stay on their links");
+    assert_eq!(before.offsets, after.offsets);
+    let worst = before.slow.iter().zip(&after.slow).map(|(a, b)| (a - b).abs()).max().unwrap();
+    println!("recompiled: {} links kept in place; slow weights within {worst} (steps of 4); overlay now empty: {}", after.targets.len(), r.ov.slow.is_empty() && r.ov.added.is_empty());
+    assert!(worst <= 2);
+}
+
+#[test]
+#[should_panic(expected = "past the end")]
+fn a_link_key_past_a_nodes_links_is_refused() {
+    let fox = valley_fox();
+    let mut m = fox.mind(Temperament::MEDIUM, 1);
+    let water = m.node("water");
+    let deg = m.store.links_vec(water).len();
+    m.store.add_link(water, 0, lt::ASSOC, 100, 0);
+    m.store.set_slow(link_key(water, deg + 1), 5);
+}

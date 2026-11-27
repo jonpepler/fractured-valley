@@ -108,3 +108,24 @@ fn quiet_days_how_much_routine_enters_long_term_memory() {
     }
     let _ = NIGHT;
 }
+
+/// Ablation for "learning on the compact form": if a mind's own learnt weights were stored in
+/// steps of 4 like the base (increments truncated), what would consolidation lose?
+#[test]
+fn overlay_in_steps_of_4_what_consolidation_loses() {
+    for steps in [false, true] {
+        let mut s = scenarios::dog_day(7);
+        s.m.cfg.overlay_steps_of_4 = steps;
+        s.run(DAY2);
+        let hh = s.m.node("henhouse");
+        let dg = s.m.store.slow(s.m.link_of(hh, s.m.roles.danger, lt::FEELS).unwrap());
+        let fear = s.m.imagine(&[(hh, 1000)], &Mods::default(), 3).1[s.m.roles.danger as usize];
+        let mut q = scenarios::quiet_days(7, 4);
+        q.m.cfg.overlay_steps_of_4 = steps;
+        let before: i64 = q.m.store.slow_all().iter().map(|&w| w as i64).sum();
+        q.run(4 * DAY);
+        let added: i64 = q.m.store.slow_all().iter().map(|&w| w as i64).sum::<i64>() - before;
+        println!("overlay in steps of 4: {steps:5} | bitten fox next morning: henhouse→danger {dg}, danger from henhouse {fear}, chooses {} | four quiet days add {added} to the slow graph",
+            choice(&mut s, 12));
+    }
+}

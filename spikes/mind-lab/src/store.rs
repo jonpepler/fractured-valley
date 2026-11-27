@@ -105,8 +105,9 @@ impl Sparse {
     #[inline] pub fn start(&self, u: u32) -> usize { self.keys.partition_point(|&k| k < (u as u64) << LINK_BITS) }
     pub fn len(&self) -> usize { self.keys.len() }
     pub fn is_empty(&self) -> bool { self.keys.is_empty() }
-    /// Stored as (u32 node, u16 position, i16 value): 8 bytes an entry.
-    pub fn bytes(&self) -> usize { self.keys.len() * 8 }
+    /// As held: a u64 key and an i16 value, 10 bytes an entry (capacity slack not counted;
+    /// a packed (u32, u16, i16) record would be 8).
+    pub fn bytes(&self) -> usize { self.keys.len() * 10 }
 }
 
 // ------------------------------------------------------------------------------------- base
@@ -139,15 +140,22 @@ pub struct BaseLink { pub to: u32, pub ty: u8, pub w: i16, pub lval: i16 }
 
 impl Base {
     /// Compile a founding graph. Weights are quantised (`quant_w`, `quant_v`).
-    pub fn compile(mut b: Builder) -> Base {
-        b.canonical();
+    pub fn compile(mut b: Builder) -> Base { b.canonical(); Self::compile_ordered(b) }
+    /// Compile links in the order given (grouped by source), without sorting or merging them, so
+    /// every link keeps its position (and so its `LinkKey`).
+    pub fn compile_ordered(mut b: Builder) -> Base {
+        b.anchors.sort_by_key(|a| a.0);
+        assert!(b.links.windows(2).all(|w| w[0].0 <= w[1].0), "links must be grouped by source");
         let n = b.len();
         let mut offsets = vec![0u32; n + 1];
         let mut stream = vec![];
         let mut li = 0;
         for u in 0..n as u32 {
             let mut prev = u as i64;
+            let first = li;
             while li < b.links.len() && b.links[li].0 == u {
+                // A link key holds the position in LINK_BITS bits.
+                assert!(li - first < 1 << LINK_BITS, "node {u} has more than {} links", 1u32 << LINK_BITS);
                 let (_, t, ty, w, v) = b.links[li];
                 let gap = t as i64 - prev;
                 prev = t as i64;
@@ -222,10 +230,10 @@ pub struct Overlay {
 }
 impl Overlay {
     /// Bytes as stored (names are debug only): 2 per node of valence, anchors, 8 per sparse
-    /// entry, 5 per own node, 13 per added link.
+    /// entry (as held), 5 per own node, 16 per added link (as held).
     pub fn bytes(&self) -> usize {
         self.val.len() * 2 + self.anchors.len() * std::mem::size_of::<(u32, Anchor)>() + self.slow.bytes() + self.lval.bytes()
-            + self.new_tags.len() * 5 + self.added.len() * 13
+            + self.new_tags.len() * 5 + self.added.len() * std::mem::size_of::<Added>()
     }
 }
 
@@ -240,6 +248,13 @@ impl Runtime {
     pub fn new(base: Arc<Base>) -> Runtime {
         let ov = Overlay { val: base.val.clone(), anchors: base.anchors.clone(), ..Default::default() };
         Runtime { base, ov, fast: Sparse::default() }
+    }
+    /// The index in `ov.added` of link `k` of `u`, which must be one of u's added links.
+    fn added_index(&self, u: u32, k: usize) -> usize {
+        let r = self.added_range(u);
+        let j = k.checked_sub(self.base.degree(u)).expect("not an added link");
+        assert!(j < r.len(), "link key past the end of node {u}'s links");
+        r.start + j
     }
     fn added_range(&self, u: u32) -> std::ops::Range<usize> {
         let s = self.ov.added.partition_point(|a| a.src < u);
@@ -261,15 +276,16 @@ impl Runtime {
         }
         e
     }
-    /// Fold this mind's whole overlay into a new base of its own (a recompile). Lossless only up
-    /// to the base's quantisation; returns the new runtime mind with an empty overlay.
+    /// Fold this mind's whole overlay into a new base of its own (a recompile). Every link keeps
+    /// its position, so fast weights stay on their links. Lossless only up to the base's
+    /// quantisation (weights in steps of 4, link valence in steps of 8).
     pub fn recompile(&self, origin: u64) -> Runtime {
         let ex = self.expand();
         let mut b = Builder::new(origin);
         for u in 0..ex.len() { b.names.push(ex.names[u].clone()); b.val.push(ex.val[u]); b.tags.push(ex.tags[u]); b.keys.push(ex.keys[u]); }
         b.anchors = ex.anchors.clone();
         for u in 0..ex.len() as u32 { for l in ex.range(u) { b.links.push((u, ex.targets[l], ex.ltype[l], ex.slow[l], ex.lval[l])); } }
-        let mut r = Runtime::new(Arc::new(Base::compile(b)));
+        let mut r = Runtime::new(Arc::new(Base::compile_ordered(b)));
         for (k, v) in self.fast.keys.iter().zip(&self.fast.vals) { r.fast.set(*k, Some(*v)); }
         r
     }
@@ -337,21 +353,21 @@ impl Store for Runtime {
         if let Some(b) = self.base.base_link(u, k) {
             return Link { key, to: b.to, ty: b.ty, slow: self.ov.slow.get(key).unwrap_or(b.w), lval: self.ov.lval.get(key).unwrap_or(b.lval), fast };
         }
-        let a = self.ov.added[self.added_range(u).start + k - self.base.degree(u)];
+        let a = self.ov.added[self.added_index(u, k)];
         Link { key, to: a.to, ty: a.ty, slow: a.w, lval: a.lval, fast }
     }
     fn set_slow(&mut self, key: LinkKey, w: i16) {
         let (u, k) = (link_src(key), link_pos(key));
         match self.base.base_link(u, k) {
             Some(b) => self.ov.slow.set(key, if w == b.w { None } else { Some(w) }),
-            None => { let i = self.added_range(u).start + k - self.base.degree(u); self.ov.added[i].w = w; }
+            None => { let i = self.added_index(u, k); self.ov.added[i].w = w; }
         }
     }
     fn set_lval(&mut self, key: LinkKey, v: i16) {
         let (u, k) = (link_src(key), link_pos(key));
         match self.base.base_link(u, k) {
             Some(b) => self.ov.lval.set(key, if v == b.lval { None } else { Some(v) }),
-            None => { let i = self.added_range(u).start + k - self.base.degree(u); self.ov.added[i].lval = v; }
+            None => { let i = self.added_index(u, k); self.ov.added[i].lval = v; }
         }
     }
     fn set_fast(&mut self, key: LinkKey, f: i16) { self.fast.set(key, if f == 0 { None } else { Some(f) }); }
@@ -407,7 +423,11 @@ pub struct Expanded {
 
 impl Expanded {
     #[inline] pub fn range(&self, u: u32) -> std::ops::Range<usize> { self.offsets[u as usize] as usize..self.offsets[u as usize + 1] as usize }
-    #[inline] fn idx(&self, key: LinkKey) -> usize { self.offsets[link_src(key) as usize] as usize + link_pos(key) }
+    #[inline] fn idx(&self, key: LinkKey) -> usize {
+        let r = self.range(link_src(key));
+        assert!(link_pos(key) < r.len(), "link key past the end of its node's links");
+        r.start + link_pos(key)
+    }
     /// Compile back into the runtime form over a species base: whatever differs from the base
     /// goes into the overlay. Panics if this mind isn't built on that base.
     pub fn compile(&self, base: &Arc<Base>) -> Runtime {

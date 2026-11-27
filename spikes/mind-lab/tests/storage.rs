@@ -36,7 +36,8 @@ fn think_ns<F: Form>(f: &F, m: &Mind, n: u32, exact: bool) -> f64 {
     best
 }
 
-/// Minimum over 5 passes of the mean time of `f` on a fresh clone of `m` (clone cost subtracted).
+/// Minimum over 5 passes of the mean time of `f`, each call on its own fresh clone of `m` (the
+/// clones are made before timing; many big clones walked in turn are cache-cold).
 fn on_clone<S: Store>(m: &Mind<S>, reps: u32, f: impl Fn(&mut Mind<S>)) -> f64 {
     let mut best = f64::MAX;
     for _ in 0..5 {
@@ -95,8 +96,7 @@ fn storage_and_cost_at_fox_size_10k_and_100k() {
         let idle_ex = on_clone(&nf.expand(), 200, |c| { c.consolidate(units, false); });
         let replay = on_clone(&nm, 200, |c| { c.consolidate(units, false); });
         let replay_ex = on_clone(&nm.expand(), 200, |c| { c.consolidate(units, false); });
-        println!("|   | idle consolidation at nightfall with its {} episodes: {:.2} µs runtime ({:.2} expanded) |", nm.episodes.len(), (replay - on_clone(&nm, 200, |_| {})).max(0.0) / 1000.0, replay_ex / 1000.0);
-        let clone_rt = on_clone(&nm, 200, |_| {});
+        println!("|   | idle consolidation at nightfall with its {} episodes: {:.2} µs runtime ({:.2} expanded) |", nm.episodes.len(), replay / 1000.0, replay_ex / 1000.0);
         let night = on_clone(&nm, 5, |c| c.sleep());
         let night_ex = on_clone(&nm.expand(), 5, |c| c.sleep());
         // Adding a told fact: one node and four links.
@@ -108,7 +108,7 @@ fn storage_and_cost_at_fox_size_10k_and_100k() {
         let told_ex = on_clone(&mx, 5, |c| { let sp = c.store.add_node("spring", 100, 0, None, 9); for (u, v, ty) in [(water, sp, lt::ASSOC), (sp, water, lt::KIND), (sp, stream, lt::AT), (stream, sp, lt::HOLDS)] { c.store.add_link(u, v, ty, 400, 0); } });
         let bites = s.w.log.iter().filter(|l| l.1.contains("bites")).count();
         println!("|   | {n} nodes: generated knowledge is {}‰ of the workspace; bitten {bites}; {} episodes replayed; overlay {} reweights, {} valence changes |", gen_in_ws * 1000 / ws_n.max(1), s.m.consol.replays, s.m.store.ov.slow.len(), s.m.store.ov.lval.len());
-        perf.push((n, build_ms, step_rt / steps, step_ex / steps, tick_max, th_rt, th_ex, (idle - clone_rt).max(0.0), (idle_ex - clone_rt).max(0.0), night, night_ex, backlog, told_rt, told_ex, th_old));
+        perf.push((n, build_ms, step_rt / steps, step_ex / steps, tick_max, th_rt, th_ex, idle, idle_ex, night, night_ex, backlog, told_rt, told_ex, th_old));
     }
     println!();
     println!("| nodes | base build ms | µs per tick, runtime (expanded) | slowest tick µs | µs per think, runtime (expanded) [expanded, old exact arithmetic] | µs per idle consolidation of fast weights (expanded) | µs per night's sleep (expanded) | backlog at nightfall | µs to add a told fact, runtime (expanded) |");

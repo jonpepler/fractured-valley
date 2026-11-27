@@ -272,6 +272,8 @@ impl<S: Store> Hash for Mind<S> {
         self.temperament.hash(h); self.store.hash_into(h); self.st.hash(h); self.mods.hash(h);
         self.expect.hash(h); self.episodes.hash(h); self.goal.hash(h); self.flee_left.hash(h); self.flee_from.hash(h); self.prev_pain.hash(h);
         self.consol.hash(h); self.puzzle.hash(h); self.search_wp.hash(h); self.search_n.hash(h); self.napping.hash(h); self.volatility.hash(h);
+        // Settings too: two minds that would behave differently next tick must not hash alike.
+        self.cfg.hash(h); self.params.hash(h); self.learn.hash(h); self.skip_sleep.hash(h); self.pin_arousal.hash(h); self.pin_mood.hash(h); self.idle_consolidation.hash(h);
     }
 }
 
@@ -287,9 +289,9 @@ impl Mind<Runtime> {
         let mut store = Runtime::new(sp.base.clone());
         for (u, v, ty, w) in (sp.temperament)(&sp.roles, &temperament) {
             let k = store.find(u, v, ty).expect("temperament link in the base");
-            // The base holds this link in steps of 4; an individual differs only if its own
-            // weight would be stored differently.
-            if crate::store::quant_w(w as i16) != store.slow(k) { store.set_slow(k, w as i16); }
+            // Founding knowledge is held at the base's precision (steps of 4), so an individual's
+            // temperament links are stored the same way; it differs only where that differs.
+            store.set_slow(k, crate::store::quant_w(w as i16));
         }
         Mind::with_store(sp, store, temperament, who)
     }
@@ -333,7 +335,10 @@ impl<S: Store> Mind<S> {
         let b = self.store.bytes();
         let ep: usize = self.episodes.iter().map(|e| 20 + e.ws.len() * 8).sum();
         let state = self.st.bytes() + self.expect.iter().map(|e| e.len() * 2).sum::<usize>() + ep + self.volatility.len() * 2
-            + std::mem::size_of::<Mods>() + 64 + self.place_nodes.len() * 4 + self.entity_nodes.len() * 9;
+            + std::mem::size_of::<Mods>() + 64 + self.place_nodes.len() * 4 + self.entity_nodes.len() * 9
+            // The last tick's report, kept for traces (could be dropped outside debugging).
+            + std::mem::size_of::<Report>() + self.last.ws.len() * 4 + self.last.percepts.len() * std::mem::size_of::<Percept>()
+            + self.last.inject.len() * 8 + self.last.scores.len() * 12 + self.last.why.len() + self.last.absent.len() * 16;
         (b.shared, b.own, b.fast, state)
     }
 
