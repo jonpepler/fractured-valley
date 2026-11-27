@@ -591,3 +591,25 @@ fn a_gas_burner_holds_its_flame_and_its_plume_is_as_hot_as_mccaffrey_measured() 
     }
     assert!(checked > 0);
 }
+
+// ── nothing goes negative in a burning valley ──────────────────────────────
+
+#[test]
+fn a_fire_in_the_valley_never_drives_a_store_negative() {
+    // The speed session's golden valley (seed 5, 32³, lit for 40 ticks).
+    // Before 27 Nov a grass cell's gas beside soil went below absolute zero
+    // by tick 106: flame contact drew on the heat its flame was forecast to
+    // release, which then fell short. The books balanced throughout, so only
+    // this bound shows it.
+    let v = fv_core::scene::valley(5, 32, 32, 60);
+    let (cx, cy) = (v.crib.0.min(28), v.crib.1.min(28));
+    let gz = v.ground_at(cx, cy) as u16 + 1;
+    let mut sim = Sim::new(v.world, Sky::afternoon());
+    for t in 0..40 { sim.schedule(Scheduled { tick: t, peer: 0, seq: 0, command: Command::Heat { x: cx as u16, y: cy as u16, z: gz, energy: joules(250) } }) }
+    for tick in 1..=300 {
+        sim.step();
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative at tick {tick}");
+        assert_eq!(sim.energy_gap(), 0);
+        assert_eq!(sim.mass_gap(), 0);
+    }
+}

@@ -169,11 +169,12 @@ pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool)
     let release = if pilot && gas_ml > 0 { crate::chem::flame_release(c, subs, true).0 } else { 0 };
     let flame_fill = (release as i128 * 1_000 / (FLAME_UJ_PER_ML as i128 * gas_ml.max(1) as i128)).min(1_000) as i64;
     // What a flame can give the faces around it: its gas's heat above the
-    // surroundings, and the heat it releases this tick (a flame against a
-    // wall gives the wall part of its own heat, not just the gas's), a
-    // sixth through each face.
+    // surroundings, a sixth through each face. Not the heat it is forecast
+    // to release this tick: that forecast is made before the gas mixes and
+    // moves, and drawing on a release that then fell short drove a grass
+    // cell's gas below absolute zero (valley scene, beside soil).
     let excess = ((c.energy - c.latent()).0 - (c.gas_capacity() * ambient).0).max(0);
-    let flame_heat = if flaming || flame_fill > 0 { Energy((excess + release) / 6) } else { Energy::ZERO };
+    let flame_heat = if flaming || flame_fill > 0 { Energy(excess / 6) } else { Energy::ZERO };
     let sigma = s.surface_per_volume;
     let fuel_g = if volatile && sigma > 0 {
         let area = if c.permeable(subs) { c.inner_surface_mm2(subs) } else { FACE_MM2 };
