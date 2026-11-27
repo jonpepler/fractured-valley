@@ -226,6 +226,19 @@ fn build() -> Tables {
     }
 }
 
+impl Tables {
+    /// Water vapour that saturates air at `t` (µg/L), read between the
+    /// whole kelvin of the table: saturation climbs ~6 % a kelvin, more
+    /// than a humid night's dew-point depression, so it is interpolated.
+    pub fn saturated_at(&self, t: crate::units::Temperature) -> i64 {
+        let k = k_index(t.0);
+        let lo = self.saturated_ug_per_l[k];
+        let hi = self.saturated_ug_per_l[(k + 1).min(MAX_K)];
+        let frac = (t.0 - k as i64 * 1_000).clamp(0, 1_000);
+        lo + ((hi - lo) as i128 * frac as i128 / 1_000) as i64
+    }
+}
+
 /// Table index for a temperature in millikelvin.
 #[inline]
 pub fn k_index(t_mk: i64) -> usize { (t_mk / 1_000).clamp(0, MAX_K as i64) as usize }

@@ -49,7 +49,9 @@ fn at_night_a_fire_lights_only_what_is_near_it() {
         near += lit(13, 15) + lit(19, 16) + lit(16, 13);
         far += lit(1, 1) + lit(30, 30) + lit(1, 30);
     }
-    assert_eq!(sim.books.radiation_in, 0, "nothing came in from the sky");
+    // A clear night sky still sends its heat radiation (infrared, booked as
+    // coming in), but no light: what lights the ground is the fire's.
+    assert!(sim.books.radiation_in > 0, "the night sky's heat radiation came in");
     assert!(near > 0, "the fire's own light reached the ground beside it");
     assert!(near > 20 * far.max(1), "and much less of it reached far corners ({near} near, {far} far)");
 }

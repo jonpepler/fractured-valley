@@ -51,7 +51,7 @@
 
 use crate::rad::{absorb_table, band_albedo, drop_albedo, emitters, exposed, settle, soot_kappa, Light, Sky, IONISING, IR, ONE};
 use crate::substance::*;
-use crate::tables::tables;
+use crate::tables::{k_index, tables};
 use crate::units::*;
 use crate::world::{World, TICK};
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering::Relaxed};
@@ -647,6 +647,53 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
         { use rayon::prelude::*; out_total += beams.par_iter().map(|&(p, f, e)| beam(&g, p, sky.sun_dir, f, e, c)).sum::<i64>(); }
         #[cfg(not(feature = "parallel"))]
         { out_total += beams.iter().map(|&(p, f, e)| beam(&g, p, sky.sun_dir, f, e, c)).sum::<i64>(); }
+    }
+
+    // The sky's own heat radiation, diffuse from the top, and the
+    // surroundings' (at the air's temperature) through the box's sides.
+    {
+        let t_sky = crate::rad::sky_temperature(sky, w.ambient);
+        let ir_top = (Power(tables().sigma_t4[k_index(t_sky.0)] * FACE_MM2 / 1_000_000) * TICK).0;
+        let ir_land = (Power(tables().sigma_t4[k_index(w.ambient.0)] * FACE_MM2 / 1_000_000) * TICK).0;
+        // Through open air a side face sees half sky beyond, half land
+        // beyond (at the air's temperature); a solid face, the land.
+        let ir_air = (ir_top + ir_land) / 2;
+        for y in 0..g.dims[1] { for x in 0..g.dims[0] {
+            let l = (top * g.dims[1] + y) * g.dims[0] + x;
+            in_total += ir_top;
+            if g.opaque[l] { caught.hit(IR, l, face(2, 1), ir_top) } else { src.add_face(IR, l, face(2, -1), ir_top) }
+        }}
+        for axis in 0..2 {
+            let other = 1 - axis;
+            for (edge, out) in [(0, -1i64), (g.dims[axis] - 1, 1)] {
+                for z in 0..g.dims[2] { for o in 0..g.dims[other] {
+                    let mut p = [0usize; 3];
+                    p[axis] = edge; p[other] = o; p[2] = z;
+                    let l = (p[2] * g.dims[1] + p[1]) * g.dims[0] + p[0];
+                    if g.opaque[l] { in_total += ir_land; caught.hit(IR, l, face(axis, out), ir_land) } else { in_total += ir_air; src.add_face(IR, l, face(axis, -out), ir_air) }
+                }}
+            }
+        }
+        // Moonlight as rays, like the sun (a few µJ a column, rounded by chance).
+        if sky.moon_uw_m2 > 0 {
+            let cos_z = (-sky.moon_dir[2]).max(0) as i128;
+            let nj = sky.moon_uw_m2 as i128 * FACE_MM2 as i128 * cos_z / ONE as i128 * TICK.0 as i128 / 1_000_000;
+            let weight: [i128; 4] = core::array::from_fn(|b| Fraction(tables().bands[5_778][b]).of(1_000_000) as i128 * crate::rad::MOON_REFLECTANCE[b] as i128);
+            let sum: i128 = weight.iter().sum();
+            let mut moon_beams: Vec<([i64; 3], usize, [i64; 4])> = Vec::new();
+            for y in 0..g.dims[1] { for x in 0..g.dims[0] {
+                let h = crate::rng::hash(w.seed, w.tick, (y * g.dims[0] + x) as u64, 0x400);
+                let e: [i64; 4] = core::array::from_fn(|b| {
+                    let part = nj * weight[b] / sum.max(1);
+                    (part / 1_000) as i64 + i64::from(((h >> (b * 16)) & 0xffff) as i128 * 1_000 / 65_536 < part % 1_000)
+                });
+                if e.iter().all(|&v| v == 0) { continue }
+                in_total += e.iter().sum::<i64>();
+                moon_beams.push(([x as i64 * ONE + ONE / 2, y as i64 * ONE + ONE / 2, g.dims[2] as i64 * ONE - 1], face(2, 1), e));
+            }}
+            let c: &Caught = caught;
+            out_total += moon_beams.iter().map(|&(p, f, e)| beam(&g, p, sky.moon_dir, f, e, c)).sum::<i64>();
+        }
     }
 
     mark("sky");

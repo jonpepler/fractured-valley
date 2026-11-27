@@ -230,6 +230,18 @@ fn evaporate(c: &mut Cell, subs: &[Substance], dm: Mass, ts: Temperature) {
     c.energy += e;
 }
 
+/// Vapour condenses onto the surface (dew): it leaves the gas with its heat
+/// as steam at the gas's temperature and its latent heat, both of which go
+/// into the surface's store, so the gas keeps its temperature.
+fn condense(c: &mut Cell, subs: &[Substance], dm: Mass) {
+    if dm.0 <= 0 { return }
+    let e = (dm * GAS_SPECIFIC_HEAT[Gas::Vapour as usize]) * c.gas_temperature() + dm * LATENT_HEAT_VAPOUR;
+    c.gas[Gas::Vapour as usize] -= dm;
+    c.water += dm;
+    c.energy -= e;
+    *c.surface_store(subs) += e;
+}
+
 /// Burnable gas a cell's solid gives off this tick, at its surface's
 /// temperature, within the two measured caps (see `react_cell`).
 pub fn pyrolysis_rate(c: &Cell, subs: &[Substance], t: &Tables) -> Mass {
@@ -348,7 +360,7 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     // Below boiling, water evaporates while the vapour the wet surface holds
     // (at the surface's own temperature) is more than the air around it
     // already has; faster for fine fuel (more surface).
-    let sat = t.saturated_ug_per_l[k_index(ts.0)].saturating_mul(ml) / 1_000;
+    let sat = t.saturated_at(ts).saturating_mul(ml) / 1_000;
     // (At or above boiling, the boiling step above has already done this.)
     if c.water.0 > 0 && ts < BOIL && c.gas[vap].0 < sat {
         let room = sat - c.gas[vap].0;
@@ -361,13 +373,28 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
             // holds short of saturation at the water's temperature (Dalton's
             // law, E = h_m·(ρ_sat(T_water) − ρ_air)). Warm water holds more
             // vapour at its surface, so sunlight and heat speed it up.
-            let air = c.gas[vap].0 as i128 * CELL_VOLUME_ML as i128 / ml as i128; // µg/L
-            let sat_l = t.saturated_ug_per_l[k_index(ts.0)] as i128;
+            let air = c.gas[vap].0 as i128 * 1_000 / ml as i128; // µg/L
+            let sat_l = t.saturated_at(ts) as i128;
             Mass((((sat_l - air).max(0) * water_swept_ul(wind) as i128 + 500_000) / 1_000_000) as i64).min(Mass(room))
         } else {
             Mass((room as i128 * speed as i128 / (FINE_SIGMA as i128 * 4)) as i64)
         }.min(held).min(c.water);
         evaporate(&mut c, subs, dm, ts);
+    } else if ts < BOIL && c.gas[vap].0 > sat && (c.open_water() || c.solid_mass().0 > 0) {
+        // Dew, the same law run backwards: a surface colder than the air's
+        // dew point (on a clear night, grass blades chilled by radiating to
+        // the cold sky) holds less vapour than the air brings, and the rest
+        // condenses on it, giving up its latent heat there.
+        let excess = c.gas[vap].0 - sat;
+        let speed = s.surface_per_volume.min(FINE_SIGMA).max(1);
+        let dm = if c.open_water() {
+            let air = c.gas[vap].0 as i128 * 1_000 / ml as i128;
+            let sat_l = t.saturated_at(ts) as i128;
+            Mass((((air - sat_l).max(0) * water_swept_ul(wind) as i128 + 500_000) / 1_000_000) as i64)
+        } else {
+            Mass((excess as i128 * speed as i128 / (FINE_SIGMA as i128 * 4)) as i64)
+        }.min(Mass(excess));
+        condense(&mut c, subs, dm);
     }
     // Open water that has all gone leaves its last heat in the air.
     if c.substance == NONE && c.water.0 == 0 && c.solid_mass().0 == 0 && c.solid_energy.0 != 0 {
@@ -376,8 +403,11 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     }
     // Vapour beyond what the air holds condenses into drops (mist, white
     // smoke); drops in unsaturated air evaporate. Both stay in the gas.
-    let sat = t.saturated_ug_per_l[k_index(c.gas_temperature().0)].saturating_mul(ml) / 1_000;
-    if c.gas[vap].0 > sat {
+    // Among surfaces no warmer than the air (grass blades at night), the
+    // vapour condenses on them first, as dew (above), and no mist forms.
+    let sat = t.saturated_at(c.gas_temperature()).saturating_mul(ml) / 1_000;
+    let surface_takes = (c.open_water() || c.solid_mass().0 > 0) && ts <= c.gas_temperature();
+    if c.gas[vap].0 > sat && !surface_takes {
         let dm = Mass((c.gas[vap].0 - sat) / 2);
         c.gas[vap] -= dm;
         c.gas[drops] += dm;

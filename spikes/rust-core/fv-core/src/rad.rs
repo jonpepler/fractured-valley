@@ -62,16 +62,55 @@ pub struct Sky {
     pub sun_dir: [i64; 3],
     /// Diffuse skylight on a flat surface, W/m².
     pub sky_w_m2: i64,
+    /// Direct moonlight on a surface facing the moon, µW/m² (0: no moon).
+    pub moon_uw_m2: i64,
+    /// Direction the moonlight travels (Q16 unit vector).
+    pub moon_dir: [i64; 3],
+    /// A clear sky sends down the heat radiation of a sky much colder than
+    /// the air ([`sky_temperature`]); an overcast one, of cloud at about
+    /// the air's temperature.
+    pub clear: bool,
+}
+
+fn unit_q16(d: [f64; 3]) -> [i64; 3] {
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    d.map(|v| (v / n * ONE as f64) as i64)
 }
 
 impl Sky {
-    pub const NIGHT: Sky = Sky { sun_w_m2: 0, sun_dir: [0, 0, -ONE], sky_w_m2: 0 };
+    /// A clear night with no moon: only the sky's heat radiation.
+    pub const NIGHT: Sky = Sky { sun_w_m2: 0, sun_dir: [0, 0, -ONE], sky_w_m2: 0, moon_uw_m2: 0, moon_dir: [0, 0, -ONE], clear: true };
     /// A clear late afternoon: sun ~35° up, from the south-west.
     pub fn afternoon() -> Sky {
-        let d = [0.47f64, 0.58, -0.66];
-        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        Sky { sun_w_m2: 700, sun_dir: d.map(|v| (v / n * ONE as f64) as i64), sky_w_m2: 90 }
+        Sky { sun_w_m2: 700, sun_dir: unit_q16([0.47, 0.58, -0.66]), sky_w_m2: 90, ..Sky::NIGHT }
     }
+    /// A clear night under a full moon ~50° up. The full moon is about
+    /// 14 magnitudes (×4×10⁵) fainter than the sun (apparent magnitudes
+    /// −12.7 and −26.7), so ~3.4 mW/m² above the air, ~2.4 mW/m² through
+    /// it: about 0.25 lux, the measured full-moon illuminance (e.g. Kyba et
+    /// al. 2017, Sci. Rep. 7, 6765). Moonlight is sunlight reflected by the
+    /// moon, slightly redder (see [`MOON_REFLECTANCE`]).
+    pub fn moon() -> Sky {
+        Sky { moon_uw_m2: 2_400, moon_dir: unit_q16([-0.45, -0.35, -0.77]), ..Sky::NIGHT }
+    }
+}
+
+/// The moon's reflectance per band [infrared, red, green, blue], in
+/// thousandths: it rises with wavelength, ~0.08 at 450 nm, ~0.10 at 550 nm,
+/// ~0.12 at 650 nm and more in the near infrared (ROLO lunar model, Kieffer
+/// & Stone 2005, Astron. J. 129, 2887). Only the ratios matter here: they
+/// turn sunlight's colour into moonlight's.
+pub const MOON_REFLECTANCE: [i64; 4] = [160, 120, 100, 80];
+
+/// The sky's effective temperature for heat radiation, for air at
+/// `air`: a clear sky radiates like a black body at T_sky = 0.0552·T^1.5
+/// (Swinbank 1963, Q. J. R. Meteorol. Soc. 89, 339; T in kelvin), about
+/// 18 K below the air at 15 °C; cloud radiates at about the air's
+/// temperature.
+pub fn sky_temperature(sky: &Sky, air: Temperature) -> Temperature {
+    if !sky.clear { return air }
+    let t = air.kelvin_f64();
+    Temperature((0.0552 * t * t.sqrt() * 1_000.0).round() as i64)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -188,12 +227,6 @@ pub(crate) fn exposed(w: &World, x: usize, y: usize, z: usize) -> i64 {
     n
 }
 
-/// σ(T⁴ − T_ambient⁴), µW/m².
-pub(crate) fn net_sigma(t: Temperature, ambient: Temperature) -> i64 {
-    let tab = tables();
-    (tab.sigma_t4[k_index(t.0)] - tab.sigma_t4[k_index(ambient.0)]).max(0)
-}
-
 /// How much of a band a material reflects or scatters (the rest it
 /// absorbs). Infrared follows the material's emissivity, so by Kirchhoff's
 /// law it emits exactly as well as it absorbs: matter that soaked up more
@@ -212,8 +245,9 @@ pub(crate) fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 
 /// `most`: the most it may send this tick (µJ): half the heat its store holds
 /// above the surroundings. A thin hot layer radiating for a whole tick at its
 /// starting temperature could otherwise send more than it has.
-/// `water_top`: open water, sending from its surface upward.
-pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool, pub most: i64, pub soot: bool, pub water_top: bool }
+/// `water`: open water, sending up from its surface (1) or down from its
+/// bottom into its bed (−1); 0 for everything else.
+pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool, pub most: i64, pub soot: bool, pub water: i8 }
 
 /// How open water treats a band: what it reflects of what it meets (the
 /// rest it absorbs). Infrared by its emissivity; visible light it barely
@@ -239,15 +273,16 @@ pub(crate) fn water_tau(c: &Cell, band: usize, z0: i64, dz: i64, len: i64) -> i6
 impl Emitter {
     /// How its emission splits between bands: soot's own spectrum, or grey.
     pub fn shares(&self) -> [u64; 4] { if self.soot { soot_shares(self.t) } else { grey_shares(self.t) } }
-    /// What it sends this tick (µJ) before its albedo: σ(T⁴ − T_ambient⁴)
-    /// over its area, and for soot times κ_P(T)/κ_ref, its Planck-mean κ
-    /// against the 1 per metre per mg/L its area is counted in, so the sum
-    /// over bands is 4V∫κ_λB_λ dλ (scaled to the excess over ambient).
-    pub fn energy(&self, ambient: Temperature) -> i64 {
-        let net = net_sigma(self.t, ambient) as i128;
-        if net <= 0 { return 0 }
-        // Blackbody power over this area (µW): net µW/m² × faces × face area.
-        let mut power = net * self.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000;
+    /// What it sends this tick (µJ) before its albedo: σT⁴ over its area
+    /// (all of it: what comes back from its surroundings, the sky included,
+    /// arrives as radiation too), and for soot times κ_P(T)/κ_ref, its
+    /// Planck-mean κ against the 1 per metre per mg/L its area is counted
+    /// in, so the sum over bands is 4V∫κ_λB_λ dλ.
+    pub fn energy(&self, _ambient: Temperature) -> i64 {
+        let full = tables().sigma_t4[k_index(self.t.0)] as i128;
+        if full <= 0 { return 0 }
+        // Blackbody power over this area (µW): µW/m² × faces × face area.
+        let mut power = full * self.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000;
         if self.soot { power = power * soot_planck_mean(self.t) as i128 >> 32 }
         (Power(power as i64) * TICK).0.min(self.most)
     }
@@ -287,31 +322,38 @@ pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temper
     // (the gas's shared between soot and drops).
     let surface_cap = { let k = c.skin_capacity(subs); if k.0 > 0 { k } else { c.solid_capacity(subs) } };
     let surface_store = if c.skin_capacity(subs).0 > 0 { c.skin } else { c.solid_energy };
-    let solid_most = ((surface_store - surface_cap * ambient).0 / 2).max(0);
-    let gas_most = ((c.energy - c.latent() - c.gas_capacity() * ambient).0 / 4).max(0);
+    let _ = (surface_cap, ambient);
+    let solid_most = (surface_store.0 / 2).max(0);
+    let gas_most = ((c.energy - c.latent()).0 / 4).max(0);
     let one = Fraction::ONE.0 as i128;
     let solid_albedo = [0, 1, 2, 3].map(|b| band_albedo(s, b));
     if c.opaque(subs) {
-        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water_top: false }];
+        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water: 0 }];
     }
     let cap = 6 * ONE as i128;
     let share = c.solid_share(subs).0 as i128;
     let mut out = Vec::new();
     if c.open_water() {
-        // Open water radiates from its surface: the cell's floor area, one face.
-        out.push(Emitter { area_q16: ONE as i128, t: c.surface_temperature(subs), albedo: [0, 1, 2, 3].map(water_albedo), from_gas: false, most: solid_most, soot: false, water_top: true });
+        // Open water radiates from its surface (the cell's floor area, one
+        // face) and, as any layer does, from its bottom into the bed it lies
+        // on, which radiates back into it: the two nearly cancel at the same
+        // temperature, and contact carries the rest.
+        let albedo = [0, 1, 2, 3].map(water_albedo);
+        let t = c.surface_temperature(subs);
+        out.push(Emitter { area_q16: ONE as i128, t, albedo, from_gas: false, most: solid_most / 2, soot: false, water: 1 });
+        out.push(Emitter { area_q16: ONE as i128, t, albedo, from_gas: false, most: solid_most / 2, soot: false, water: -1 });
     } else if c.has_solid() {
         // 4κV = σ·share·L³ = σ·share·L faces (L in m: 0.1 at 10 cm).
-        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 * CELL_MM as i128 / 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water_top: false });
+        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 * CELL_MM as i128 / 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water: 0 });
     }
     let tg = c.gas_temperature();
     // Soot: 4κV = 4 × (1 per m per mg/L) × mg/V × V = 0.004 m² per mg,
     // whatever the cell: 0.4 faces of 0.01 m² per mg = µg/2500 at 10 cm.
     let soot = c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / (2_500 * FACE_MM2 as i128 / 10_000);
-    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most, soot: true, water_top: false }) }
+    if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most, soot: true, water: 0 }) }
     // Drops: 4 × 0.15 per m per mg/L: 0.0006 m² per mg = µg/16 667 faces at 10 cm.
     let drops = c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128 / (16_667 * FACE_MM2 as i128 / 10_000);
-    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most, soot: false, water_top: false }) }
+    if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most, soot: false, water: 0 }) }
     out
 }
 
@@ -340,7 +382,7 @@ fn emit(w: &World, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>
     for e in emitters(c, subs, faces, w.ambient) {
         let energy = e.energy(w.ambient);
         if energy <= 0 { continue }
-        let start = if e.water_top { Start::WaterTop(c.water_depth_q16()) } else if opaque && !e.from_gas { Start::Face } else { Start::Volume };
+        let start = if e.water > 0 { Start::WaterTop(c.water_depth_q16()) } else if e.water < 0 { Start::WaterBottom } else if opaque && !e.from_gas { Start::Face } else { Start::Volume };
         let sent = send(w, x, y, z, start, energy, e.most, e.shares(), e.albedo, kelvin(e.t), &mut stream, &mut glow, out);
         if e.from_gas { from_gas += sent } else { from_solid += sent }
     }
@@ -369,6 +411,8 @@ enum Start {
     Face,
     /// From the surface of open water this deep (Q16 of the cell), upward.
     WaterTop(i64),
+    /// From the bottom of open water, downward into its bed.
+    WaterBottom,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -406,6 +450,11 @@ fn send(w: &World, x: usize, y: usize, z: usize, start: Start, energy: i64, budg
                     let mut pos = centre(x, y, z, stream);
                     pos[2] = z as i64 * ONE + h.clamp(0, ONE - 1);
                     (pos, lambert(stream, 2, 1))
+                }
+                Start::WaterBottom => {
+                    let mut pos = centre(x, y, z, stream);
+                    pos[2] = z as i64 * ONE;
+                    (pos, lambert(stream, 2, -1))
                 }
             };
             out.push(Packet { pos, dir, energy: e, band: band as u8, bounces: 0, kelvin, stream: Stream(stream.next()) });
@@ -570,7 +619,6 @@ fn absorb(dep: &Deposits, i: usize, p: &Packet, meets: Meets) {
 /// Sunlight and skylight entering at the top: one packet per band per column
 /// for the sun (fixed direction: no noise), one skylight packet per column.
 fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) -> i64 {
-    if sky.sun_w_m2 == 0 && sky.sky_w_m2 == 0 { return 0 }
     let mut stream = Stream(hash(w.seed, w.tick, (y * w.nx + x) as u64, 0x5ca));
     let top = w.nz as i64 * ONE - 1;
     let pos = [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, top];
@@ -594,7 +642,66 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
         out.push(Packet { pos, dir: d, energy: sky_mj, band: band as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
         total += sky_mj;
     }
+    // Moonlight: sunlight's bands × the moon's reflectance, a few µJ per
+    // column per tick, rounded by chance to whole µJ (fair on average).
+    if sky.moon_uw_m2 > 0 {
+        let cos_z = (-sky.moon_dir[2]).max(0) as i128;
+        let nj = sky.moon_uw_m2 as i128 * FACE_MM2 as i128 * cos_z / ONE as i128 * TICK.0 as i128 / 1_000_000; // nJ per tick
+        let weight: [i128; 4] = core::array::from_fn(|b| Fraction(tables().bands[5_778][b]).of(1_000_000) as i128 * MOON_REFLECTANCE[b] as i128);
+        let sum: i128 = weight.iter().sum();
+        for b in 0..4 {
+            let part = nj * weight[b] / sum.max(1);
+            let e = (part / 1_000) as i64 + i64::from(stream.below(1_000) < (part % 1_000) as u64);
+            if e <= 0 { continue }
+            out.push(Packet { pos, dir: sky.moon_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
+            total += e;
+        }
+    }
+    // The sky's own heat radiation, diffuse, at its effective temperature.
+    let t_sky = sky_temperature(sky, w.ambient);
+    let ir = (Power(tables().sigma_t4[k_index(t_sky.0)] * FACE_MM2 / 1_000_000) * TICK).0;
+    if ir > 0 {
+        let d = lambert(&mut stream, 2, -1);
+        out.push(Packet { pos, dir: d, energy: ir, band: IR as u8, bounces: 0, kelvin: kelvin(t_sky), stream: Stream(stream.next()) });
+        total += ir;
+    }
     total
+}
+
+/// Heat radiation from the surroundings beyond the box's sides, at the air's
+/// temperature (the land around continues at it), onto edge cell (x, y, z)
+/// through its outward side faces. An open cell gets it as packets that
+/// travel in; an opaque cell absorbs its share (its emissivity) at its
+/// face, returned as the second value. Returns (energy sent in as packets,
+/// energy absorbed at faces).
+fn surroundings(w: &World, sky: &Sky, i: usize, x: usize, y: usize, z: usize, out: &mut Vec<Packet>) -> (i64, i64) {
+    let edge_faces: [(usize, i64); 4] = [(0, -1), (0, 1), (1, -1), (1, 1)];
+    let c = &w.cells[i];
+    let opaque = c.opaque(&w.subs);
+    let e_face = (Power(tables().sigma_t4[k_index(w.ambient.0)] * FACE_MM2 / 1_000_000) * TICK).0;
+    let t_sky = sky_temperature(sky, w.ambient);
+    let e_sky = (Power(tables().sigma_t4[k_index(t_sky.0)] * FACE_MM2 / 1_000_000) * TICK).0;
+    let (mut sent, mut absorbed) = (0, 0);
+    let mut stream = Stream(hash(w.seed, w.tick, i as u64, 0x5d6));
+    for (axis, dir) in edge_faces {
+        let p = [x as i64, y as i64][axis] + dir;
+        if p >= 0 && p < [w.nx, w.ny][axis] as i64 { continue }
+        if opaque {
+            let s = &w.subs[c.substance as usize];
+            absorbed += Fraction(Fraction::ONE.0 - band_albedo(s, IR)).of(e_face);
+        } else {
+            let mut pos = centre(x, y, z, &mut stream);
+            pos[axis] = if dir < 0 { [x, y][axis] as i64 * ONE } else { ([x, y][axis] as i64 + 1) * ONE - 1 };
+            // Through open air, what heads down came from the sky beyond
+            // and what heads up from the land beyond (at the air's
+            // temperature): the two halves of a side face's view.
+            let d = lambert(&mut stream, axis, -dir);
+            let (e, k) = if d[2] < 0 { (e_sky, kelvin(t_sky)) } else { (e_face, kelvin(w.ambient)) };
+            out.push(Packet { pos, dir: d, energy: e, band: IR as u8, bounces: 0, kelvin: k, stream: Stream(stream.next()) });
+            sent += e;
+        }
+    }
+    (sent, absorbed)
 }
 
 /// Direct sunlight entering through a side face of the box (an open-air
@@ -635,7 +742,11 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
                 let (x, y, z) = (ox + lx, oy + ly, oz + lz);
                 let i = b * BRICK_CELLS + l;
                 let (from_solid, from_gas, g, local) = emit(wr, i, x, y, z, list);
-                em[l] = [from_solid, from_gas];
+                // The surroundings' heat radiation through the box's sides.
+                let (sent_in, absorbed) = if x == 0 || y == 0 || x == wr.nx - 1 || y == wr.ny - 1 { surroundings(wr, sky, i, x, y, z, list) } else { (0, 0) };
+                *skyin += sent_in + absorbed;
+                // Absorbed at the face: the surface gains it (emission less it).
+                em[l] = [from_solid - absorbed, from_gas];
                 dh[l] = local;
                 glow[l] = g;
                 if z == wr.nz - 1 { *skyin += sky_packets(wr, sky, x, y, list) }

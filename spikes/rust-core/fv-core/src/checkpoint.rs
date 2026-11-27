@@ -12,7 +12,7 @@ use crate::substance::GASES;
 use crate::units::*;
 use crate::world::World;
 
-const MAGIC: &[u8; 4] = b"FVR1";
+const MAGIC: &[u8; 4] = b"FVR2";
 
 struct W(Vec<u8>);
 impl W {
@@ -52,6 +52,9 @@ pub fn export(sim: &Sim) -> Vec<u8> {
     w.i64(sim.sky.sun_w_m2);
     for v in sim.sky.sun_dir { w.i64(v) }
     w.i64(sim.sky.sky_w_m2);
+    w.i64(sim.sky.moon_uw_m2);
+    for v in sim.sky.moon_dir { w.i64(v) }
+    w.u8(sim.sky.clear as u8);
     w.i64(sim.advect_steps);
     for v in sim.flow.wind_mean { w.i64(v) }
     for v in sim.flow.wind { w.i64(v) }
@@ -93,7 +96,7 @@ pub fn import(bytes: &[u8]) -> Sim {
     let ambient = Temperature(r.i64());
     let mut world = World::new(nx, ny, nz, seed, ambient);
     world.tick = tick;
-    let sky = Sky { sun_w_m2: r.i64(), sun_dir: [r.i64(), r.i64(), r.i64()], sky_w_m2: r.i64() };
+    let sky = Sky { sun_w_m2: r.i64(), sun_dir: [r.i64(), r.i64(), r.i64()], sky_w_m2: r.i64(), moon_uw_m2: r.i64(), moon_dir: [r.i64(), r.i64(), r.i64()], clear: r.u8() != 0 };
     let advect_steps = r.i64();
     let mut flow = Flow::new(&world);
     flow.wind_mean = [r.i64(), r.i64()];

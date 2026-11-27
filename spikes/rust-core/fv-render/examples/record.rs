@@ -5,9 +5,8 @@
 //!
 //! Options (all optional):
 //!   --scene S       tree, dead-tree, campfire, grass, post, puddle, puddle-shade, or the valley
-//!   --sky day|night|moon afternoon sun, no light but the fire's, or a faint
-//!                   1 W/m² skylight (night you can see; energetically
-//!                   nothing next to the sun's ~500 W/m²)
+//!   --sky day|night|moon afternoon sun, a clear moonless night, or a clear
+//!                   night under a full moon (~0.25 lux)
 //!   --size N        world is N×N cells (10 cm each), default 64
 //!   --height N      world height in cells, default 64
 //!   --seed N        terrain seed, default 7
@@ -147,7 +146,7 @@ fn build_scene(a: &Args) -> Scene {
             let humid = |c: &mut Cell| {
                 let ml = c.gas_volume_ml(&subs);
                 if ml <= 0 || c.gas_mass().0 == 0 { return }
-                let sat = fv_core::tables::tables().saturated_ug_per_l[fv_core::tables::k_index(t.0)];
+                let sat = fv_core::tables::tables().saturated_at(t);
                 c.gas[Gas::Vapour as usize] = fv_core::units::Mass(sat * 85 / 100 * ml / CELL_VOLUME_ML);
                 c.set_temperature(t, &subs);
             };
@@ -199,7 +198,7 @@ fn build_scene(a: &Args) -> Scene {
 
 fn main() {
     let a = args();
-    let sky = match a.sky.as_str() { "night" => Sky::NIGHT, "moon" => Sky { sky_w_m2: 1, ..Sky::NIGHT }, _ => Sky::afternoon() };
+    let sky = match a.sky.as_str() { "night" => Sky::NIGHT, "moon" => Sky::moon(), _ => Sky::afternoon() };
     std::fs::create_dir_all(&a.out).expect("make output directory");
     let scene = build_scene(&a);
     let base = scene.world.cells.len();

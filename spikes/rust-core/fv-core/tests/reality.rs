@@ -146,7 +146,7 @@ const HUMIDITY_PERCENT: i64 = 85;
 fn humidify(c: &mut Cell, t: Temperature, subs: &[Substance]) {
     let ml = c.gas_volume_ml(subs);
     if ml <= 0 || c.gas_mass().0 == 0 { return }
-    let sat = fv_core::tables::tables().saturated_ug_per_l[fv_core::tables::k_index(t.0)];
+    let sat = fv_core::tables::tables().saturated_at(t);
     c.gas[Gas::Vapour as usize] = Mass(sat * HUMIDITY_PERCENT / 100 * ml / CELL_VOLUME_ML);
     c.set_temperature(t, subs);
 }
@@ -248,7 +248,10 @@ fn a_puddle_dries_in_the_sun_but_barely_in_shade_or_at_night() {
     assert!(sun.1 > 1.0, "the sunlit water warms: {:+.2} K", sun.1);
     for (name, (rate, _)) in [("shade", shade), ("night", night)] {
         assert!((0.67..6.0).contains(&rate), "in {name} only the air dries it (~2 mm/day, ×3): {rate:.2} mm/day");
-        assert!(sun.0 > 2.0 * rate, "the sun dries it clearly faster than {name}: {:.2} against {rate:.2} mm/day", sun.0);
+        // Clearly faster, though not by Penman's full daily ratio: the
+        // sunlit water also loses heat to the cold clear sky (Penman's net
+        // longwave, ~70 W/m²), and over minutes 3–5 it is still warming.
+        assert!(sun.0 > 1.3 * rate, "the sun dries it clearly faster than {name}: {:.2} against {rate:.2} mm/day", sun.0);
     }
 }
 
@@ -379,4 +382,86 @@ fn wind_dries_a_puddle_faster_than_still_air() {
     assert!(still.0 > 0.0, "still air dries it a little");
     // ×2.1 by Penman, ×3 either way, but it must be clearly faster.
     assert!((1.3..6.3).contains(&ratio), "a 2 m/s breeze dries it ×{ratio:.2} as fast as still air (Penman: ×2.1)");
+}
+
+// ── a clear night: the cold sky chills grass, and dew forms ─────────────────
+
+/// Dry grass on soil on a calm night at 15 °C in air at `humidity` percent,
+/// under a clear or overcast sky. Runs `warm` ticks, then `measure` more,
+/// checking the books every tick. Returns (how far the middle blades sit
+/// below the air 1 m above them, K, averaged over the measured ticks; water
+/// gained on them as a depth, mm per hour). The blades start dry, so what
+/// water they gain is dew.
+fn grass_at_night(clear: bool, humidity: i64, warm: u64, measure: u64) -> (f64, f64) {
+    let air = celsius(15);
+    let mut w = World::new(16, 16, 16, 9, air);
+    let subs = w.subs.clone();
+    let sat = fv_core::tables::tables().saturated_at(air);
+    let humid = |c: &mut Cell| {
+        let ml = c.gas_volume_ml(&subs);
+        if ml <= 0 || c.gas_mass().0 == 0 { return }
+        c.gas[Gas::Vapour as usize] = Mass(sat * humidity / 100 * ml / 1_000);
+        c.set_temperature(air, &subs);
+    };
+    let soil = Cell::solid_of(SOIL, 1000, 150, air, &subs);
+    let mut grass = Cell::solid_of(GRASS, 1000, 0, air, &subs);
+    humid(&mut grass);
+    for y in 0..16 { for x in 0..16 { for z in 0..4 { w.set(x, y, z, soil) } w.set(x, y, 4, grass) } }
+    for c in w.cells.iter_mut() { if c.substance == NONE { humid(c) } }
+    let mut outside = w.outside_air;
+    humid(&mut outside);
+    w.outside_air = outside;
+    let mut sim = Sim::new(w, Sky { clear, ..Sky::NIGHT });
+    sim.flow.wind_mean = [0, 0];
+    let middle = 5..11;
+    let screen = 4 + (1_000 / CELL_MM) as usize;
+    let state = |sim: &Sim| -> (i64, f64) {
+        let (mut m, mut chill) = (0i64, 0f64);
+        for y in middle.clone() { for x in middle.clone() {
+            let c = sim.world.get(x, y, 4);
+            m += c.water.0;
+            chill += sim.world.get(x, y, screen).gas_temperature().kelvin_f64() - c.surface_temperature(&sim.world.subs).kelvin_f64();
+        }}
+        (m, chill / 36.0)
+    };
+    let (mut m0, mut chill, mut n) = (0, 0.0, 0.0);
+    for tick in 0..warm + measure {
+        if tick == warm { m0 = state(&sim).0 }
+        sim.step();
+        assert_eq!(sim.energy_gap(), 0, "energy books, tick {tick}");
+        assert_eq!(sim.mass_gap(), 0, "mass books, tick {tick}");
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative, tick {tick}");
+        if tick >= warm { chill += state(&sim).1; n += 1.0 }
+    }
+    let m1 = state(&sim).0;
+    // A depth over the 36 cells' faces: 1 mm over a face is FACE_MM2 mg.
+    let mm = (m1 - m0) as f64 / 1_000.0 / FACE_MM2 as f64 / 36.0;
+    (chill / n, mm / (measure as f64 * 0.05 / 3_600.0))
+}
+
+#[test]
+fn a_clear_night_chills_grass_below_the_air_and_dew_forms() {
+    // A clear sky radiates like a black body ~18 K colder than the air
+    // (Swinbank 1963), so on a calm clear night grass loses heat to it and
+    // sits a few kelvin below the air: ~2–6 K below screen temperature
+    // (Oke, Boundary Layer Climates, 1987, ch. 2; Monteith & Unsworth,
+    // Principles of Environmental Physics). Under cloud it stays near the
+    // air's temperature. Where it chills below the dew point, dew forms: at
+    // most ~0.04–0.07 mm an hour, and rarely more than ~0.5 mm in a night
+    // (Monteith 1957, Q. J. R. Meteorol. Soc. 83, 322). In drier air the
+    // blades stay above the dew point and no dew forms. Over minutes 2–5,
+    // ranges ×3 around the references.
+    let (warm, measure) = (2 * 60 * 20, 3 * 60 * 20);
+    let (clear, dry, cloudy) = std::thread::scope(|s| {
+        let clear = s.spawn(|| grass_at_night(true, 95, warm, measure));
+        let dry = s.spawn(|| grass_at_night(true, 60, warm, measure));
+        let cloudy = s.spawn(|| grass_at_night(false, 95, warm, measure));
+        (clear.join().unwrap(), dry.join().unwrap(), cloudy.join().unwrap())
+    });
+    eprintln!("grass at night: clear & humid {:.2} K below the air, dew {:+.4} mm/h; clear & dry {:.2} K, {:+.4} mm/h; overcast & humid {:.2} K, {:+.4} mm/h",
+              clear.0, clear.1, dry.0, dry.1, cloudy.0, cloudy.1);
+    assert!((0.7..18.0).contains(&clear.0), "a clear sky chills the grass a few kelvin below the air (2–6 K, ×3): {:.2} K", clear.0);
+    assert!(cloudy.0 < clear.0 / 2.0, "cloud keeps it near the air's temperature: {:.2} K against {:.2} K clear", cloudy.0, clear.0);
+    assert!((0.013..0.21).contains(&clear.1), "dew forms on it in humid air (≤ 0.04–0.07 mm/h, ×3): {:+.4} mm/h", clear.1);
+    assert!(dry.1 <= 0.0, "but not in drier air: {:+.4} mm/h", dry.1);
 }
