@@ -371,6 +371,11 @@ fn solve_piece(w: &World, cells: &[[usize; 3]], grounded: &[bool], report: &mut 
                 out[i] = acc;
             }
         };
+        // The dot products below are summed in index order from the same
+        // start as `Iterator::sum` (so the rounding is the same), but inside
+        // the loops that make their terms: the sum is a chain of dependent
+        // additions, and the loop's other work fills the time between them.
+        let zero: f64 = core::iter::empty::<f64>().sum();
         let bvec: Vec<f64> = weight.iter().map(|w| -w).collect();
         let mut x = uz.clone();
         let mut ax = vec![0.0; n];
@@ -386,12 +391,21 @@ fn solve_piece(w: &World, cells: &[[usize; 3]], grounded: &[bool], report: &mut 
         let mut ap = vec![0.0; n];
         for _ in 0..(4 * n + 200) {
             if rr <= bb * 1e-20 { break }
-            apply(&p, &mut ap);
-            let pap: f64 = (0..n).map(|i| p[i] * ap[i]).sum();
+            // ap = A·p and pap = p·ap, together.
+            let mut pap = zero;
+            for i in 0..n {
+                let mut acc = 0.0;
+                let pi = p[i];
+                for l in row[i] as usize..row[i + 1] as usize {
+                    acc += stiff[l] * (pi - p[col[l] as usize]);
+                }
+                ap[i] = acc;
+                pap += pi * acc;
+            }
             if pap <= 0.0 { break }
             let alpha = rr / pap;
-            for i in 0..n { x[i] += alpha * p[i]; r[i] -= alpha * ap[i] }
-            let rr2: f64 = r.iter().map(|v| v * v).sum();
+            let mut rr2 = zero;
+            for i in 0..n { x[i] += alpha * p[i]; r[i] -= alpha * ap[i]; rr2 += r[i] * r[i] }
             let beta = rr2 / rr;
             rr = rr2;
             for i in 0..n { p[i] = r[i] + beta * p[i] }
