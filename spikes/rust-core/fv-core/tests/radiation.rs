@@ -150,8 +150,14 @@ fn a_bigger_fire_burns_hotter_and_brighter() {
     // visible light is its flame's, set by the heat it releases rather than by
     // temperature (soot's spectrum makes flames ~3× brighter in the visible
     // than a grey body would), and only the hot twigs' share grows with heat.
-    // (Since fine fuel catches a few cm at a time, 27 Nov, the lone fire
-    // spreads to its neighbours sooner and the gap is ~4 %.)
+    // (3 %, not 4 %, since fine fuel catches a few cm at a time, 27 Nov:
+    // measured over 5–25 s, the lone fire used to burn a third of its fuel
+    // gas in the unlit twigs beside it (35 kJ there, 70 kJ in its own cell);
+    // gas no longer burns in fuel the front hasn't reached, so it all burns
+    // in the lit cell (79 kJ), which glows 12 % brighter, while the fire lit
+    // all over is unchanged (80 → 82 kJ). Whether a lone tuft's flame should
+    // burn in its unlit neighbours' pores is open with the twig spread, and
+    // allowing it brings grass back to 2.3 m/min; research §24.)
     assert!(big_glow > small_glow * 103 / 100, "glow: {small_glow} µJ alone, {big_glow} µJ in a bigger fire");
     // And the heat stays near the fire: books that balance can still hide
     // energy put in the wrong place, so bound it too.
