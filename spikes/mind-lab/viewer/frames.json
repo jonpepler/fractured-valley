@@ -1,0 +1,15 @@
+[
+  {"file": "dog-and-sleep.html", "t": 2, "h": 1, "name": "dog-and-sleep-1", "label": "Shared mind: hunger spreads to food, the hens and the berries"},
+  {"file": "dog-and-sleep.html", "t": 17, "h": -1, "name": "dog-and-sleep-2", "label": "The dog charges: a prediction error interrupts the thought"},
+  {"file": "dog-and-sleep.html", "t": 18, "h": -1, "name": "dog-and-sleep-3", "label": "Bitten: pain and danger fill the workspace; it flees"},
+  {"file": "dog-and-sleep.html", "t": 304, "h": -1, "name": "dog-and-sleep-4", "label": "The henhouse now feels bad; it turns to the berry bush"},
+  {"file": "dog-and-sleep.html", "t": 78, "h": -1, "name": "dog-and-sleep-5", "label": "Tired from its backlog, it naps at the den and consolidates"},
+  {"file": "dog-and-sleep.html", "t": 18, "h": -1, "name": "dog-and-sleep-6", "label": "It eats at the berry bush"},
+  {"file": "dog-and-sleep.html", "t": 305, "h": -1, "name": "dog-and-sleep-7", "label": "Next morning: no fast weights left, but the henhouse still feels bad"},
+  {"file": "meadow-fire.html", "t": 312, "h": -1, "name": "meadow-fire-1", "label": "Passing the camp: the campfire is expected there, so it is ignored"},
+  {"file": "meadow-fire.html", "t": 326, "h": 0, "name": "meadow-fire-2", "label": "Fire in the meadow: a prediction error of 1000"},
+  {"file": "meadow-fire.html", "t": 326, "h": -1, "name": "meadow-fire-3", "label": "Danger on the mind and a bad thing in sight: it flees in the same tick"},
+  {"file": "home-near.html", "t": 301, "h": 0, "name": "home-near-1", "label": "Waking at the old den: the expected burrow is missing"},
+  {"file": "home-near.html", "t": 304, "h": -1, "name": "home-near-2", "label": "Alarm: the burrow, rest and loss fill the workspace"},
+  {"file": "home-near.html", "t": 320, "h": -1, "name": "home-near-3", "label": "Intrigue: it goes to the new burrow"}
+]

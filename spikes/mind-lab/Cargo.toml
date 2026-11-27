@@ -1,0 +1,15 @@
+[package]
+name = "fv-mind-lab"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: one shared mind library (species base + per-mind overlay) for the mind-lab scenarios"
+
+[dependencies]
+
+[profile.release]
+debug = false
+
+[dev-dependencies]
+# Only for the faithfulness test: the original fox, run side by side with the port.
+fv-thought-graph = { path = "../thought-graph" }
