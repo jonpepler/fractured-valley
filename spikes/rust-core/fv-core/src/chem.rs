@@ -138,9 +138,24 @@ pub fn react_in(world: &mut World, vel: &dyn crate::transport::FaceVelocity) {
                 let (lx, ly, lz) = World::local_xyz(l);
                 wind_over(vel, (ox + lx) as i64, (oy + ly) as i64, (oz + lz) as i64)
             } else { 0 };
-            out[l] = react_cell(c, &w.subs, t, w.ambient, lit[base + l], wind);
+            // Plain air with nothing to react comes through unchanged.
+            out[l] = if inert_air(&c, &w.subs, t) { c } else { react_cell(c, &w.subs, t, w.ambient, lit[base + l], wind) };
         }
     });
+}
+
+/// Whether `react_cell` would leave this cell exactly as it is: air with no
+/// solid, water or leftover solid heat, nothing that burns (fuel gas,
+/// soot), no drops, not lit, and no more vapour than it holds at its
+/// temperature (so no mist forms). Every step of the reaction needs one of
+/// those, so for such a cell they all do nothing, and skipping them gives
+/// the same bits. Most of the box is air like this.
+fn inert_air(c: &Cell, subs: &[Substance], t: &Tables) -> bool {
+    if c.substance != NONE || c.lit || c.solid_mass().0 != 0 || c.water.0 != 0 || c.solid_energy.0 != 0 { return false }
+    if c.gas[Gas::Fuel as usize].0 != 0 || c.gas[Gas::Soot as usize].0 != 0 || c.gas[Gas::Droplets as usize].0 != 0 { return false }
+    let ml = c.gas_volume_ml(subs);
+    if ml <= 0 { return false }
+    c.gas[Gas::Vapour as usize].0 <= t.saturated_at(c.gas_temperature()).saturating_mul(ml) / 1_000
 }
 
 /// Horizontal air speed through a cell, mm/s: the mean of its two faces'
