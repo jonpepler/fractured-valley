@@ -33,9 +33,19 @@ pub fn fade() -> [u16; lt::COUNT] {
 /// Ids of the people's concept nodes (the same in every person's mind: they are the base's).
 #[derive(Clone, Copy, Debug, Hash)]
 pub struct Ids { pub thirst: u32, pub fatigue: u32, pub pain: u32, pub water: u32, pub danger: u32, pub rest: u32, pub anger: u32, pub loss: u32,
-    pub comfort: u32, pub person: u32, pub truth: u32, pub lie: u32, pub mistake: u32, pub debt: u32, pub note: u32, pub landmark: u32, pub dry: u32 }
+    pub comfort: u32, pub person: u32, pub truth: u32, pub lie: u32, pub mistake: u32, pub debt: u32, pub note: u32, pub landmark: u32, pub dry: u32,
+    /// Stage 3: a boar (the kind), the five danger responses and aid, "an ally", "a cry for help".
+    pub boar: u32, pub flee: u32, pub fight: u32, pub call: u32, pub freeze: u32, pub hold: u32, pub aid: u32, pub ally: u32, pub cry: u32 }
 
-pub fn temperament_links(r: &Roles, t: &Temperament) -> Vec<(u32, u32, u8, i32)> { crate::fox::found::temperament_links(r, t) }
+/// The founding links a person's temperament sets: the fox's three (aggression to anger), and
+/// (stage 3) reactivity to keeping still: a reactive person's thought of danger runs more to
+/// freezing (behavioural inhibition, as aggression runs it to anger).
+pub fn temperament_links(r: &Roles, t: &Temperament) -> Vec<(u32, u32, u8, i32)> {
+    let mut v = crate::fox::found::temperament_links(r, t);
+    if let Some(rs) = r.resp { v.push((r.danger, rs.freeze, lt::ASSOC, freeze_weight(t))); }
+    v
+}
+pub fn freeze_weight(t: &Temperament) -> i32 { 50 + t.reactivity * 45 / 100 }
 
 pub struct People { pub species: Species, pub ids: Ids }
 
@@ -65,6 +75,17 @@ fn build() -> People {
     let note = b.node("a note", 100, 0, None);
     let landmark = b.node("a landmark", 0, 0, None);
     let dry = b.node("dry ground", -300, 0, None);
+    // Stage 3: danger with company. A boar is a dangerous kind of creature; the responses are
+    // concepts that thought can reach; an ally and a cry for help are ideas like trust.
+    let boar = b.node("a boar", -300, tag::DANGER | tag::CREATURE, None);
+    let flee = b.node("run away", -100, 0, None);
+    let fight = b.node("fight", -100, tag::ANGER, None);
+    let call = b.node("call for help", 0, 0, None);
+    let freeze = b.node("keep still", -200, 0, None);
+    let hold = b.node("stand my ground", 100, 0, None);
+    let aid = b.node("go to help", 100, 0, None);
+    let ally = b.node("someone who stands with me", 400, 0, None);
+    let cry = b.node("a cry for help", -300, 0, None);
     b.link(loss, anger, lt::WANTS, 100 + t.aggression / 4);
     b.both(danger, anger, lt::ASSOC, 100 + t.aggression * 6 / 10, 300);
     b.link(pain, anger, lt::WANTS, 100 + t.aggression / 2);
@@ -74,15 +95,27 @@ fn build() -> People {
     b.both(rest, comfort, lt::ASSOC, 500, 400);
     b.link(dry, loss, lt::ASSOC, 400);
     b.link(lie, anger, lt::ASSOC, 300);
+    b.link(boar, danger, lt::KIND, 700);
+    b.link(danger, flee, lt::WANTS, 500);
+    b.link(danger, freeze, lt::ASSOC, freeze_weight(&t));
+    b.link(danger, call, lt::ASSOC, CALL_HABIT);
+    b.link(danger, hold, lt::ASSOC, 150);
+    b.link(anger, fight, lt::WANTS, 600);
+    b.link(ally, hold, lt::ASSOC, 600);
+    b.link(ally, fight, lt::ASSOC, 300);
+    b.link(ally, aid, lt::ASSOC, 400);
+    b.link(cry, danger, lt::ASSOC, 400);
+    b.link(cry, aid, lt::ASSOC, 500);
     b.canonical();
-    let ids = Ids { thirst, fatigue, pain, water, danger, rest, anger, loss, comfort, person, truth, lie, mistake, debt, note, landmark, dry };
-    let roles = Roles { hunger: thirst, fatigue, pain, food: water, danger, rest, anger, loss, comfort };
+    let ids = Ids { thirst, fatigue, pain, water, danger, rest, anger, loss, comfort, person, truth, lie, mistake, debt, note, landmark, dry, boar, flee, fight, call, freeze, hold, aid, ally, cry };
+    let resp = crate::mind::Responses { flee, fight, call, freeze, hold, aid, ally, cry };
+    let roles = Roles { hunger: thirst, fatigue, pain, food: water, danger, rest, anger, loss, comfort, resp: Some(resp) };
     let concept = |k: Kind| match k {
         Kind::Ash | Kind::Bryn | Kind::Cai | Kind::Dee => person, Kind::Water => water, Kind::Rock | Kind::Windmill | Kind::Oak => landmark,
-        Kind::Hut => rest, Kind::Note => note, Kind::DryFresh | Kind::DryOld => dry,
+        Kind::Hut => rest, Kind::Note => note, Kind::DryFresh | Kind::DryOld => dry, Kind::Boar => boar,
     };
     let kinds = Kind::ALL.iter().map(|&k| KindInfo { name: k.name(), concept: concept(k), landmark: k.landmark(), edible: k == Kind::Water, shelter: k == Kind::Hut,
-        creature: false, tracked: matches!(k, Kind::Ash | Kind::Bryn | Kind::Cai | Kind::Dee) }).collect();
+        creature: k == Kind::Boar, tracked: matches!(k, Kind::Ash | Kind::Bryn | Kind::Cai | Kind::Dee) }).collect();
     let species = Species {
         base: Arc::new(Base::compile(b)), roles, kinds: Arc::new(kinds), place_nodes: vec![], spare_places: 0, unlearnt: -999, near_weight,
         entity_nodes: vec![], entity_kinds: vec![], expect: vec![], geo: Geometry { sight: SIGHT, place_radius: PLACE_RADIUS, grid_w: GRID_W, grid_h: GRID_H },
@@ -95,7 +128,14 @@ fn build() -> People {
 /// them (up to `pacing` cells, seeded per person and landmark), its trust and warmth towards each
 /// other person, and, for the spring, whether it last saw it wet or dry.
 #[derive(Clone, Debug)]
-pub struct Founding { pub knows: Vec<u32>, pub pacing: i32, pub trust: [i32; PEOPLE], pub warmth: [i32; PEOPLE], pub spring_dry: bool, pub dry_conf: i32 }
+pub struct Founding { pub knows: Vec<u32>, pub pacing: i32, pub trust: [i32; PEOPLE], pub warmth: [i32; PEOPLE], pub spring_dry: bool, pub dry_conf: i32,
+    /// Stage 3: how far this person counts on each other to stand with it, from their history
+    /// (a link from their node to "someone who stands with me"; 0: none). It is learnt further.
+    pub ally: [i32; PEOPLE],
+    /// Stage 3: how far this person has learnt to cry out when in danger (danger → call; the
+    /// species' founding is `CALL_HABIT`).
+    pub calls: i32 }
+pub const CALL_HABIT: i32 = 250;
 
 /// A founded mind and its lexicon (landmark word → its own place node) and its node for each
 /// other person (`u32::MAX` for itself).
@@ -137,9 +177,11 @@ pub fn found(w: &World, i: usize, t: Temperament, f: &Founding) -> (Mind<Runtime
         m.store.add_link(n, ids.truth, lt::ASSOC, f.trust[j], 0);
         m.store.add_link(n, ids.debt, lt::ASSOC, 0, 0);
         m.store.add_link(n, ids.person, lt::KIND, 600, 0);
+        if f.ally[j] > 0 { m.store.add_link(n, ids.ally, lt::ASSOC, f.ally[j], 0); }
         m.entity_nodes.push((person_id(j), n)); m.entity_kinds.push(Kind::person(j).k());
         pnode[j] = n;
     }
+    if f.calls != CALL_HABIT { let k = m.store.find(ids.danger, ids.call, lt::ASSOC).unwrap(); m.store.set_slow(k, crate::store::quant_w(f.calls as i16)); }
     m.young_from = m.store.len() as u32;
     (m, lex, pnode)
 }

@@ -27,6 +27,10 @@ fn action_text<S: Store>(a: &Action, sim: &Sim<S>) -> String {
         Action::Snap { .. } => "snap at the dog".into(),
         Action::Eat { entity } => format!("eat {}", sim.w.entity(entity).map(|e| e.name.as_str()).unwrap_or("?")),
         Action::Sleep => "sleep".into(),
+        Action::Hold { .. } => "hold its ground".into(),
+        Action::Freeze => "freeze".into(),
+        Action::Call => "call for help".into(),
+        Action::Charge { .. } => "charge".into(),
     }
 }
 

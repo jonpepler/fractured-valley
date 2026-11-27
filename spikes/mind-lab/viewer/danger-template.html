@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>/*TITLE*/</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --panel: #ffffff; --ink: #1f2328; --muted: #6b7280; --line: #d9dce1;
+    --neg: #c2410c; --pos: #0f766e; --flow: #f59e0b; --fast: #7c3aed; --ws: #ca8a04; --surp: #dc2626;
+    --map: #e9efe0; --water: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 12px 16px 4px; }
+  h1 { font-size: 18px; margin: 0; }
+  .sub { color: var(--muted); margin-top: 2px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #e5e7eb; margin-left: 6px; vertical-align: 2px; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 10px; padding: 8px 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-width: 0; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 4px; font-weight: 600; }
+  svg { display: block; width: 100%; height: auto; }
+  .right { display: grid; gap: 10px; align-content: start; }
+  .action { font-size: 15px; font-weight: 600; }
+  .why { color: var(--muted); min-height: 1.4em; }
+  .ws-row { display: grid; grid-template-columns: 120px 1fr 44px; gap: 6px; align-items: center; font-size: 12px; }
+  .ws-bar { height: 8px; border-radius: 4px; }
+  .ev { font-size: 12px; color: var(--ink); }
+  .ev .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 16px 0; }
+  button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; cursor: pointer; }
+  input[type=range] { flex: 1; min-width: 160px; }
+  .tick { font-variant-numeric: tabular-nums; min-width: 150px; }
+  .legend { color: var(--muted); font-size: 11px; padding: 4px 16px 14px; }
+  .legend span { margin-right: 14px; white-space: nowrap; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; vertical-align: -1px; margin-right: 4px; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="sub" id="subtitle"></div>
+</header>
+<div class="controls">
+  <button id="play">Play</button>
+  <button id="prev" title="previous tick (←)">◀ tick</button>
+  <button id="next" title="next tick (→)">tick ▶</button>
+  <button id="hop" title="next hop within the tick (h)">hop ▸</button>
+  <input type="range" id="slider" min="0" value="0">
+  <span class="tick" id="ticklabel"></span>
+</div>
+<div class="wrap">
+  <div class="panel">
+    <h2>The person's mind: activation spreading <span id="hoplabel"></span></h2>
+    <svg id="graph" viewBox="0 0 980 520"></svg>
+  </div>
+  <div class="right">
+    <div class="panel">
+      <h2>The world</h2>
+      <svg id="map" viewBox="0 0 448 280"></svg>
+    </div>
+    <div class="panel">
+      <h2>Modulators and body</h2>
+      <svg id="bars" viewBox="0 0 380 140"></svg>
+    </div>
+    <div class="panel">
+      <h2>Chosen action</h2>
+      <div class="action" id="action"></div>
+      <div class="why" id="why"></div>
+    </div>
+    <div class="panel">
+      <h2>Workspace (what's on its mind)</h2>
+      <div id="ws"></div>
+    </div>
+    <div class="panel">
+      <h2>Events</h2>
+      <div id="events"></div>
+    </div>
+  </div>
+</div>
+<div class="wrap" style="grid-template-columns: 1fr; padding-top: 0">
+  <div class="panel">
+    <h2>Over time: mood (teal), arousal (red), hunger (amber), stress (violet), fatigue = consolidation backlog (grey); events marked</h2>
+    <svg id="timeline" viewBox="0 0 980 80"></svg>
+  </div>
+</div>
+<div class="legend">
+  <span><i class="sw" style="background:var(--pos)"></i>good feeling</span>
+  <span><i class="sw" style="background:var(--neg)"></i>bad feeling</span>
+  <span>size = activation</span>
+  <span><i class="sw" style="background:var(--flow)"></i>activation crossing a link this hop</span>
+  <span><i class="sw" style="background:var(--fast)"></i>fast weight (today's trace)</span>
+  <span><i class="sw" style="border:2px solid var(--ws);background:none"></i>in the workspace</span>
+  <span><i class="sw" style="border:2px solid var(--surp);background:none"></i>surprise (prediction error)</span>
+  <span>squares = places at their real map position; ringed = things in the world; plain = connectors</span>
+</div>
+<script>
+const D = /*DATA*/;
+const NS = "http://www.w3.org/2000/svg";
+const $ = id => document.getElementById(id);
+function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+$("title").textContent = D.title;
+$("subtitle").innerHTML = D.subtitle + ' <span class="badge">' + (D.form === "compiled" ? "compiled form, decompiled for viewing" : "graph form") + '</span>';
+
+// ---------- layout ----------
+const N = D.nodes.length;
+const pos = new Array(N);
+const gx = x => 40 + x * (600 / D.grid[0]), gy = y => 40 + y * (440 / D.grid[1]);
+D.nodes.forEach((n, i) => { if (n.kind === "place") pos[i] = [gx(n.x), gy(n.y)]; });
+const byPlace = {};
+D.nodes.forEach((n, i) => { if (n.kind === "thing") { const k = n.at >= 0 ? n.at : -1 - i; (byPlace[k] = byPlace[k] || []).push(i); } });
+for (const k in byPlace) {
+  const list = byPlace[k];
+  list.forEach((i, j) => {
+    const n = D.nodes[i];
+    const c = +k >= 0 ? pos[+k] : [gx(n.x), gy(n.y)];
+    const a = Math.PI * 0.75 + j * (Math.PI * 2 / Math.max(list.length, 3));
+    pos[i] = [c[0] + Math.cos(a) * 44, c[1] + Math.sin(a) * 40];
+  });
+}
+let bi = 0, ci = 0;
+D.nodes.forEach((n, i) => {
+  if (n.kind === "body") { pos[i] = [740, 70 + bi * 86]; bi++; }
+  else if (n.kind === "concept") { pos[i] = [ci % 2 ? 905 : 830, 50 + ci * 70]; ci++; }
+});
+
+// ---------- static graph ----------
+const G = $("graph");
+const gLinks = el("g", {}, G), gFast = el("g", {}, G), gFlow = el("g", {}, G), gNodes = el("g", {}, G);
+el("text", { x: 40, y: 22, fill: "#6b7280", "font-size": 11 }, G).textContent = "places and things, laid out where they are in the world";
+el("text", { x: 700, y: 22, fill: "#6b7280", "font-size": 11 }, G).textContent = "body states and concepts";
+function curve(u, v) {
+  const [x1, y1] = pos[u], [x2, y2] = pos[v];
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, dx = x2 - x1, dy = y2 - y1;
+  const k = 0.12;
+  return `M${x1.toFixed(1)},${y1.toFixed(1)} Q${(mx - dy * k).toFixed(1)},${(my + dx * k).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+}
+const linkEls = D.links.map(([u, v, ty, w], li) => el("path", { d: curve(u, v), fill: "none", stroke: "#c3c8d0", "stroke-width": 0.4 + w / 450, opacity: w > 0 ? 0.55 : 0 }, gLinks));
+const linkIndex = {};
+D.links.forEach(([u, v], li) => { const k = u + "," + v; (linkIndex[k] = linkIndex[k] || []).push(li); });
+const nodeEls = D.nodes.map((n, i) => {
+  const g = el("g", { transform: `translate(${pos[i][0].toFixed(1)},${pos[i][1].toFixed(1)})` }, gNodes);
+  const ring = el("circle", { r: 10, fill: "none", stroke: "var(--surp)", "stroke-width": 0, opacity: 0.9 }, g);
+  const shape = n.kind === "place" ? el("rect", { x: -9, y: -9, width: 18, height: 18, rx: 4 }, g) : el("circle", { r: 9 }, g);
+  shape.setAttribute("stroke", n.kind === "thing" || n.kind === "place" ? "#374151" : "#9ca3af");
+  shape.setAttribute("stroke-width", n.kind === "thing" ? 2 : 1);
+  const label = el("text", { y: 0, "text-anchor": "middle", "font-size": 11, fill: "#1f2328", "paint-order": "stroke", stroke: "#ffffff", "stroke-width": 3 }, g);
+  label.textContent = n.name;
+  return { g, shape, ring, label };
+});
+
+// ---------- map ----------
+const M = $("map");
+const mx = x => 3.5 + x * 7, my = y => 3.5 + y * 7;
+el("rect", { x: 0, y: 0, width: 448, height: 280, fill: "var(--map)", rx: 6 }, M);
+const stream = D.places.find(p => p.name === "stream");
+if (stream) el("path", { d: `M${mx(stream.x - 3)},0 C${mx(stream.x + 2)},${my(stream.y - 6)} ${mx(stream.x - 2)},${my(stream.y + 6)} ${mx(stream.x + 1)},280`, stroke: "var(--water)", "stroke-width": 6, fill: "none", opacity: 0.7 }, M);
+D.places.forEach(p => {
+  el("circle", { cx: mx(p.x), cy: my(p.y), r: 6 * 7, fill: p.home ? "#fde68a" : "#ffffff", opacity: 0.35 }, M);
+  const t = el("text", { x: mx(p.x), y: my(p.y) - 9, "text-anchor": "middle", "font-size": 11, fill: "#374151", "paint-order": "stroke", stroke: "#fff", "stroke-width": 3 }, M);
+  t.textContent = p.name;
+  el("rect", { x: mx(p.x) - 3, y: my(p.y) - 3, width: 6, height: 6, fill: "#374151", rx: 1 }, M);
+});
+const sight = el("circle", { r: 70, fill: "#f59e0b", opacity: 0.07 }, M);
+const trail = el("polyline", { fill: "none", stroke: "#ea580c", "stroke-width": 1.5, opacity: 0.5 }, M);
+const gBurrows = el("g", {}, M);
+const gFires = el("g", {}, M);
+const dogEl = el("g", {}, M); el("circle", { r: 6, fill: "#4b5563" }, dogEl); const dogT = el("text", { y: -9, "text-anchor": "middle", "font-size": 10, fill: "#374151" }, dogEl);
+const foxEl = el("g", {}, M); el("circle", { r: 6.5, fill: "#ea580c", stroke: "#fff", "stroke-width": 1.5 }, foxEl);
+el("text", { y: 3.5, "text-anchor": "middle", "font-size": 9, fill: "#fff", "font-weight": 700 }, foxEl).textContent = D.me || "F";
+
+// ---------- bars ----------
+const B = $("bars");
+const barDefs = [[D.drive || "hunger", 0, 1000, "#d97706"], ["arousal", 0, 1000, "#dc2626"], ["mood", -1000, 1000, "#0f766e"], ["fatigue (backlog)", 0, 1000, "#6b7280"], ["focus (held intent)", 0, 1000, "#9f1239"], ["stress", 0, 1000, "#7c3aed"]];
+const barEls = barDefs.map(([name, lo, hi, col], i) => {
+  const y = 6 + i * 22;
+  el("text", { x: 0, y: y + 11, "font-size": 12, fill: "#374151" }, B).textContent = name;
+  el("rect", { x: 70, y, width: 250, height: 14, fill: "#eef0f3", rx: 3 }, B);
+  if (lo < 0) el("line", { x1: 195, x2: 195, y1: y - 2, y2: y + 16, stroke: "#9ca3af" }, B);
+  const r = el("rect", { x: 70, y, width: 0, height: 14, fill: col, rx: 3 }, B);
+  const v = el("text", { x: 328, y: y + 11, "font-size": 12, fill: "#374151" }, B);
+  return { r, v, lo, hi };
+});
+
+// ---------- timeline ----------
+const T = $("timeline");
+const F = D.frames;
+const tx = i => 10 + i * (960 / Math.max(F.length - 1, 1));
+function line(fn, lo, hi, col) {
+  const pts = F.map((f, i) => `${tx(i).toFixed(1)},${(74 - (fn(f) - lo) / (hi - lo) * 68).toFixed(1)}`).join(" ");
+  el("polyline", { points: pts, fill: "none", stroke: col, "stroke-width": 1.5 }, T);
+}
+el("line", { x1: 10, x2: 970, y1: 40, y2: 40, stroke: "#e5e7eb" }, T);
+F.forEach((f, i) => { if (f.ev.length || f.slept) el("line", { x1: tx(i), x2: tx(i), y1: 2, y2: 78, stroke: f.slept ? "#1e3a8a" : "#fca5a5", "stroke-width": f.slept ? 3 : 1 }, T); });
+line(f => f.m[2], -1000, 1000, "#0f766e");
+line(f => f.m[1], 0, 1000, "#dc2626");
+line(f => f.m[0], 0, 1000, "#d97706");
+line(f => f.m[5], 0, 1000, "#7c3aed");
+line(f => f.m[3], 0, 1000, "#6b7280");
+const cursor = el("line", { y1: 0, y2: 80, stroke: "#111827", "stroke-width": 1.5 }, T);
+T.addEventListener("click", e => { const r = T.getBoundingClientRect(); const i = Math.round(((e.clientX - r.left) / r.width * 980 - 10) / 960 * (F.length - 1)); go(Math.max(0, Math.min(F.length - 1, i)), -1); });
+
+// ---------- state ----------
+let fi = 0, hop = -1, playing = false, timer = null;
+const slider = $("slider"); slider.max = F.length - 1;
+function snapshotAt(t) { let s = null; for (const x of D.snapshots) if (x.t <= t) s = x; return s; }
+function valColor(v) {
+  const a = Math.min(Math.abs(v) / 700, 1);
+  const base = [200, 204, 210], tgt = v < 0 ? [194, 65, 12] : [15, 118, 110];
+  const c = base.map((b, k) => Math.round(b + (tgt[k] - b) * a));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function shownAct(f, h) {
+  if (h < 0) return f.act;
+  const prev = fi > 0 ? F[fi - 1].act : new Array(N).fill(0);
+  const a = prev.map(x => Math.round(x * D.persist / 1000));
+  for (let k = 0; k <= h && k < f.hops.length; k++) for (const [u, v, amt] of f.hops[k]) a[v] += amt;
+  return a;
+}
+function render() {
+  const f = F[fi];
+  slider.value = fi;
+  const nh = f.hops.length;
+  $("ticklabel").textContent = `tick ${f.t}` + (hop >= 0 ? ` · hop ${hop + 1} of ${nh}` : "");
+  $("hoplabel").textContent = hop >= 0 ? `(hop ${hop + 1} of ${nh})` : "(end of tick)";
+  const snap = snapshotAt(f.t);
+  const vals = snap ? snap.val : null;
+  // links: slow weight from the latest snapshot
+  if (snap) D.links.forEach(([u, v, ty, w0], li) => { const w = snap.w[li]; linkEls[li].setAttribute("stroke-width", 0.4 + w / 450); linkEls[li].setAttribute("opacity", w > 0 ? 0.55 : 0); });
+  gFast.innerHTML = "";
+  for (const [li, w] of f.fast) { const [u, v] = D.links[li]; el("path", { d: curve(u, v), fill: "none", stroke: "var(--fast)", "stroke-width": 0.5 + w / 200, opacity: 0.55, "stroke-dasharray": "4 3" }, gFast); }
+  gFlow.innerHTML = "";
+  const hopsToShow = hop >= 0 ? [hop] : [];
+  for (const k of hopsToShow) {
+    const fl = f.hops[k] || [];
+    for (const [u, v, amt] of fl) el("path", { d: curve(u, v), fill: "none", stroke: "var(--flow)", "stroke-width": Math.min(1 + amt / 90, 9), opacity: 0.85, "stroke-linecap": "round" }, gFlow);
+  }
+  const act = shownAct(f, hop);
+  const surprised = new Set(f.per.filter(p => p[1] >= 400).map(p => p[0]));
+  D.nodes.forEach((n, i) => {
+    const a = Math.max(0, act[i]);
+    const r = 7 + Math.sqrt(a) * 0.42;
+    const e = nodeEls[i];
+    if (n.kind === "place") { e.shape.setAttribute("x", -r); e.shape.setAttribute("y", -r); e.shape.setAttribute("width", 2 * r); e.shape.setAttribute("height", 2 * r); }
+    else e.shape.setAttribute("r", r);
+    e.shape.setAttribute("fill", vals ? valColor(vals[i]) : "#ccc");
+    e.shape.setAttribute("fill-opacity", a > 0 ? 0.95 : 0.35);
+    const inWs = f.ws.includes(i);
+    e.shape.setAttribute("stroke", inWs ? "var(--ws)" : (n.kind === "thing" || n.kind === "place" ? "#374151" : "#9ca3af"));
+    e.shape.setAttribute("stroke-width", inWs ? 3.5 : (n.kind === "thing" ? 2 : 1));
+    e.ring.setAttribute("r", r + 6);
+    e.ring.setAttribute("stroke-width", surprised.has(i) ? 3 : 0);
+    e.label.setAttribute("y", r + 13);
+    e.label.setAttribute("font-weight", inWs ? 700 : 400);
+  });
+  // map
+  foxEl.setAttribute("transform", `translate(${mx(f.fox[0])},${my(f.fox[1])})`);
+  sight.setAttribute("cx", mx(f.fox[0])); sight.setAttribute("cy", my(f.fox[1]));
+  trail.setAttribute("points", F.slice(Math.max(0, fi - 40), fi + 1).map(x => `${mx(x.fox[0])},${my(x.fox[1])}`).join(" "));
+  if (f.dog) { dogEl.style.display = ""; dogEl.setAttribute("transform", `translate(${mx(f.dog[0])},${my(f.dog[1])})`); dogT.textContent = "boar " + f.dog[2]; } else dogEl.style.display = "none";
+  gBurrows.innerHTML = "";
+  for (const [x, y, label] of (f.burrows || [])) {
+    const g = el("g", { transform: `translate(${mx(x)},${my(y)})` }, gBurrows);
+    const person = /^[A-Z][a-z]+$/.test(label || "");
+    const water = /spring|stream/.test(label || "");
+    if (person) el("circle", { r: 5.5, fill: "#2563eb", stroke: "#fff", "stroke-width": 1.2 }, g);
+    else el("path", { d: "M-6,3 A6,6 0 0 1 6,3 Z", fill: water ? "#0ea5e9" : "#78350f", stroke: "#451a03", "stroke-width": 0.8 }, g);
+    const t = el("text", { y: 14, "text-anchor": "middle", "font-size": 9, fill: person ? "#1e3a8a" : "#451a03" }, g); t.textContent = label || "burrow";
+  }
+  gFires.innerHTML = "";
+  for (const [x, y, exp] of f.fires) {
+    const g = el("g", { transform: `translate(${mx(x)},${my(y)})` }, gFires);
+    el("path", { d: "M0,-9 C5,-3 6,3 0,7 C-6,3 -5,-3 0,-9 Z", fill: exp ? "#f97316" : "#dc2626", stroke: "#7c2d12", "stroke-width": 0.8 }, g);
+    const t = el("text", { y: 18, "text-anchor": "middle", "font-size": 10, fill: "#7c2d12" }, g); t.textContent = exp ? "campfire" : "fire!";
+  }
+  // bars
+  const vals5 = [f.m[0], f.m[1], f.m[2], f.m[3], f.m[4], f.m[5]];
+  barEls.forEach((b, i) => {
+    const v = vals5[i];
+    if (b.lo < 0) { const w = Math.abs(v) / 1000 * 125; b.r.setAttribute("x", v < 0 ? 195 - w : 195); b.r.setAttribute("width", w); }
+    else b.r.setAttribute("width", Math.max(0, v) / 1000 * 250);
+    b.v.textContent = v;
+  });
+  $("action").textContent = f.action;
+  $("why").textContent = f.why;
+  const wsMax = Math.max(1, ...f.ws.map(i => f.act[i]));
+  $("ws").innerHTML = f.ws.map(i => `<div class="ws-row"><span>${D.nodes[i].name}</span><span class="ws-bar" style="width:${(f.act[i] / wsMax * 100).toFixed(0)}%;background:${vals ? valColor(vals[i]) : '#999'}"></span><span>${f.act[i]}</span></div>`).join("");
+  const recent = [];
+  for (let k = fi; k >= 0 && recent.length < 6; k--) { for (const e of F[k].ev) recent.push([F[k].t, e]); if (F[k].slept) recent.push([F[k].t, "(slept: the day's episodes replayed, fast weights consolidated and cleared)"]); }
+  $("events").innerHTML = recent.slice(0, 6).map(([t, e]) => `<div class="ev"><span class="t">${t}</span>${e}</div>`).join("") || '<div class="ev" style="color:var(--muted)">nothing yet</div>';
+  cursor.setAttribute("x1", tx(fi)); cursor.setAttribute("x2", tx(fi));
+}
+function go(i, h) { fi = i; hop = h; render(); }
+function stepHop() {
+  const nh = F[fi].hops.length;
+  if (hop < nh - 1) hop++; else { hop = -1; if (fi < F.length - 1 && playing) { fi++; hop = 0; } }
+  render();
+}
+function tickPlay() { const nh = F[fi].hops.length; if (hop === -1 || hop >= nh - 1) { if (fi >= F.length - 1) { stop(); return; } fi++; hop = nh ? 0 : -1; } else hop++; render(); }
+function stop() { playing = false; clearInterval(timer); $("play").textContent = "Play"; }
+$("play").onclick = () => { if (playing) stop(); else { playing = true; $("play").textContent = "Pause"; timer = setInterval(tickPlay, 110); } };
+$("prev").onclick = () => { stop(); go(Math.max(0, fi - 1), -1); };
+$("next").onclick = () => { stop(); go(Math.min(F.length - 1, fi + 1), -1); };
+$("hop").onclick = () => { stop(); stepHop(); };
+slider.oninput = () => { stop(); go(+slider.value, -1); };
+document.addEventListener("keydown", e => { if (e.key === "ArrowRight") $("next").onclick(); if (e.key === "ArrowLeft") $("prev").onclick(); if (e.key === "h") $("hop").onclick(); if (e.key === " ") { e.preventDefault(); $("play").onclick(); } });
+// ?t=TICK&h=HOP opens a moment (for pictures).
+const q = new URLSearchParams(location.search);
+if (q.has("t")) { const t = +q.get("t"); const i = F.findIndex(f => f.t >= t); fi = i < 0 ? F.length - 1 : i; hop = q.has("h") ? +q.get("h") : -1; }
+render();
+window.__ready = true;
+</script>
+</body>
+</html>

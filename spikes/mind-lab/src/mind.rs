@@ -81,6 +81,69 @@ pub const PRUNE_BELOW: i16 = 8;
 /// Unresolved prediction error at which the mind searches.
 pub const SEARCH_AT: i32 = 300;
 
+// ------------------------------------------------------------------- stage 3: danger and intent
+/// A held intent is topped up to this activation each tick it is in the workspace (rehearsal:
+/// keeping a plan in mind). Out of the workspace it is not rehearsed and fades with everything else.
+pub const INTENT_HOLD: i32 = 500;
+/// An intent out of the workspace this many ticks running is dropped: the plan is gone.
+pub const INTENT_LAPSE: u32 = 3;
+/// Focus per mille of the intent's activation (so a fully held intent, 500, gives focus 1000).
+pub const FOCUS_GAIN: i32 = 2000;
+/// Matched, tracked companions (people) seen nearby: the activation they add grows with arousal,
+/// `SEEN_TOUCH + arousal × COMPANY / 1000` (in alarm one looks to others; Schachter 1959).
+pub const COMPANY: i32 = 1000;
+/// Social buffering: the stress a tick adds is cut by the "ally" concept's activation × this / 1000.
+pub const BUFFER: i32 = 1000;
+/// Courage from company: the "ally" concept's activation × this / 1000 (to at most 1000) scales
+/// standing and fighting up by `(1000 + courage)` and running away down by `(1000 - courage / 2)`.
+pub const COURAGE: i32 = 4000;
+/// A considered response (fight, call, freeze, hold, aid) needs at least this activation.
+pub const OPTION_AT: i32 = 60;
+/// A heard alarm is remembered (as somewhere to go or flee from) this many ticks.
+pub const ALARM_KEEP: u32 = 40;
+/// The five danger responses, and aid (going to someone who called).
+pub const R_FLEE: u8 = 0;
+pub const R_FIGHT: u8 = 1;
+pub const R_CALL: u8 = 2;
+pub const R_FREEZE: u8 = 3;
+pub const R_HOLD: u8 = 4;
+pub const R_AID: u8 = 5;
+pub const R_NAMES: [&str; 6] = ["flee", "fight", "call", "freeze", "hold", "aid"];
+
+/// A species' danger responses (stage 3): nodes in its graph, `u32::MAX` where it has none. The
+/// reflex is read straight off danger (the fast path); the rest are options that thought must reach.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct Responses { pub flee: u32, pub fight: u32, pub call: u32, pub freeze: u32, pub hold: u32, pub aid: u32,
+    /// "Someone who stands with me": seen companions linked to it embolden (and buffer stress).
+    pub ally: u32,
+    /// "A cry for help", heard.
+    pub cry: u32 }
+impl Responses { pub fn node(&self, r: u8) -> u32 { [self.flee, self.fight, self.call, self.freeze, self.hold, self.aid][r as usize] } }
+
+/// Stage 3 state: the held intent, a heard alarm, the response under way.
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct Held {
+    /// The node of the plan held in mind, if any.
+    pub intent: Option<u32>,
+    /// Ticks running the intent has been out of the workspace.
+    pub lapse: u32,
+    /// When the last intent was dropped (and which).
+    pub dropped: Option<(u32, u32)>,
+    /// Activation to inject next step (forming an intent).
+    pub boost: Option<(u32, i32)>,
+    /// The last alarm heard: (who cried, x, y, tick).
+    pub alarm: Option<(u32, i32, i32, u32)>,
+    /// The response chosen last tick (it keeps a margin, as a walk's goal does).
+    pub response: Option<u8>,
+    /// Staging and probes: hold stress at a value.
+    pub pin_stress: Option<i32>,
+    /// The last competition: (response, score) for each considered, and the reflex.
+    pub last_scores: Vec<(u8, i32)>,
+    /// The voice, a second channel beside the body: crying out this tick (the call node active
+    /// enough while a threat is sensed), whatever the body does.
+    pub calling: bool,
+}
+
 /// The design question for brief 09, made a setting: consolidating plain fast weight (the day's
 /// routine strengthening) keeps 1/`sleep_keep` of it in the slow graph; the rest is downscaled
 /// away (synaptic homeostasis). Replayed episodes are kept in full either way. The stage-0
@@ -119,8 +182,11 @@ pub struct Config {
     /// place underfoot win outright, so a walk could stop one step out, which is the dithering
     /// that made stage 2 remove its walking cost). Off: the old rule.
     pub hold_goal: bool,
+    /// Stage 3, ablation: a held intent biases spreading towards itself (focus). Off: the intent
+    /// is still held and still predicts, but gives no focus.
+    pub focus: bool,
 }
-impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true } } }
+impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true, focus: true } } }
 
 /// Default `Config::walk_cost`: a place this many cells away counts half.
 pub const WALK_COST: i32 = 120;
@@ -156,7 +222,9 @@ pub fn stressed_params(base: &Params, stress: i32, t: &Temperament) -> Params {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct Roles { pub hunger: u32, pub fatigue: u32, pub pain: u32, pub food: u32, pub danger: u32, pub rest: u32, pub anger: u32, pub loss: u32,
     /// The comfort a place can give (gated by need, `Config::comfort_gate`); `u32::MAX` if none.
-    pub comfort: u32 }
+    pub comfort: u32,
+    /// Danger responses (stage 3); `None`: the fox's old reflex (flee or snap).
+    pub resp: Option<Responses> }
 
 /// A kind of thing a species can tell apart by its senses.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -190,6 +258,8 @@ pub struct Sense {
     /// Activation a species' own senses add this tick, as (node, amount): what was heard or read,
     /// already grounded in this mind's own nodes. Empty for the fox.
     pub cues: Vec<(u32, i32)>,
+    /// Stage 3: alarms heard this tick, located by ear: (the node of who cried, x, y).
+    pub alarms: Vec<(u32, i32, i32)>,
 }
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct Body { pub x: i32, pub y: i32, pub hunger: i32, pub pain: i32, pub asleep: bool,
@@ -258,6 +328,14 @@ pub enum Action {
     /// Eat from a thing within one cell.
     Eat { entity: u32 },
     Sleep,
+    /// Stage 3. Stand one's ground facing a creature (braced).
+    Hold { entity: u32 },
+    /// Stage 3. Go still.
+    Freeze,
+    /// Stage 3. Cry out for help (the species' own layer turns it into a sound).
+    Call,
+    /// Stage 3. Close on a creature to fight it (a boar's charge, a person's advance).
+    Charge { entity: u32, x: i32, y: i32 },
 }
 
 /// What happened in the mind this tick (kept for traces and tests).
@@ -326,6 +404,10 @@ pub struct Mind<S: Store = Runtime> {
     pub young_from: u32,
     /// Nights slept (seeds the rounding of forgetting).
     pub nights: u32,
+    /// Stage 3: intent, alarm, the response under way.
+    pub held: Held,
+    /// Stage 3: this species closes on what it fights (a boar charges); others only snap in reach.
+    pub charges: bool,
 }
 
 impl<S: Store> Hash for Mind<S> {
@@ -335,7 +417,7 @@ impl<S: Store> Hash for Mind<S> {
         self.consol.hash(h); self.puzzle.hash(h); self.search_wp.hash(h); self.search_n.hash(h); self.napping.hash(h); self.volatility.hash(h);
         // Settings too: two minds that would behave differently next tick must not hash alike.
         self.cfg.hash(h); self.params.hash(h); self.learn.hash(h); self.skip_sleep.hash(h); self.pin_arousal.hash(h); self.pin_mood.hash(h); self.idle_consolidation.hash(h);
-        self.place_nodes.hash(h); self.entity_nodes.hash(h); self.entity_kinds.hash(h); self.young_from.hash(h); self.nights.hash(h);
+        self.place_nodes.hash(h); self.entity_nodes.hash(h); self.entity_kinds.hash(h); self.young_from.hash(h); self.nights.hash(h); self.held.hash(h); self.charges.hash(h);
     }
 }
 
@@ -374,7 +456,7 @@ impl<S: Store> Mind<S> {
             expect: vec![vec![0i16; nk * 2]; sp.place_nodes.len()], episodes: vec![], goal: None, flee_left: 0, flee_from: (0, 0), prev_pain: 0,
             trace: false, last: Report::default(), learn: true, pin_arousal: None, pin_mood: None, skip_sleep: false, temperament,
             idle_consolidation: true, consol: Consol::default(), puzzle: None, search_wp: None, search_n: 0, napping: false, volatility: vec![0; nk],
-            feelings: sp.feelings.clone(), young_from: 0, nights: 0,
+            feelings: sp.feelings.clone(), young_from: 0, nights: 0, held: Held::default(), charges: false,
         };
         m.young_from = m.store.len() as u32;
         for &(pi, k) in &sp.expect { m.expect[pi][key(k, false)] = 900; }
@@ -387,7 +469,7 @@ impl<S: Store> Mind<S> {
             entity_kinds: self.entity_kinds.clone(), expect: self.expect.clone(), episodes: self.episodes.clone(), goal: self.goal, flee_left: self.flee_left, flee_from: self.flee_from,
             prev_pain: self.prev_pain, trace: self.trace, last: self.last.clone(), learn: self.learn, pin_arousal: self.pin_arousal, pin_mood: self.pin_mood, skip_sleep: self.skip_sleep,
             temperament: self.temperament, idle_consolidation: self.idle_consolidation, consol: self.consol, puzzle: self.puzzle, search_wp: self.search_wp, search_n: self.search_n,
-            napping: self.napping, volatility: self.volatility.clone(), feelings: self.feelings.clone(), young_from: self.young_from, nights: self.nights }
+            napping: self.napping, volatility: self.volatility.clone(), feelings: self.feelings.clone(), young_from: self.young_from, nights: self.nights, held: self.held.clone(), charges: self.charges }
     }
 
     /// A hash of everything the mind holds (form-independent).
@@ -402,7 +484,9 @@ impl<S: Store> Mind<S> {
             + std::mem::size_of::<Mods>() + 64 + self.place_nodes.len() * 4 + self.entity_nodes.len() * 9
             // The last tick's report, kept for traces (could be dropped outside debugging).
             + std::mem::size_of::<Report>() + self.last.ws.len() * 4 + self.last.percepts.len() * std::mem::size_of::<Percept>()
-            + self.last.inject.len() * 8 + self.last.scores.len() * 12 + self.last.why.len() + self.last.absent.len() * 16;
+            + self.last.inject.len() * 8 + self.last.scores.len() * 12 + self.last.why.len() + self.last.absent.len() * 16
+            // Stage 3: intent, alarm, the response under way and its last scores.
+            + std::mem::size_of::<Held>() + self.held.last_scores.len() * 8;
         (b.shared, b.own, b.fast, state)
     }
 
@@ -525,6 +609,13 @@ impl<S: Store> Mind<S> {
             let place = self.place_index_at(e.x, e.y);
             let k = key(e.kind, e.approaching);
             let mut expected = place.map_or(0, |p| self.expect[p][k] as i32);
+            // Stage 3: a held intent predicts what it is about (a hunter out for a boar expects one).
+            if let Some(i) = self.held.intent {
+                let ia = self.st.get(i).min(INTENT_HOLD);
+                let c = self.concept(e.kind);
+                let w = self.store.links_vec(i).iter().filter(|l| l.to == c || l.to == node).map(|l| (l.slow as i32 + l.fast as i32).max(0)).max().unwrap_or(0);
+                expected = expected.max((w * ia / INTENT_HOLD).min(900));
+            }
             if self.kinds[e.kind as usize].tracked {
                 if let Some(a) = self.store.anchor(node) { let (ax, ay) = a.xy(); if d2(e.x, e.y, ax, ay) <= TRACK_NEAR * TRACK_NEAR { expected = expected.max(900); } }
             }
@@ -692,12 +783,37 @@ impl<S: Store> Mind<S> {
         self.mods.arousal = (self.mods.arousal + surprise + pain_rise).min(1000);
         if let Some(a) = self.pin_arousal { self.mods.arousal = a; }
         if let Some(m) = self.pin_mood { self.mods.mood = m; }
+        // Stage 3: a companion seen where expected draws more attention the more alarmed the mind
+        // is now (in alarm one looks to others).
+        for p in &percepts { if p.error < IGNORE_BELOW && self.kinds[p.kind as usize].tracked && self.mods.arousal > 0 { inject.push((p.node, self.mods.arousal * COMPANY / 1000)); } }
 
         if max_error > 0 { st.damp(1000 - max_error * INTERRUPT / 1000); }
 
+        // Stage 3: alarms heard; the held intent rehearsed (topped up while it is in the workspace).
+        for &(n, x, y) in &s.alarms { self.held.alarm = Some((n, x, y, s.tick)); }
+        if self.held.alarm.is_some_and(|a| s.tick > a.3 + ALARM_KEEP) { self.held.alarm = None; }
+        self.mods.focus = 0;
+        if let Some(i) = self.held.intent {
+            let carried = (st.act[i as usize] as i64 * self.params.persist as i64 / 1000) as i32;
+            let mut a0 = carried;
+            if let Some((n, a)) = self.held.boost.take() { inject.push((n, a)); if n == i { a0 += a; } }
+            else if self.last.ws.contains(&i) {
+                // Rehearsal costs the same capacity stress takes from thinking (8.4): it is cut by
+                // stress in the proportion this temperament's stress cuts its thought.
+                let cut = (self.mods.stress as i64 * self.temperament.stress_cut() as i64 / 1000).min(1000);
+                let top = ((INTENT_HOLD - carried).max(0) as i64 * (1000 - cut) / 1000) as i32;
+                if top > 0 { inject.push((i, top)); a0 += top; }
+            }
+            self.mods.intent = i;
+            self.mods.focus = if self.cfg.focus { (a0 as i64 * FOCUS_GAIN as i64 / 1000).clamp(0, 1000) as i32 } else { 0 };
+        }
+
         let tg = self.temperament.stress_gain() as i64 * (1000 + self.mods.fatigue as i64 / 2) / 1000;
-        let stressor = pain_rise as i64 + surprise as i64 / 2 + st.act[self.roles.danger as usize] as i64 / 16;
+        // Stage 3: companions linked to "ally" buffer the stress a tick adds (social buffering).
+        let buffer = self.roles.resp.filter(|r| r.ally != u32::MAX).map_or(0, |r| st.act[r.ally as usize] as i64 * BUFFER as i64 / 1000);
+        let stressor = (pain_rise as i64 + surprise as i64 / 2 + st.act[self.roles.danger as usize] as i64 / 16 - buffer).max(0);
         self.mods.stress = (self.mods.stress as i64 + stressor * tg / 1000).min(1000) as i32;
+        if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
 
         // 3. Think, as deep as stress allows, in what budget compaction left.
         let mut p = stressed_params(&self.params, self.mods.stress, &self.temperament);
@@ -710,6 +826,12 @@ impl<S: Store> Mind<S> {
         let ws = think::think(&self.store, st, &self.mods, &inject, &p, tr);
         rep.hops_run = st.hops_run; rep.frontier_cap = p.frontier; rep.visits = st.visits;
         self.mods.stress -= self.mods.stress / 40 + (self.mods.stress > 0) as i32;
+        if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
+        // Stage 3: an intent out of the workspace for long enough is dropped.
+        if let Some(i) = self.held.intent {
+            if ws.contains(&i) { self.held.lapse = 0; } else { self.held.lapse += 1; }
+            if self.held.lapse >= INTENT_LAPSE { self.held.dropped = Some((s.tick, i)); self.held.intent = None; self.held.lapse = 0; }
+        }
 
         // 4. Feel.
         let (mut sa, mut sv) = (0i64, 0i64);
@@ -752,9 +874,13 @@ impl<S: Store> Mind<S> {
             }
         }
 
-        // 6. Act.
-        let (action, why, scores) = self.choose(st, s, &ws, &percepts, &surprised);
-        if let Action::Flee { from_x, from_y, .. } = action { if self.flee_left == 0 { self.flee_left = 4; } self.flee_from = (from_x, from_y); }
+        // 6. Act: first the danger responses (stage 3), if this species has them and danger is about.
+        let resp = self.roles.resp.and_then(|rs| self.respond(&rs, st, s, &ws, &percepts));
+        self.held.response = resp.as_ref().map(|r| r.2);
+        self.held.calling = resp.is_some() && self.roles.resp.is_some_and(|rs| rs.call != u32::MAX && st.act[rs.call as usize] >= OPTION_AT);
+        self.held.last_scores = resp.as_ref().map(|r| r.3.clone()).unwrap_or_default();
+        let (action, why, scores) = match resp { Some((a, w, _, _)) => (a, w, vec![]), None => self.choose(st, s, &ws, &percepts, &surprised) };
+        if let Action::Flee { from_x, from_y, .. } = action { if self.flee_left == 0 && self.roles.resp.is_none() { self.flee_left = 4; } self.flee_from = (from_x, from_y); }
         if !matches!(action, Action::Flee { .. }) {
             for &(p, a, felt) in &scores {
                 if felt < 0 && a > 0 {
@@ -771,7 +897,7 @@ impl<S: Store> Mind<S> {
         // 7. Idle time is consolidation time.
         self.consol.last_units = 0;
         let settled = max_error < IGNORE_BELOW && pain_rise == 0 && self.flee_left == 0 && self.mods.stress < 400
-            && !matches!(action, Action::Flee { .. } | Action::Snap { .. });
+            && !matches!(action, Action::Flee { .. } | Action::Snap { .. } | Action::Hold { .. } | Action::Freeze | Action::Call | Action::Charge { .. });
         if self.learn && self.idle_consolidation && settled {
             let units = THINK_BUDGET - st.visits as i64 - self.consol.forced;
             if units > 0 { self.consolidate(units, false); self.consol.idle_ticks += 1; }
@@ -998,6 +1124,59 @@ impl<S: Store> Mind<S> {
         }
     }
 
+    /// Stage 3: the danger-response competition. Every response is a node, scored by its activation.
+    /// **Flee is the reflex**: one strong hop from danger, in play as soon as danger passes the flee
+    /// bar, and made stronger by stress. The **options** (fight, call, freeze, hold, aid) must be
+    /// reached by thought (at least `OPTION_AT` active), so they need more hops, which stress takes
+    /// away. Company read off the mind's "ally" node emboldens. The response under way keeps a margin.
+    /// Returns None when no threat is sensed or heard, or nothing passes its bar (ordinary life).
+    pub fn respond(&self, rs: &Responses, st: &Activation, s: &Sense, ws: &[u32], percepts: &[Percept]) -> Option<(Action, String, u8, Vec<(u8, i32)>)> {
+        let fx = s.body;
+        let act = |n: u32| if n == u32::MAX { 0 } else { st.act[n as usize] };
+        let threat = percepts.iter().filter(|p| self.kinds[p.kind as usize].creature && self.store.val(p.node) < 0)
+            .min_by_key(|p| (d2(p.x, p.y, fx.x, fx.y), p.entity)).cloned();
+        let alarm = self.held.alarm.filter(|a| s.tick <= a.3 + ALARM_KEEP);
+        if threat.is_none() && alarm.is_none() { return None; }
+        let stress = self.mods.stress;
+        let speed = if stress >= 500 { 3 } else { 2 };
+        let from = threat.as_ref().map(|t| (t.x, t.y)).or(alarm.map(|a| (a.1, a.2))).unwrap();
+        let flee_at = FLEE_AT * (1000 - stress / 2) / 1000;
+        let danger = act(self.roles.danger);
+        // The reflex: once danger on the mind passes the bar, "run" is in play straight away (one
+        // strong hop from danger), whether or not it made the workspace; stress makes it stronger.
+        let reflex = ws.contains(&self.roles.danger) && danger >= flee_at;
+        let flee = if reflex || ws.contains(&rs.flee) { act(rs.flee) * (1000 + stress) / 1000 } else { 0 };
+        let mut sc: Vec<(u8, i32)> = vec![(R_FLEE, if flee >= OPTION_AT { flee } else { 0 })];
+        for r in [R_FIGHT, R_CALL, R_FREEZE, R_HOLD, R_AID] {
+            let n = rs.node(r);
+            if n == u32::MAX { continue; }
+            // What the body can do here: fight, hold and freeze face a threat in sight; aid goes to
+            // a cry heard with no threat in sight.
+            let can = match r { R_FIGHT | R_HOLD | R_FREEZE => threat.is_some(), R_AID => threat.is_none() && alarm.is_some(), _ => true };
+            if can && act(n) >= OPTION_AT { sc.push((r, act(n))); }
+        }
+        // Company (sensed, through the mind's own learnt links to "ally") emboldens.
+        let courage = if rs.ally == u32::MAX { 0 } else { (act(rs.ally) as i64 * COURAGE as i64 / 1000).min(1000) as i32 };
+        for x in sc.iter_mut() { match x.0 { R_FLEE => x.1 = x.1 * (1000 - courage / 2) / 1000, R_HOLD | R_FIGHT | R_AID => x.1 = x.1 * (1000 + courage) / 1000, _ => {} } }
+        if let Some(r) = self.held.response { for x in sc.iter_mut() { if x.0 == r { x.1 = x.1 * (1000 + SWITCH_MARGIN) / 1000; } } }
+        let best = sc.iter().filter(|x| x.1 > 0).max_by_key(|x| (x.1, std::cmp::Reverse(x.0))).copied()?;
+        let list: Vec<String> = sc.iter().map(|x| format!("{} {}", R_NAMES[x.0 as usize], x.1)).collect();
+        let why = format!("{}: {} (danger {danger}, stress {stress}, reflex bar {flee_at}, courage {courage})", R_NAMES[best.0 as usize], list.join(", "));
+        let a = match best.0 {
+            R_FLEE => Action::Flee { from_x: from.0, from_y: from.1, speed },
+            R_FIGHT => { let t = threat.as_ref().unwrap(); if (t.x - fx.x).abs().max((t.y - fx.y).abs()) <= 2 { Action::Snap { entity: t.entity } } else { Action::Charge { entity: t.entity, x: t.x, y: t.y } } }
+            R_HOLD => Action::Hold { entity: threat.as_ref().unwrap().entity },
+            R_FREEZE => Action::Freeze,
+            R_CALL => Action::Call,
+            _ => { let al = alarm.unwrap(); Action::WalkTo { x: al.1, y: al.2 } }
+        };
+        Some((a, why, best.0, sc))
+    }
+
+    /// Stage 3: form an intent (a plan node of this mind's own): it is brought to mind now and held
+    /// by rehearsal while it stays in the workspace.
+    pub fn form_intent(&mut self, n: u32) { self.held.intent = Some(n); self.held.lapse = 0; self.held.boost = Some((n, 1000)); }
+
     /// The next search waypoint: a hashed bearing from the puzzle's place, at a radius that
     /// grows with each waypoint tried.
     fn next_waypoint(&self, s: &Sense, pz: Puzzle) -> (i32, i32) {
@@ -1020,6 +1199,7 @@ impl<S: Store> Mind<S> {
             Action::WalkTo { x, y } => { self.goal = self.place_nodes.iter().copied().find(|&p| self.store.anchor(p).map(|a| a.xy()) == Some((x, y))); }
             Action::Flee { .. } => { self.flee_left = (self.flee_left - 1).max(0); self.goal = None; }
             Action::Eat { .. } | Action::Snap { .. } => {}
+            Action::Hold { .. } | Action::Freeze | Action::Call | Action::Charge { .. } => { self.goal = None; }
             Action::Stay => {
                 let fx = s.body;
                 if self.goal.is_some_and(|g| self.store.anchor(g).is_some_and(|a| { let (x, y) = a.xy(); (x - fx.x).abs().max((y - fx.y).abs()) <= 1 })) { self.goal = None; }

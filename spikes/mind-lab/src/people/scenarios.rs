@@ -49,6 +49,10 @@ pub struct Setup {
     pub bryn_prior_dry: i32,
     /// Where everyone starts (before their minds are founded, so they know where the others are).
     pub pos: [(i32, i32); PEOPLE],
+    /// Stage 3: ally[i][j], how far i counts on j to stand with it (0: not at all).
+    pub ally: [[i32; PEOPLE]; PEOPLE],
+    /// Stage 3: each person's habit of crying out in danger (see `Founding::calls`).
+    pub calls: [i32; PEOPLE],
 }
 
 impl Setup {
@@ -57,7 +61,7 @@ impl Setup {
             seed, temperaments: [Temperament::MEDIUM; PEOPLE], trust: [[600; PEOPLE]; PEOPLE], warmth: [[300; PEOPLE]; PEOPLE], pacing: 2,
             traits: [Traits::default(); PEOPLE], medium: Medium::Speak, ash_knows_dry: false, spring: Spring::Wet,
             knows: [vec![STREAM, ROCK, WINDMILL, SPRING], vec![STREAM, ROCK, WINDMILL, OAK], vec![STREAM, WINDMILL, OAK], vec![STREAM, ROCK, WINDMILL]],
-            days: 3, model_on: true, offload: true, bryn_prior_dry: 0, pos: [(10, 23), (12, 23), (55, 34), (54, 35)],
+            days: 3, model_on: true, offload: true, bryn_prior_dry: 0, pos: [(10, 23), (12, 23), (55, 34), (54, 35)], ally: [[0; PEOPLE]; PEOPLE], calls: [super::species::CALL_HABIT; PEOPLE],
         }
     }
     /// Seeded temperaments for everyone (individual `k` of a set).
@@ -79,7 +83,7 @@ impl Setup {
             if i == BRYN && self.bryn_prior_dry > 0 { knows.push(SPRING); }
             let spring_dry = (i == ASH && self.ash_knows_dry) || (i == BRYN && self.bryn_prior_dry > 0);
             let dry_conf = if i == BRYN { self.bryn_prior_dry } else { 900 };
-            let f = Founding { knows, pacing: self.pacing, trust: self.trust[i], warmth: self.warmth[i], spring_dry, dry_conf };
+            let f = Founding { knows, pacing: self.pacing, trust: self.trust[i], warmth: self.warmth[i], spring_dry, dry_conf, ally: self.ally[i], calls: self.calls[i] };
             let mut p = Person::new(&w, i, self.temperaments[i], &f);
             p.traits = self.traits[i];
             p.model_on = self.model_on;

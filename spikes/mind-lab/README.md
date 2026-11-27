@@ -1,4 +1,4 @@
-# Spike: the mind lab's shared mind (stages 1 and 2)
+# Spike: the mind lab's shared mind (stages 1 to 3)
 
 One mind library for every mind-lab scenario: teaching, danger, the hunt and the village build on it. It is the fox's mind from `spikes/thought-graph`, extracted and made general (any species, any number of minds), on the compact runtime form the compaction lab (`spikes/mind-compaction`) recommended. Headless, deterministic, integer maths only, no dependencies. The original fox is a dev-dependency, used only to prove the port faithful.
 
@@ -22,6 +22,7 @@ cargo run --release --example viewers && NODE_PATH=$(npm root -g) node tools/fra
 | `fox` | The first species: the valley (now able to hold many foxes), the founding, the scenarios, `Sim` (one fox, recorded) and `Pack` (many foxes sharing one valley and one base, stepped on any number of threads in any order), the home experiment, the viewer. |
 | `scale` | Big minds: the fox's founding graph plus a generated body of knowledge (10k, 100k nodes), so the real scenarios run at scale. |
 | `people` | Stage 2, teaching. People as a species (concepts in the shared base; places, landmarks, the others and trust on each person's own overlay), a valley with sound in the air and paper notes, hearing and grounding a described place in one's own landmarks, source links, checking a claim against the world, mistake-or-lie evidence, notes and maps, talk chosen from the mind's own state, the fox shown the spring (`fox_demo`), the scenario runs (`runs`) and a viewer. |
+| `danger` | Stage 3, danger with company. The wild **boar** as a species (`danger::boar`, built the fox's way, hunted so people anger it), and the scenarios (`danger::runs`): a hunter who expects a boar against a forager who doesn't, alone or with allies, a cry for help, and a plan under stress. |
 | `hashes` | The pinned determinism runs, also built for wasm32 (`src/bin/hashes.rs`). |
 
 **The open design question is a setting:** `Config::sleep_keep` (default 8): sleep keeps 1/`sleep_keep` of the day's plain strengthening. `tests/sleep_keep.rs` reports 1/8 against 1/3.
@@ -62,3 +63,21 @@ Teaching viewer pages: `cargo run --release --example teaching_viewers && NODE_P
 - Node keys are 32-bit: at 100k nodes 2 collide, and those ties fall back to the index.
 - `Runtime::recompile` folds a mind's overlay into a base of its own, keeping every link in place (weights to steps of 4).
 - Night still teleports the fox to its believed home; people sleep where they are and walk home at dusk if it pulls.
+
+## Stage 3 changes to the shared library
+
+- **Choosing** (fixes from stage 2): comfort is gated by need (`Config::comfort_gate`: fatigue, stress or low mood), a place's worth is discounted by distance (`Config::walk_cost`, half at 120 cells), and a goal under way is kept unless beaten by `SWITCH_MARGIN` (`Config::hold_goal`). `tests/home_pull.rs` shows each alone and together. People also get evening drowsiness (`Body::drowsy`, the circadian half of the two-process model), so they still walk home at dusk.
+- **Intent** (`Mind::form_intent`, `Held`): a plan node of the mind's own, rehearsed (topped up to `INTENT_HOLD`) while it is in the workspace, the rehearsal cut by stress as this temperament's stress cuts thought; dropped after `INTENT_LAPSE` ticks out of mind. A held intent **predicts** what it links to (smaller prediction error) and **focuses** spreading (`Mods::focus`: flows into the intent and its targets are multiplied by up to 2). `Config::focus` is the ablation.
+- **Danger responses** (`Roles::resp`, `Mind::respond`): flee, fight, call, freeze, hold, and aid for hearers. Every response is a node; flee is the reflex (one hop from danger, in play once danger passes the flee bar, boosted by stress); the rest need more hops. Company is sensed (companions draw `COMPANY` × arousal attention), read through the mind's own learnt links to "someone who stands with me", and emboldens (`COURAGE`) and buffers stress (`BUFFER`). The voice is its own channel: a mind cries out while its call node is active enough. New actions: `Hold`, `Freeze`, `Call`, `Charge`. The fox has no responses and is unchanged.
+- **People**: pain, a boar they can see, `Say::Help` (a shout heard by anyone in earshot, located by ear), a learnt ally link per person (`Founding::ally`, then a rule: seen standing with me while I'm in danger strengthens it, seen leaving weakens it), reactivity sets danger → freeze, and a habit of crying out (`Founding::calls`).
+- **Fixed on the way**: a `Vec<usize>` hashed as raw bytes made native and wasm32 hashes part (`Person::owe_thanks`); the focus code read the thread's edge buffer uncleared (caught by the new order test). The wasm32 test now fails when it can't run (skip only with `FV_SKIP_WASM=1`).
+
+```bash
+cargo test --release --test danger -- --nocapture --test-threads=2   # the scenarios, per seed
+cargo test --release --test danger_determinism -- --nocapture         # pinned, threads × orders
+cargo test --release --test danger_storage -- --nocapture             # bytes and µs
+cargo test --release --test home_pull -- --nocapture                  # the stage-2 fixes
+cargo run --release --example danger_viewers && NODE_PATH=$(npm root -g) node tools/frames.cjs out/danger viewer/danger-frames.json
+```
+
+Findings: `research/mind-lab/03-danger.md` in the store.

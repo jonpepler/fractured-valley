@@ -1,0 +1,17 @@
+[
+  {"file": "danger-hunter.html", "t": 10, "h": -1, "name": "danger-hunter-1", "label": "Before the meeting: the plan (hunt the boar by the oak) is held in mind, focus full"},
+  {"file": "danger-hunter.html", "t": 12, "h": 0, "name": "danger-hunter-2", "label": "The boar appears where the plan said: a small prediction error; thought runs from the plan to standing braced"},
+  {"file": "danger-hunter.html", "t": 13, "h": -1, "name": "danger-hunter-3", "label": "Stand my ground wins over fighting; running away never comes into play"},
+  {"file": "danger-hunter.html", "t": 16, "h": -1, "name": "danger-hunter-4", "label": "As the boar closes and anger builds, fighting overtakes holding"},
+  {"file": "danger-forager.html", "t": 12, "h": 0, "name": "danger-forager-1", "label": "A boar where none was expected: a full prediction error floods the mind"},
+  {"file": "danger-forager.html", "t": 12, "h": -1, "name": "danger-forager-2", "label": "Danger passes the flee bar: running away, one hop from danger and made stronger by stress, wins"},
+  {"file": "danger-forager.html", "t": 15, "h": -1, "name": "danger-forager-3", "label": "Still running; stress climbs and shortens thought"},
+  {"file": "danger-allies.html", "t": 12, "h": 0, "name": "danger-allies-1", "label": "Surprised, with Cai and Dee beside it: the companions draw attention because Bryn is alarmed"},
+  {"file": "danger-allies.html", "t": 12, "h": -1, "name": "danger-allies-2", "label": "Through Bryn's own links to 'someone who stands with me', courage lifts fighting over running away"},
+  {"file": "danger-allies.html", "t": 15, "h": -1, "name": "danger-allies-3", "label": "A few ticks on, stress has shortened thought and flight takes over"},
+  {"file": "danger-stress.html", "t": 12, "h": 0, "name": "danger-stress-1", "label": "Stress held at 700: rehearsal of the plan is cut, and thought is shortened"},
+  {"file": "danger-stress.html", "t": 14, "h": -1, "name": "danger-stress-2", "label": "The plan's pull weakens: standing braced loses to fighting (improvising)"},
+  {"file": "danger-call.html", "t": 13, "h": 0, "name": "danger-call-1", "label": "Cai hears Bryn cry for help: Bryn, 'a cry for help' and danger come to mind"},
+  {"file": "danger-call.html", "t": 13, "h": -1, "name": "danger-call-2", "label": "Going to help wins: Cai walks towards where the cry came from"},
+  {"file": "danger-call.html", "t": 17, "h": -1, "name": "danger-call-3", "label": "The cry has brought danger to mind too; later it runs"}
+]

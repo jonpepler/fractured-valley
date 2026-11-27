@@ -154,7 +154,7 @@ impl World {
                 .map(|e| Seen { id: e.id, kind: e.kind.k(), x: e.x, y: e.y, approaching: d2(e.x, e.y, f.x, f.y) < d2(e.px, e.py, f.x, f.y), available: e.servings > 0 })
                 .collect()
         };
-        Sense { tick: self.tick, seed: self.seed, body: Body { x: f.x, y: f.y, hunger: f.hunger, pain: f.pain, asleep: f.asleep, drowsy: 0 }, seen, cues: vec![] }
+        Sense { tick: self.tick, seed: self.seed, body: Body { x: f.x, y: f.y, hunger: f.hunger, pain: f.pain, asleep: f.asleep, drowsy: 0 }, seen, cues: vec![], alarms: vec![] }
     }
 
     /// Apply the script and move the dog. Call before minds read the world.
@@ -257,7 +257,7 @@ impl World {
             let f = &mut self.foxes[i];
             let mut moved = 0;
             match a {
-                Action::Stay | Action::Sleep => {}
+                Action::Stay | Action::Sleep | Action::Hold { .. } | Action::Freeze | Action::Call | Action::Charge { .. } => {}
                 Action::WalkTo { x, y } => { let (nx, ny) = step_toward(f.x, f.y, x, y); f.x = nx; f.y = ny; moved = 1; }
                 Action::Snap { entity } => {
                     let (fx, fy) = (f.x, f.y);

@@ -26,7 +26,7 @@ fn think_ns<F: Form>(f: &F, m: &Mind, n: u32, exact: bool) -> f64 {
     let p = fv_mind_lab::think::Params { exact, ..m.params };
     let mut st = Activation::new(f.len());
     let inj = [(m.roles.hunger, 400), (m.node("den"), 300), (m.node("fire"), 600)];
-    let mods = Mods { hunger: 700, arousal: 300, mood: -100, fatigue: 100, stress: 0 };
+    let mods = Mods { hunger: 700, arousal: 300, mood: -100, fatigue: 100, stress: 0, ..Mods::default() };
     let mut best = f64::MAX;
     for _ in 0..5 {
         let t0 = Instant::now();

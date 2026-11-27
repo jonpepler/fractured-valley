@@ -15,6 +15,7 @@
 //! - `scale`: big minds (the fox's founding graph plus a generated body of knowledge) for
 //!   measuring storage and cost at 10k and 100k nodes.
 
+pub mod danger;
 pub mod fox;
 pub mod graph;
 pub mod hashes;

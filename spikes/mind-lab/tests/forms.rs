@@ -139,7 +139,7 @@ fn key_ties_make_thinking_independent_of_numbering() {
     let (mut same_key, mut same_idx, mut acts_key, samples) = (0, 0, 0, 400u64);
     for i in 0..samples {
         let h = |k| hash(SEED, i, k, 0xbeef);
-        let mods = Mods { hunger: (h(1) % 1001) as i32, arousal: (h(2) % 900) as i32, mood: (h(3) % 1601) as i32 - 800, fatigue: (h(4) % 700) as i32, stress: (h(5) % 800) as i32 };
+        let mods = Mods { hunger: (h(1) % 1001) as i32, arousal: (h(2) % 900) as i32, mood: (h(3) % 1601) as i32 - 800, fatigue: (h(4) % 700) as i32, stress: (h(5) % 800) as i32, ..Mods::default() };
         let cue: Vec<(u32, i32)> = (0..3).map(|k| ((h(10 + k) % n as u64) as u32, 200 + (h(20 + k) % 800) as i32)).collect();
         let pcue: Vec<(u32, i32)> = cue.iter().map(|&(x, a)| (perm[x as usize], a)).collect();
         for index_ties in [false, true] {

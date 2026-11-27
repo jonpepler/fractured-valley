@@ -42,6 +42,8 @@ pub enum Say {
     AskOther(u32),
     /// An answer to `AskOther`: "it's at …" (refs only; what it is is in the question).
     TellOther(u32, Content),
+    /// Stage 3: "Help!", shouted. It carries no content: who cried and from where is in the sound.
+    Help,
 }
 
 /// Distance bands: (largest distance in the band, the distance a listener takes it to mean,
@@ -85,6 +87,7 @@ impl Say {
             Say::Correct(c) => format!("Careful: {}, now.", c.render()),
             Say::AskOther(w) => format!("Where is thing {w}?"),
             Say::TellOther(w, c) => format!("Thing {w} is {}.", c.render()),
+            Say::Help => "Help!".into(),
         }
     }
     /// The content of a claim, if this is one.

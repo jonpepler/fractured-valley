@@ -60,3 +60,24 @@ pub fn people_order(threads: usize, order: &[usize], ticks: u32) -> u64 {
     for _ in 0..ticks { v.step(threads, order); }
     v.state_hash()
 }
+
+/// The pinned danger runs (stage 3): a hunter and a forager meet a boar, alone or with allies, and
+/// a call for help carries to two people out of sight. People and the boar step on `threads` threads.
+pub fn danger_runs(threads: usize) -> Vec<(&'static str, u64)> {
+    use crate::danger::runs::{build, build_cast, meet, Case, Cast, MEET, TEMPERS, WATCH};
+    let drive = |mut v: crate::people::sim::Valley, seed: u64| { let order: Vec<usize> = (0..4).collect(); meet(&mut v, seed, 8); let _ = MEET; for _ in 0..WATCH { v.step(threads, &order); } v.state_hash() };
+    let mut out = vec![];
+    out.push(("danger: a hunter alone meets a boar", drive(build(&Case { seed: 1, temper: TEMPERS[1].1, allies: false, expected: true }, 700, 2).0, 1)));
+    out.push(("danger: a forager with two allies is surprised", drive(build(&Case { seed: 2, temper: TEMPERS[3].1, allies: true, expected: false }, 700, 2).0, 2)));
+    out.push(("danger: a cry for help to two out of sight", drive(build_cast(&Case { seed: 3, temper: TEMPERS[2].1, allies: true, expected: false }, &Cast { ally_dist: 16, calls: 700, ..Cast::default() }).0, 3)));
+    out
+}
+
+/// A danger valley (Bryn, two allies, the boar) on `threads` threads with people stepped in `order`.
+pub fn danger_order(threads: usize, order: &[usize]) -> u64 {
+    use crate::danger::runs::{build, meet, Case, TEMPERS, WATCH};
+    let mut v = build(&Case { seed: 5, temper: TEMPERS[0].1, allies: true, expected: true }, 700, 2).0;
+    meet(&mut v, 5, 8);
+    for _ in 0..WATCH { v.step(threads, order); }
+    v.state_hash()
+}

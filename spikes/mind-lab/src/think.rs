@@ -32,6 +32,12 @@ pub struct Mods {
     /// 0..1000. Shortens thinking (fewer hops, a smaller frontier), damps slow associative links,
     /// and favours anger.
     pub stress: i32,
+    /// Stage 3: **focus**, 0..1000. A held intent (`intent`, a node) biases spreading towards
+    /// itself: every flow into the intent or into a node it links to is multiplied by
+    /// `(1000 + focus) / 1000`. The mind sets focus from how strongly the intent is held this tick,
+    /// so whatever squeezes the intent out of mind (surprise, a crowded workspace) weakens it.
+    pub focus: i32,
+    pub intent: u32,
 }
 
 /// One out-link as a form reports it to the think.
@@ -264,6 +270,15 @@ pub fn think<F: Form + ?Sized>(f: &F, st: &mut Activation, m: &Mods, inject: &[(
     order(st, &mut frontier);
 
     let mut edges = std::mem::take(&mut st.edges);
+    // Focus (stage 3): the intent and what it links to, sorted, if an intent is held.
+    let focus_set: Vec<u32> = if m.focus > 0 && (m.intent as usize) < f.len() {
+        // (Clear first: the buffer is the thread's, and holds the last mind's edges.)
+        edges.clear();
+        f.edges(m.intent, &mut edges);
+        let mut v: Vec<u32> = edges.iter().map(|e| e.to).collect();
+        v.push(m.intent); v.sort_unstable(); v.dedup(); edges.clear(); v
+    } else { vec![] };
+    let fgain = 1000 + m.focus.clamp(0, 1000) as i64;
     let dk = p.hop_decay as i64;
     st.visits = 0;
     st.hops_run = 0;
@@ -281,7 +296,8 @@ pub fn think<F: Form + ?Sized>(f: &F, st: &mut Activation, m: &Mods, inject: &[(
             for e in &edges {
                 let tv = f.tags(e.to);
                 let g = table.get(e.ty as usize * 8 + tagclass(tv), f.val(e.to) + e.val, p.exact);
-                let flow = if p.exact { src as i64 * e.w as i64 / out_sum * g / 1000 * dk / 1000 } else { ((e.w as i64 * kf) >> 24) * g * dk / 1_000_000 } as i32;
+                let flow = if p.exact { src as i64 * e.w as i64 / out_sum * g / 1000 * dk / 1000 } else { ((e.w as i64 * kf) >> 24) * g * dk / 1_000_000 };
+                let flow = if !focus_set.is_empty() && focus_set.binary_search(&e.to).is_ok() { flow * fgain / 1000 } else { flow } as i32;
                 if flow < p.min_act { continue; }
                 let slot = &mut st.inc[e.to as usize];
                 if *slot == 0 { st.touched.push(e.to); }

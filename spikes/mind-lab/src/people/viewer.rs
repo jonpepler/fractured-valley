@@ -13,6 +13,7 @@ use crate::think::Form;
 use std::fmt::Write;
 
 const TEMPLATE: &str = include_str!("../../viewer/people-template.html");
+const DANGER_TEMPLATE: &str = include_str!("../../viewer/danger-template.html");
 
 fn esc(s: &str) -> String { s.replace('\\', "\\\\").replace('"', "\\\"") }
 
@@ -28,18 +29,26 @@ fn action_text(a: &Action, v: &Valley, who: usize) -> String {
         Action::Snap { .. } => "snap".into(),
         Action::Eat { entity } => format!("drink from {}", v.w.things.iter().find(|t| t.id == entity).map(|t| t.name.as_str()).unwrap_or("?")),
         Action::Sleep => "sleep".into(),
+        Action::Hold { .. } => "hold its ground".into(),
+        Action::Freeze => "freeze".into(),
+        Action::Call => "call for help".into(),
+        Action::Charge { .. } => "close in to fight".into(),
     }
 }
 
 /// The page for a recorded valley (recording `who`'s mind).
-pub fn page(v: &Valley, title: &str, subtitle: &str, keys: &[Key]) -> String {
+pub fn page(v: &Valley, title: &str, subtitle: &str, keys: &[Key]) -> String { page_with(v, title, subtitle, keys, false) }
+/// Stage 3: the danger page: the boar on the map, pain in place of thirst, and the focus of a
+/// held intent as a bar (`viewer/danger-template.html`).
+pub fn danger_page(v: &Valley, title: &str, subtitle: &str, keys: &[Key]) -> String { page_with(v, title, subtitle, keys, true) }
+fn page_with(v: &Valley, title: &str, subtitle: &str, keys: &[Key], danger: bool) -> String {
     let who = v.record.expect("recorded");
     let p = &v.folk[who];
     let m = &p.m;
     let ex: Expanded = expand_any(&m.store);
     let li = |k: LinkKey| ex.offsets[link_src(k) as usize] as usize + link_pos(k);
     let mut j = String::with_capacity(1 << 20);
-    write!(j, "{{\"title\":\"{}\",\"subtitle\":\"{}\",\"form\":\"runtime (shared base + overlay), drawn expanded\",\"me\":\"{}\",\"drive\":\"thirst\",\"grid\":[{},{}],", esc(title), esc(subtitle), &NAMES[who][..1], GRID_W, GRID_H).unwrap();
+    write!(j, "{{\"title\":\"{}\",\"subtitle\":\"{}\",\"form\":\"runtime (shared base + overlay), drawn expanded\",\"me\":\"{}\",\"drive\":\"{}\",\"grid\":[{},{}],", esc(title), esc(subtitle), &NAMES[who][..1], if danger { "pain" } else { "thirst" }, GRID_W, GRID_H).unwrap();
     j.push_str("\"places\":[");
     let home = m.home();
     let mut first_p = true;
@@ -87,8 +96,9 @@ pub fn page(v: &Valley, title: &str, subtitle: &str, keys: &[Key]) -> String {
         let mut act = vec![0i32; ex.len()];
         for &(n, a) in &f.act { if (n as usize) < act.len() { act[n as usize] = a; } }
         let ws: Vec<u32> = f.ws.iter().copied().filter(|&n| (n as usize) < ex.len()).collect();
-        write!(j, "{{\"t\":{},\"fox\":[{},{}],\"dog\":null,\"fires\":[],\"m\":[{},{},{},{},{},{}],\"act\":{:?},\"hops\":[{}],\"ws\":{:?},\"action\":\"{}\",\"why\":\"{}\",\"ev\":[{}],\"fast\":[{}],\"per\":[{}],\"slept\":{},\"burrows\":[{}],\"backlog\":{}}}",
-            f.tick, f.me.0, f.me.1, f.thirst, f.mods.arousal, f.mods.mood, f.mods.fatigue, 0, f.mods.stress,
+        write!(j, "{{\"t\":{},\"fox\":[{},{}],\"dog\":{},\"fires\":[],\"m\":[{},{},{},{},{},{}],\"act\":{:?},\"hops\":[{}],\"ws\":{:?},\"action\":\"{}\",\"why\":\"{}\",\"ev\":[{}],\"fast\":[{}],\"per\":[{}],\"slept\":{},\"burrows\":[{}],\"backlog\":{}}}",
+            f.tick, f.me.0, f.me.1, f.boar.filter(|_| danger).map(|(x, y)| format!("[{x},{y},\"\"]")).unwrap_or("null".into()),
+            if danger { f.pain } else { f.thirst }, f.mods.arousal, f.mods.mood, f.mods.fatigue, if danger { f.focus } else { 0 }, f.mods.stress,
             act, hops.join(","), ws, esc(&action_text(&f.action, v, who)), esc(&f.why), ev.join(","), fast.join(","), per.join(","), f.slept, marks.join(","), f.backlog).unwrap();
     }
     j.push_str("],\"keys\":[");
@@ -97,5 +107,5 @@ pub fn page(v: &Valley, title: &str, subtitle: &str, keys: &[Key]) -> String {
         write!(j, "{{\"t\":{t},\"h\":{},\"label\":\"{}\"}}", h.map(|h| h as i64).unwrap_or(-1), esc(c)).unwrap();
     }
     write!(j, "],\"persist\":{},\"hopsPerTick\":{}}}", m.params.persist, m.params.hops).unwrap();
-    TEMPLATE.replace("/*TITLE*/", title).replace("/*DATA*/", &j)
+    (if danger { DANGER_TEMPLATE } else { TEMPLATE }).replace("/*TITLE*/", title).replace("/*DATA*/", &j)
 }

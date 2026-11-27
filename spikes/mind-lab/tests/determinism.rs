@@ -13,8 +13,9 @@ use fv_mind_lab::rng::hash;
 /// calm, dim co-activation now learns), and the hash also covers the mind's place and entity
 /// lists, where its own learning starts, and the nights it has slept.
 /// Moved again in stage 3: comfort gated by need, a cost of distance and commitment to a goal
-/// (behaviour), and the settings for them are hashed.
-const PINNED: [u64; 6] = [0x6799_fcb8_4ffa_9a37, 0x6104_4744_1ced_2f65, 0x8ef4_96eb_49a3_2845, 0x4bd3_164a_c837_399f, 0x956a_7956_f529_2881, 0x4d35_b9f8_09cf_21e5];
+/// (behaviour), and the settings for them are hashed; then the stage-3 state (intent, alarm,
+/// response) is hashed too (the fox has none of it, so its behaviour is unchanged).
+const PINNED: [u64; 6] = [0xceac_5bc7_b1a3_920e, 0x289c_557a_2dad_76e1, 0x8538_509b_ff7e_868e, 0x0ca2_05e4_8e70_9cea, 0xe679_e147_c181_09a3, 0xb58b_f7b4_af79_e1b5];
 
 #[test]
 fn identical_runs_give_identical_pinned_hashes() {
@@ -87,7 +88,7 @@ fn native_and_wasm32_builds_agree() {
     let out = std::process::Command::new("node").current_dir(dir).args(["--no-warnings", "tools/wasi.mjs", "target/wasm-test/wasm32-wasip1/release/hashes.wasm"]).output().unwrap();
     assert!(out.status.success(), "node run failed: {}", String::from_utf8_lossy(&out.stderr));
     let wasm: Vec<u64> = String::from_utf8_lossy(&out.stdout).lines().map(|l| u64::from_str_radix(l.split_whitespace().next().unwrap().trim_start_matches("0x"), 16).unwrap()).collect();
-    let native: Vec<u64> = runs(4).iter().chain(fv_mind_lab::hashes::people_runs(4).iter()).map(|x| x.1).collect();
+    let native: Vec<u64> = runs(4).iter().chain(fv_mind_lab::hashes::people_runs(4).iter()).chain(fv_mind_lab::hashes::danger_runs(4).iter()).map(|x| x.1).collect();
     println!("native (4 threads for the pack) {native:x?}\nwasm32 under node (1 thread)    {wasm:x?}");
     assert_eq!(native, wasm);
 }

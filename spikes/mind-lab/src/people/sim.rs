@@ -32,6 +32,10 @@ pub struct Frame {
     pub percepts: Vec<(u32, i32)>,
     pub slept: bool,
     pub backlog: i64,
+    /// Stage 3: where the first boar is, and the mind's focus.
+    pub boar: Option<(i32, i32)>,
+    pub focus: i32,
+    pub pain: i32,
 }
 
 #[derive(Clone)]
@@ -42,10 +46,12 @@ pub struct Valley {
     pub record: Option<usize>,
     pub frames: Vec<Frame>,
     pub snapshots: Vec<(u32, Vec<i16>, Vec<i16>)>,
+    /// Stage 3: the boars' minds (boar `b` is `w.boars[b]`), stepped in the same tick as people.
+    pub beasts: Vec<crate::mind::Mind<crate::store::Runtime>>,
 }
 
 impl Valley {
-    pub fn new(w: World, folk: Vec<Person>) -> Valley { Valley { w, folk, record: None, frames: vec![], snapshots: vec![] } }
+    pub fn new(w: World, folk: Vec<Person>) -> Valley { Valley { w, folk, record: None, frames: vec![], snapshots: vec![], beasts: vec![] } }
     pub fn at(&mut self, tick: u32, e: super::world::Event) { self.w.script.push((tick, e)); }
     pub fn recording(mut self, who: usize) -> Self {
         self.record = Some(who); self.folk[who].m.trace = true;
@@ -62,10 +68,16 @@ impl Valley {
         if slept {
             let senses: Vec<_> = (0..self.folk.len()).map(|i| self.w.sense(i, true)).collect();
             run(&mut self.folk, threads, order, |i, p| { p.m.night(&senses[i]); Deed::default() });
+            let bs: Vec<_> = (0..self.beasts.len()).map(|b| self.w.sense_boar(b)).collect();
+            let border: Vec<usize> = (0..self.beasts.len()).collect();
+            crate::fox::sim::run_minds(&mut self.beasts, threads, &border, |b, m| { m.night(&bs[b]); Action::Sleep });
             if let Some(r) = self.record { let (w, v) = crate::fox::viewer::snapshot(&self.folk[r].m.store); self.snapshots.push((self.w.tick, w, v)); }
         }
         let w = &self.w;
         let deeds = run(&mut self.folk, threads, order, |_, p| p.think(w));
+        // Boars read the same start-of-tick world (in reverse order, so order is exercised too).
+        let border: Vec<usize> = (0..self.beasts.len()).rev().collect();
+        let boar_acts = crate::fox::sim::run_minds(&mut self.beasts, threads, &border, |b, m| { let s = w.sense_boar(b); let a = m.step(&s); m.commit(&s, a); a });
         if let Some(r) = self.record {
             let m = &self.folk[r].m;
             let rep = &m.last;
@@ -78,9 +90,10 @@ impl Valley {
                 mods: m.mods, thirst: me.thirst, act: m.st.act.clone(), hops: rep.hops.clone(), ws: rep.ws.clone(), action: deeds[r].action.unwrap_or(Action::Stay), why: rep.why.clone(),
                 events: vec![], fast: m.store.fast_entries().into_iter().filter(|&(_, f)| f >= 20).collect(),
                 percepts: rep.percepts.iter().map(|p| (p.node, p.error)).collect(), slept, backlog: rep.backlog,
+                boar: self.w.boars.first().map(|q| (q.x, q.y)), focus: m.mods.focus, pain: me.pain,
             });
         }
-        self.w.post_step(&deeds);
+        self.w.post_step_with(&deeds, &boar_acts);
         if self.record.is_some() { if let Some(f) = self.frames.last_mut() { f.events = self.w.log[log0..].iter().map(|l| l.1.clone()).collect(); } }
     }
     pub fn run(&mut self, ticks: u32) { let order: Vec<usize> = (0..self.folk.len()).collect(); for _ in 0..ticks { self.step(1, &order); } }
@@ -90,6 +103,7 @@ impl Valley {
         let mut h = StateHasher::new(self.w.seed);
         self.w.hash_into(&mut h);
         for p in &self.folk { p.state_hash().hash(&mut h); }
+        for m in &self.beasts { m.state_hash().hash(&mut h); }
         h.finish()
     }
 }

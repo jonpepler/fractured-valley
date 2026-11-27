@@ -101,6 +101,8 @@ pub struct Person {
     pub curious: Vec<u32>,
     /// Staging only: this person is away (it neither thinks nor acts; the scenario has sent it off).
     pub away: bool,
+    /// Stage 3: how far each other person was when last seen (for "came to me" or "left me").
+    pub seen_d: [i32; PEOPLE],
 }
 
 pub const READ_AT: i32 = 60;
@@ -120,7 +122,7 @@ impl Hash for Person {
         self.m.state_hash().hash(h); self.traits.hash(h); self.medium.hash(h); self.lex.hash(h); self.pnode.hash(h); self.told.hash(h); self.notes.hash(h);
         // Element by element: std hashes a slice of `usize` as raw bytes (8 on native, 4 on wasm32),
         // which made native and wasm32 hashes part as soon as someone owed thanks (stage 3).
-        self.owe_thanks.len().hash(h); for &a in &self.owe_thanks { (a as u64).hash(h); } self.corrected_to.hash(h); self.model_on.hash(h); self.offload.hash(h); self.last_ask.hash(h); self.said.hash(h); self.pending.hash(h); self.curious.hash(h); self.away.hash(h);
+        self.owe_thanks.len().hash(h); for &a in &self.owe_thanks { (a as u64).hash(h); } self.corrected_to.hash(h); self.model_on.hash(h); self.offload.hash(h); self.last_ask.hash(h); self.said.hash(h); self.pending.hash(h); self.curious.hash(h); self.away.hash(h); self.seen_d.hash(h);
     }
 }
 
@@ -145,7 +147,7 @@ impl Person {
     pub fn new(w: &World, i: usize, t: Temperament, f: &Founding) -> Person {
         let (m, lex, pnode) = found(w, i, t, f);
         Person { i, m, ids: people().ids, traits: Traits::default(), medium: Medium::Speak, lex, pnode, told: vec![], notes: vec![], owe_thanks: vec![], corrected_to: vec![],
-            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false }
+            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: [-1; PEOPLE] }
     }
     pub fn state_hash(&self) -> u64 { let mut h = crate::rng::StateHasher::new(self.m.who); self.hash(&mut h); h.finish() }
 
@@ -377,6 +379,7 @@ impl Person {
         let mut s: Sense = w.sense(i, false);
         if s.body.asleep { let a = self.m.step(&s); self.m.commit(&s, a); deed.action = Some(a); return deed; }
         let mut cues = vec![];
+        let mut alarms = vec![];
         // Hearing.
         let heard = w.heard(i);
         let mut asked_water: Vec<usize> = vec![];
@@ -386,6 +389,14 @@ impl Person {
             cues.push((self.pnode[a], (*loud / 2).min(400)));
             match &u.say {
                 Say::AskWater => { if *to_me { asked_water.push(a); } }
+                // Stage 3: a cry for help. Who cried is known by voice and where by ear; what it
+                // means (come, flee, ignore it) is up to this mind.
+                Say::Help => {
+                    cues.push((self.ids.cry, (*loud / 2).min(600)));
+                    let n = self.pnode[a];
+                    self.m.store.set_anchor(n, Anchor::Entity { id: super::world::person_id(a), x: u.x as i16, y: u.y as i16 });
+                    alarms.push((n, u.x, u.y));
+                }
                 Say::AskOther(wd) => { if *to_me { asked_other.push((a, *wd)); } }
                 Say::Thanks => {
                     if *to_me { let n = self.pnode[a]; let v = self.m.store.val(n); self.m.store.set_val(n, (v + (1000 - v) / 8) as i16); }
@@ -431,9 +442,12 @@ impl Person {
         self.correct_map(&s);
         if w.dusk { cues.push((self.ids.rest, 600)); cues.push((self.ids.fatigue, 300)); }
         s.cues = cues;
+        s.alarms = alarms;
         let a = self.m.step(&s);
         self.m.commit(&s, a);
         deed.action = Some(a);
+        self.learn_allies(&s);
+        if a == Action::Call || self.m.held.calling { deed.say = Some((Say::Help, None, super::world::SHOUT)); return deed; }
         // Seeing someone at a water place I know: they know it too (Ash learns it was overheard).
         if self.model_on {
             for p in &self.m.last.percepts.clone() {
@@ -447,6 +461,26 @@ impl Person {
         }
         deed.say = self.speak(w, &s, &asked_water, &asked_other, &mut deed);
         deed
+    }
+
+    /// Stage 3: who stands with me, learnt from what I see while I am in danger. Someone who comes
+    /// towards me or is near the threat with me counts more as an ally; someone who moves away
+    /// from me counts less. (A rule, like the trust updates: listed in the stage note.)
+    fn learn_allies(&mut self, s: &Sense) {
+        let ids = self.ids;
+        let in_danger = self.m.act(ids.danger) >= crate::mind::OPTION_AT && self.m.last.percepts.iter().any(|p| p.kind == Kind::Boar.k());
+        let threat = self.m.last.percepts.iter().find(|p| p.kind == Kind::Boar.k()).map(|p| (p.x, p.y));
+        for j in (0..PEOPLE).filter(|&j| j != self.i) {
+            let Some(p) = self.m.last.percepts.iter().find(|p| p.node == self.pnode[j]).cloned() else { self.seen_d[j] = -1; continue };
+            let d = dist(p.x, p.y, s.body.x, s.body.y);
+            if in_danger {
+                let with_me = p.approaching || threat.is_some_and(|(tx, ty)| dist(p.x, p.y, tx, ty) <= 4);
+                let left = self.seen_d[j] >= 0 && d > self.seen_d[j] && !with_me;
+                if with_me { strengthen(&mut self.m, self.pnode[j], ids.ally, lt::ASSOC, 60, None); }
+                else if left { if let Some(k) = self.m.store.find(self.pnode[j], ids.ally, lt::ASSOC) { let w0 = self.m.store.slow(k) as i32; self.m.store.set_slow(k, (w0 * 9 / 10) as i16); } }
+            }
+            self.seen_d[j] = d;
+        }
     }
 
     /// Check unresolved claims against what is in sight: confirm on finding the water, disconfirm

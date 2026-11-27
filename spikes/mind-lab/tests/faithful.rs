@@ -30,7 +30,7 @@ fn act_old(a: old::world::Action) -> String {
 }
 fn act_new(a: Action) -> String {
     match a { Action::Stay => "stay".into(), Action::WalkTo { x, y } => format!("walk({x},{y})"), Action::Flee { from_x, from_y, speed } => format!("flee({from_x},{from_y},{speed})"),
-        Action::Snap { entity } => format!("snap({entity})"), Action::Eat { entity } => format!("eat({entity})"), Action::Sleep => "sleep".into() }
+        Action::Snap { entity } => format!("snap({entity})"), Action::Eat { entity } => format!("eat({entity})"), Action::Sleep => "sleep".into(), other => format!("{other:?}") }
 }
 
 /// Run both for `ticks`; return the first tick they differ at (and how), or None.

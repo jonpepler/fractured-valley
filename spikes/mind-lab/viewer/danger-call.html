@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Danger: a cry for help</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --panel: #ffffff; --ink: #1f2328; --muted: #6b7280; --line: #d9dce1;
+    --neg: #c2410c; --pos: #0f766e; --flow: #f59e0b; --fast: #7c3aed; --ws: #ca8a04; --surp: #dc2626;
+    --map: #e9efe0; --water: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 12px 16px 4px; }
+  h1 { font-size: 18px; margin: 0; }
+  .sub { color: var(--muted); margin-top: 2px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #e5e7eb; margin-left: 6px; vertical-align: 2px; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 10px; padding: 8px 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-width: 0; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 4px; font-weight: 600; }
+  svg { display: block; width: 100%; height: auto; }
+  .right { display: grid; gap: 10px; align-content: start; }
+  .action { font-size: 15px; font-weight: 600; }
+  .why { color: var(--muted); min-height: 1.4em; }
+  .ws-row { display: grid; grid-template-columns: 120px 1fr 44px; gap: 6px; align-items: center; font-size: 12px; }
+  .ws-bar { height: 8px; border-radius: 4px; }
+  .ev { font-size: 12px; color: var(--ink); }
+  .ev .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 16px 0; }
+  button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; cursor: pointer; }
+  input[type=range] { flex: 1; min-width: 160px; }
+  .tick { font-variant-numeric: tabular-nums; min-width: 150px; }
+  .legend { color: var(--muted); font-size: 11px; padding: 4px 16px 14px; }
+  .legend span { margin-right: 14px; white-space: nowrap; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; vertical-align: -1px; margin-right: 4px; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="sub" id="subtitle"></div>
+</header>
+<div class="controls">
+  <button id="play">Play</button>
+  <button id="prev" title="previous tick (←)">◀ tick</button>
+  <button id="next" title="next tick (→)">tick ▶</button>
+  <button id="hop" title="next hop within the tick (h)">hop ▸</button>
+  <input type="range" id="slider" min="0" value="0">
+  <span class="tick" id="ticklabel"></span>
+</div>
+<div class="wrap">
+  <div class="panel">
+    <h2>The person's mind: activation spreading <span id="hoplabel"></span></h2>
+    <svg id="graph" viewBox="0 0 980 520"></svg>
+  </div>
+  <div class="right">
+    <div class="panel">
+      <h2>The world</h2>
+      <svg id="map" viewBox="0 0 448 280"></svg>
+    </div>
+    <div class="panel">
+      <h2>Modulators and body</h2>
+      <svg id="bars" viewBox="0 0 380 140"></svg>
+    </div>
+    <div class="panel">
+      <h2>Chosen action</h2>
+      <div class="action" id="action"></div>
+      <div class="why" id="why"></div>
+    </div>
+    <div class="panel">
+      <h2>Workspace (what's on its mind)</h2>
+      <div id="ws"></div>
+    </div>
+    <div class="panel">
+      <h2>Events</h2>
+      <div id="events"></div>
+    </div>
+  </div>
+</div>
+<div class="wrap" style="grid-template-columns: 1fr; padding-top: 0">
+  <div class="panel">
+    <h2>Over time: mood (teal), arousal (red), hunger (amber), stress (violet), fatigue = consolidation backlog (grey); events marked</h2>
+    <svg id="timeline" viewBox="0 0 980 80"></svg>
+  </div>
+</div>
+<div class="legend">
+  <span><i class="sw" style="background:var(--pos)"></i>good feeling</span>
+  <span><i class="sw" style="background:var(--neg)"></i>bad feeling</span>
+  <span>size = activation</span>
+  <span><i class="sw" style="background:var(--flow)"></i>activation crossing a link this hop</span>
+  <span><i class="sw" style="background:var(--fast)"></i>fast weight (today's trace)</span>
+  <span><i class="sw" style="border:2px solid var(--ws);background:none"></i>in the workspace</span>
+  <span><i class="sw" style="border:2px solid var(--surp);background:none"></i>surprise (prediction error)</span>
+  <span>squares = places at their real map position; ringed = things in the world; plain = connectors</span>
+</div>
+<script>
+const D = {"title":"Danger: a cry for help","subtitle":"Bryn, taught to cry out, calls; Cai, 16 cells away and out of sight, hears it.","form":"runtime (shared base + overlay), drawn expanded","me":"C","drive":"pain","grid":[64,40],"places":[{"name":"camp","x":10,"y":22,"home":true},{"name":"stream","x":53,"y":36,"home":false},{"name":"windmill","x":52,"y":13,"home":false},{"name":"old oak","x":25,"y":4,"home":false}],"nodes":[{"name":"thirst","kind":"body","x":-1,"y":-1,"at":-1,"place":-1},{"name":"fatigue","kind":"body","x":-1,"y":-1,"at":-1,"place":-1},{"name":"pain","kind":"body","x":-1,"y":-1,"at":-1,"place":-1},{"name":"water","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"danger","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"rest","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"anger","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"loss","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"comfort","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"a person","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"truth","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"a lie","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"a mistake","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"a favour owed","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"a note","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"a landmark","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"dry ground","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"a boar","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"run away","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"fight","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"call for help","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"keep still","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"stand my ground","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"go to help","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"someone who stands with me","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"a cry for help","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"camp","kind":"place","x":10,"y":22,"at":-1,"place":0},{"name":"stream","kind":"place","x":53,"y":36,"at":-1,"place":1},{"name":"the stream","kind":"thing","x":53,"y":36,"at":27,"place":-1},{"name":"windmill","kind":"place","x":52,"y":13,"at":-1,"place":2},{"name":"old oak","kind":"place","x":25,"y":4,"at":-1,"place":3},{"name":"Ash","kind":"thing","x":10,"y":22,"at":-1,"place":-1},{"name":"Bryn","kind":"thing","x":25,"y":8,"at":-1,"place":-1},{"name":"Dee","kind":"thing","x":11,"y":22,"at":-1,"place":-1}],"links":[[0,3,0,800],[1,5,0,800],[2,4,0,700],[2,6,0,352],[2,26,6,0],[2,27,6,0],[2,29,6,0],[2,30,6,0],[3,26,6,0],[3,27,6,0],[3,28,7,600],[3,29,6,0],[3,30,6,0],[4,6,7,400],[4,18,0,500],[4,20,7,252],[4,21,7,276],[4,22,7,152],[4,26,6,0],[4,27,6,0],[4,29,6,0],[4,30,6,0],[5,8,7,500],[5,26,6,0],[5,26,7,600],[5,27,6,0],[5,29,6,0],[5,30,6,0],[6,4,7,300],[6,19,0,600],[7,6,0,224],[7,26,6,0],[7,27,6,0],[7,29,6,0],[7,30,6,0],[8,5,7,400],[8,26,6,0],[8,26,7,500],[8,27,6,0],[8,29,6,0],[8,30,6,0],[11,6,7,300],[16,7,7,400],[17,4,1,776],[24,19,7,300],[24,22,7,600],[24,23,7,400],[25,4,7,467],[25,23,7,500],[26,3,6,0],[26,4,6,0],[26,2,6,0],[26,7,6,0],[26,8,6,0],[26,5,6,0],[26,5,7,600],[26,8,7,700],[26,27,4,37],[26,29,4,75],[26,30,4,312],[27,3,6,0],[27,4,6,0],[27,2,6,0],[27,7,6,0],[27,8,6,0],[27,5,6,0],[27,26,4,37],[27,28,2,700],[27,29,4,312],[27,30,4,75],[28,3,1,700],[28,27,3,800],[29,3,6,0],[29,4,6,0],[29,2,6,0],[29,7,6,0],[29,8,6,0],[29,5,6,0],[29,26,4,75],[29,27,4,312],[29,30,4,250],[30,3,6,0],[30,4,6,0],[30,2,6,0],[30,7,6,0],[30,8,6,0],[30,5,6,0],[30,26,4,312],[30,27,4,75],[30,29,4,250],[31,10,7,600],[31,13,7,0],[31,9,1,600],[32,10,7,667],[32,13,7,0],[32,9,1,667],[32,24,7,767],[33,10,7,672],[33,13,7,0],[33,9,1,677],[33,24,7,774]],"linkTypes":["wants","kind","holds","at","near","like","feels","assoc","source"],"snapshots":[{"t":0,"w":[800, 800, 700, 352, 0, 0, 0, 0, 0, 0, 600, 0, 0, 400, 500, 252, 276, 152, 0, 0, 0, 0, 500, 0, 600, 0, 0, 0, 300, 600, 224, 0, 0, 0, 0, 400, 0, 500, 0, 0, 0, 300, 400, 700, 300, 600, 400, 400, 500, 0, 0, 0, 0, 0, 0, 600, 700, 37, 75, 312, 0, 0, 0, 0, 0, 0, 37, 700, 312, 75, 700, 800, 0, 0, 0, 0, 0, 0, 75, 312, 250, 0, 0, 0, 0, 0, 0, 312, 75, 250, 600, 0, 600, 600, 0, 600, 700, 600, 0, 600, 700],"val":[-200, -100, -600, 300, -700, 300, -200, -500, 500, 100, 300, -500, -100, 100, 100, 0, -300, -300, -100, -100, 0, -200, 100, 100, 400, -300, 400, 0, 200, 0, 0, 300, 300, 300]}],"frames":[{"t":0,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,9,0,0,0],"act":[0, 0, 0, 0, 0, 40, 0, 0, 8, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 10, 0, 0, 0, 0, 0, 0, 40],"hops":[[[5,26,10],[5,8,8],[33,9,6],[33,24,6]],[]],"ws":[5, 33, 26, 8, 9, 24],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,100],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":1,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,18,0,0,0],"act":[0, 0, 0, 0, 0, 60, 0, 0, 9, 7, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 12, 0, 0, 0, 0, 0, 0, 60],"hops":[[[5,26,12],[5,8,9],[33,9,7],[33,24,7],[33,10,6]],[]],"ws":[5, 33, 26, 8, 9, 24, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,97],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":2,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,27,0,0,0],"act":[0, 0, 0, 0, 0, 70, 0, 0, 10, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 18, 0, 0, 0, 0, 0, 0, 70],"hops":[[[5,26,12],[5,8,10],[33,9,8],[33,24,8],[33,10,7]],[]],"ws":[5, 33, 26, 8, 9, 24, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,94],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":3,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,36,0,0,0],"act":[0, 0, 0, 0, 0, 75, 0, 0, 11, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 22, 0, 0, 0, 0, 0, 0, 75],"hops":[[[5,26,13],[5,8,11],[33,9,8],[33,24,8],[33,10,7]],[]],"ws":[5, 33, 26, 8, 9, 24, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,92],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":4,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,44,0,0,0],"act":[0, 0, 0, 0, 0, 77, 0, 0, 11, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 24, 0, 0, 0, 0, 0, 0, 77],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,7]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,90],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":5,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,52,0,0,0],"act":[0, 0, 0, 0, 0, 78, 0, 0, 11, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 25, 0, 0, 0, 0, 0, 0, 78],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,88],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":6,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,60,0,0,0],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 25, 0, 0, 0, 0, 0, 0, 79],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,86],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":7,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,68,0,0,0],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 25, 0, 0, 0, 0, 0, 0, 79],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,84],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":8,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,75,0,0,0],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 25, 0, 0, 0, 0, 0, 0, 79],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,82],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":9,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,82,0,0,0],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 25, 0, 0, 0, 0, 0, 0, 79],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,80],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":10,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,89,0,0,0],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 25, 0, 0, 0, 0, 0, 0, 79],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,78],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":11,"fox":[17,18],"dog":[62,1,""],"fires":[],"m":[0,0,96,0,0,0],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 25, 0, 0, 0, 0, 0, 0, 79],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[],"per":[[5,76],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":12,"fox":[17,18],"dog":[39,21,""],"fires":[],"m":[0,0,102,0,0,0],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 25, 0, 0, 0, 0, 0, 0, 79],"hops":[[[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[]],"ws":[5, 33, 26, 8, 24, 9, 10],"action":"stay","why":"nothing pulls","ev":["Bryn says to anyone: Help!"],"fast":[],"per":[[5,74],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[33,16,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":13,"fox":[17,18],"dog":[37,19,""],"fires":[],"m":[0,1,100,0,0,0],"act":[0, 0, 0, 0, 73, 79, 8, 0, 11, 73, 68, 0, 0, 0, 0, 0, 0, 0, 12, 8, 0, 0, 17, 103, 79, 374, 25, 0, 0, 0, 0, 0, 374, 79],"hops":[[[25,23,92],[25,4,73],[32,24,70],[32,9,65],[32,10,60],[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[[24,22,17],[4,18,12],[24,23,11],[24,19,8],[4,6,8]],[]],"ws":[25, 32, 23, 5, 24, 33, 9, 4],"action":"walk toward (32, 15)","why":"aid: flee 0, aid 135 (danger 73, stress 0, reflex bar 300, courage 316)","ev":["Bryn says to anyone: Help!"],"fast":[],"per":[[5,72],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[32,15,"Bryn"],[17,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":14,"fox":[18,18],"dog":[35,17,""],"fires":[],"m":[0,3,98,0,0,0],"act":[0, 0, 0, 0, 133, 79, 11, 0, 11, 123, 114, 0, 0, 0, 0, 0, 0, 0, 22, 10, 7, 7, 29, 186, 133, 625, 25, 0, 0, 0, 0, 0, 587, 80],"hops":[[[25,23,122],[25,4,97],[32,24,85],[32,9,79],[32,10,72],[5,26,13],[5,8,11],[33,24,9],[33,9,8],[33,10,8]],[[24,22,21],[4,18,16],[24,23,13],[4,6,11],[24,19,10],[4,20,7],[4,21,7]],[]],"ws":[25, 32, 23, 24, 4, 9, 10, 33],"action":"walk toward (31, 14)","why":"aid: flee 0, aid 355 (danger 133, stress 0, reflex bar 300, courage 532)","ev":["Bryn says to anyone: Help!"],"fast":[],"per":[[5,70],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[31,14,"Bryn"],[18,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":0},{"t":15,"fox":[19,18],"dog":[33,15,""],"fires":[],"m":[0,5,95,0,0,0],"act":[0, 0, 0, 0, 189, 79, 15, 0, 11, 154, 142, 0, 0, 0, 0, 0, 0, 0, 31, 11, 9, 10, 36, 262, 167, 841, 25, 0, 0, 0, 0, 0, 693, 83],"hops":[[[25,23,154],[25,4,123],[32,24,91],[32,9,84],[32,10,77],[5,26,13],[5,8,11],[33,24,10],[33,9,9],[33,10,8]],[[24,22,22],[4,18,20],[24,23,15],[4,6,15],[24,19,11],[4,21,10],[4,20,9]],[]],"ws":[25, 32, 23, 4, 24, 9, 10, 33],"action":"walk toward (29, 12)","why":"aid: flee 0, aid 546 (danger 189, stress 0, reflex bar 300, courage 668)","ev":["Bryn says to anyone: Help!"],"fast":[],"per":[[5,68],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[29,12,"Bryn"],[19,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":5},{"t":16,"fox":[20,17],"dog":[31,13,""],"fires":[],"m":[0,8,92,0,0,0],"act":[0, 0, 0, 0, 238, 39, 24, 0, 0, 181, 167, 0, 0, 0, 0, 0, 0, 0, 39, 12, 10, 12, 49, 327, 195, 1020, 12, 0, 0, 0, 0, 0, 791, 86],"hops":[[[25,23,180],[25,4,144],[32,24,102],[32,9,95],[32,10,87],[33,24,10],[33,9,9],[33,10,9]],[[24,22,25],[4,18,24],[4,6,17],[24,23,16],[24,19,12],[4,21,12],[4,20,10],[4,22,6]],[]],"ws":[25, 32, 23, 4, 24, 9, 10, 33],"action":"walk toward (27, 10)","why":"aid: flee 0, aid 727 (danger 238, stress 0, reflex bar 300, courage 780)","ev":[],"fast":[],"per":[[32,100],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[27,10,"Bryn"],[20,15,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":16},{"t":17,"fox":[21,16],"dog":[29,11,""],"fires":[],"m":[0,468,87,0,0,152],"act":[0, 0, 0, 0, 718, 0, 90, 0, 0, 224, 149, 0, 0, 0, 0, 0, 0, 1000, 127, 58, 36, 47, 50, 71, 175, 153, 0, 0, 0, 0, 0, 0, 666, 560],"hops":[[[17,4,658],[32,9,101],[33,9,96],[32,24,75],[33,24,71],[32,10,64],[33,10,60],[25,4,10],[25,23,7]],[[4,18,127],[4,6,90],[4,21,47],[4,20,36],[24,22,22],[4,22,21],[24,19,16],[24,23,15]],[[6,19,42],[6,4,15]],[]],"ws":[17, 4, 32, 33, 9, 24, 25, 10],"action":"flee","why":"flee: flee 94 (danger 718, stress 152, reflex bar 277, courage 700)","ev":[],"fast":[[43,95],[95,22]],"per":[[32,100],[33,100],[17,1000]],"slept":false,"burrows":[[63,39,"Ash"],[25,8,"Bryn"],[21,14,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":837},{"t":18,"fox":[20,17],"dog":[27,9,""],"fires":[],"m":[0,428,85,27,0,148],"act":[0, 0, 0, 0, 466, 0, 73, 0, 0, 232, 151, 0, 0, 0, 0, 0, 0, 500, 101, 51, 18, 37, 39, 44, 176, 76, 0, 0, 0, 0, 0, 0, 333, 788],"hops":[[[17,4,107],[33,9,103],[33,24,77],[33,10,66],[4,18,19],[32,9,17],[4,6,14],[32,24,12],[32,10,11],[4,21,7]],[[4,18,19],[24,22,14],[4,6,14],[24,19,10],[24,23,9],[4,21,7],[6,19,6]],[[6,19,6]],[]],"ws":[33, 17, 4, 32, 9, 24, 10, 18],"action":"flee","why":"flee: flee 92 (danger 466, stress 148, reflex bar 277, courage 704)","ev":[],"fast":[[43,121],[93,23],[95,31],[96,26],[97,25],[99,39],[100,30]],"per":[[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[23,6,"Bryn"],[20,14,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":943},{"t":19,"fox":[19,18],"dog":[25,7,""],"fires":[],"m":[0,389,85,31,0,144],"act":[0, 0, 0, 0, 286, 40, 52, 0, 6, 226, 141, 0, 0, 0, 0, 0, 0, 250, 71, 34, 9, 18, 32, 30, 172, 38, 7, 0, 0, 0, 0, 0, 166, 862],"hops":[[[33,9,102],[33,24,78],[33,10,66],[17,4,53],[4,18,12],[4,6,9],[32,9,8],[5,26,7],[5,8,6],[32,24,6]],[[24,22,13],[24,19,9],[4,18,9],[24,23,8],[4,6,7]],[]],"ws":[33, 4, 17, 9, 24, 32, 10, 18],"action":"flee","why":"flee: flee 66 (danger 286, stress 144, reflex bar 278, courage 688)","ev":[],"fast":[[43,128],[93,25],[95,35],[96,29],[97,38],[99,60],[100,46]],"per":[[5,66],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[21,4,"Bryn"],[18,16,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":1012},{"t":20,"fox":[18,19],"dog":[23,5,""],"fires":[],"m":[0,352,87,33,0,140],"act":[0, 0, 0, 0, 168, 60, 26, 0, 7, 211, 135, 0, 0, 0, 0, 0, 0, 125, 42, 25, 0, 9, 28, 23, 162, 19, 9, 0, 0, 0, 0, 0, 83, 860],"hops":[[[33,9,98],[33,24,76],[33,10,65],[17,4,25],[5,26,9],[5,8,7],[4,18,7]],[[24,22,12],[24,23,8],[24,19,8]],[]],"ws":[33, 9, 4, 24, 10, 17, 32, 5],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,127],[93,26],[95,37],[96,30],[97,50],[99,78],[100,60]],"per":[[5,64],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[19,2,"Bryn"],[16,18,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":435},{"t":21,"fox":[18,19],"dog":[21,3,""],"fires":[],"m":[0,318,90,14,0,136],"act":[0, 0, 0, 0, 97, 70, 13, 0, 8, 198, 130, 0, 0, 0, 0, 0, 0, 62, 21, 20, 0, 0, 26, 19, 154, 9, 10, 0, 0, 0, 0, 0, 41, 822],"hops":[[[33,9,93],[33,24,73],[33,10,63],[17,4,13],[5,26,10],[5,8,8]],[[24,22,12],[24,23,8],[24,19,8]],[]],"ws":[33, 9, 24, 10, 4, 5, 17, 32],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,118],[93,27],[95,37],[96,31],[97,59],[99,92],[100,71]],"per":[[5,62],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[17,0,"Bryn"],[14,20,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":462},{"t":22,"fox":[18,19],"dog":[19,1,""],"fires":[],"m":[0,287,94,15,0,132],"act":[0, 0, 0, 0, 48, 75, 6, 0, 8, 185, 124, 0, 0, 0, 0, 0, 0, 31, 10, 17, 0, 0, 25, 16, 145, 0, 10, 0, 0, 0, 0, 0, 20, 769],"hops":[[[33,9,86],[33,24,68],[33,10,59],[5,26,10],[5,8,8]],[[24,22,12],[24,23,7],[24,19,7]],[]],"ws":[33, 9, 24, 10, 5, 4, 17, 22],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,109],[93,27],[95,37],[96,31],[97,67],[99,103],[100,80]],"per":[[5,61],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[15,0,"Bryn"],[12,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":482},{"t":23,"fox":[18,19],"dog":[17,1,""],"fires":[],"m":[0,259,98,16,0,128],"act":[0, 0, 0, 0, 24, 77, 0, 0, 9, 171, 117, 0, 0, 0, 0, 0, 0, 15, 0, 15, 0, 0, 23, 15, 136, 0, 11, 0, 0, 0, 0, 0, 10, 711],"hops":[[[33,9,79],[33,24,64],[33,10,55],[5,26,11],[5,8,9]],[[24,22,11],[24,23,7],[24,19,7]],[]],"ws":[33, 9, 24, 10, 5, 4, 22, 23],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,109],[93,27],[95,37],[96,31],[97,74],[99,102],[100,87]],"per":[[5,60],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[13,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":495},{"t":24,"fox":[18,19],"dog":[15,1,""],"fires":[],"m":[0,234,103,16,0,124],"act":[0, 0, 0, 0, 12, 78, 0, 0, 9, 157, 109, 0, 0, 0, 0, 0, 0, 7, 0, 13, 0, 0, 21, 14, 128, 0, 11, 0, 0, 0, 0, 0, 0, 654],"hops":[[[33,9,72],[33,24,60],[33,10,51],[5,26,11],[5,8,9]],[[24,22,10],[24,23,7],[24,19,6]],[]],"ws":[33, 9, 24, 10, 5, 22, 23, 19],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,100],[93,27],[95,37],[96,31],[97,79],[99,108],[100,93]],"per":[[5,59],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[11,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":503},{"t":25,"fox":[18,19],"dog":[13,1,""],"fires":[],"m":[0,211,107,16,0,120],"act":[0, 0, 0, 0, 6, 79, 0, 0, 9, 144, 102, 0, 0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 20, 13, 120, 0, 11, 0, 0, 0, 0, 0, 0, 601],"hops":[[[33,9,66],[33,24,56],[33,10,48],[5,26,11],[5,8,9]],[[24,22,10],[24,23,6],[24,19,6]],[]],"ws":[33, 9, 24, 10, 5, 22, 23, 19],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,100],[93,27],[95,37],[96,31],[97,83],[99,104],[100,97]],"per":[[5,58],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[9,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":507},{"t":26,"fox":[18,19],"dog":[11,1,""],"fires":[],"m":[0,190,111,16,0,116],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 132, 96, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 19, 12, 112, 0, 11, 0, 0, 0, 0, 0, 0, 551],"hops":[[[33,9,60],[33,24,52],[33,10,45],[5,26,11],[5,8,10]],[[24,22,9],[24,23,6]],[]],"ws":[33, 9, 24, 10, 5, 22, 23, 26],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,100],[93,27],[95,37],[96,31],[97,86],[99,99],[100,100]],"per":[[5,57],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[7,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":508},{"t":27,"fox":[18,19],"dog":[9,1,""],"fires":[],"m":[0,171,115,16,0,113],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 121, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 18, 12, 105, 0, 11, 0, 0, 0, 0, 0, 0, 505],"hops":[[[33,9,55],[33,24,49],[33,10,42],[5,26,11],[5,8,10]],[[24,22,9],[24,23,6]],[]],"ws":[33, 9, 24, 10, 5, 22, 23, 26],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,100],[93,27],[95,37],[96,31],[97,89],[99,102],[100,94]],"per":[[5,56],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[5,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":508},{"t":28,"fox":[18,19],"dog":[7,1,""],"fires":[],"m":[0,154,119,16,0,110],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 110, 84, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 6, 97, 0, 11, 0, 0, 0, 0, 0, 0, 463],"hops":[[[33,9,50],[33,24,45],[33,10,39],[5,26,11],[5,8,10]],[[24,22,8]],[]],"ws":[33, 9, 24, 10, 5, 22, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,100],[93,27],[95,37],[96,31],[97,90],[99,95],[100,96]],"per":[[5,55],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[3,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":504},{"t":29,"fox":[18,19],"dog":[5,1,""],"fires":[],"m":[0,139,123,16,0,107],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 101, 78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 90, 0, 12, 0, 0, 0, 0, 0, 0, 425],"hops":[[[33,9,46],[33,24,42],[33,10,36],[5,26,12],[5,8,10]],[[24,22,8]],[]],"ws":[33, 9, 24, 5, 10, 22, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,91],[93,27],[95,37],[96,31],[97,91],[99,97],[100,98]],"per":[[5,54],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[1,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":500},{"t":30,"fox":[18,19],"dog":[3,1,""],"fires":[],"m":[0,126,127,16,0,104],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 92, 73, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 84, 0, 18, 0, 0, 0, 0, 0, 0, 391],"hops":[[[33,9,42],[33,24,39],[33,10,34],[5,26,12],[5,8,10]],[[24,22,7]],[]],"ws":[33, 9, 24, 5, 10, 26, 22, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,91],[93,27],[95,37],[96,31],[97,92],[99,98],[100,90]],"per":[[5,53],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":494},{"t":31,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,114,131,16,0,101],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 85, 68, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 78, 0, 21, 0, 0, 0, 0, 0, 0, 361],"hops":[[[33,9,39],[33,24,36],[33,10,32],[5,26,12],[5,8,10]],[[24,22,7]],[]],"ws":[33, 9, 5, 24, 10, 26, 22, 8],"action":"stay","why":"nothing pulls","ev":["the boar gores Bryn"],"fast":[[43,91],[93,27],[95,37],[96,31],[97,93],[99,90],[100,91]],"per":[[5,52],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":488},{"t":32,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,103,135,16,0,98],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 78, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, 0, 73, 0, 22, 0, 0, 0, 0, 0, 0, 334],"hops":[[[33,9,36],[33,24,34],[33,10,30],[5,26,12],[5,8,10]],[[24,22,6]],[]],"ws":[33, 5, 9, 24, 10, 26, 22, 8],"action":"stay","why":"nothing pulls","ev":["the boar gores Bryn"],"fast":[[43,90],[93,26],[95,36],[96,30],[97,84],[99,90],[100,91]],"per":[[5,51],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":471},{"t":33,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,93,139,15,0,95],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 72, 60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 0, 68, 0, 23, 0, 0, 0, 0, 0, 0, 310],"hops":[[[33,9,33],[33,24,32],[33,10,28],[5,26,12],[5,8,10]],[[24,22,6]],[]],"ws":[33, 5, 9, 24, 10, 26, 22, 8],"action":"stay","why":"nothing pulls","ev":["the boar gores Bryn"],"fast":[[43,90],[93,26],[95,36],[96,30],[97,84],[99,82],[100,91]],"per":[[5,50],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":463},{"t":34,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,84,143,15,0,92],"act":[0, 0, 0, 0, 0, 79, 0, 0, 10, 67, 56, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 64, 0, 23, 0, 0, 0, 0, 0, 0, 288],"hops":[[[33,9,31],[33,24,30],[33,10,26],[5,26,12],[5,8,10]],[]],"ws":[33, 5, 9, 24, 10, 26, 8, 22],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,90],[93,26],[95,36],[96,30],[97,84],[99,82],[100,83]],"per":[[5,49],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":455},{"t":35,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,76,147,15,0,89],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 62, 52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 60, 0, 23, 0, 0, 0, 0, 0, 0, 268],"hops":[[[33,9,29],[33,24,28],[33,10,24],[5,26,12],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,81],[93,26],[95,36],[96,30],[97,84],[99,83],[100,83]],"per":[[5,48],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":447},{"t":36,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,69,151,14,0,86],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 58, 49, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 56, 0, 23, 0, 0, 0, 0, 0, 0, 250],"hops":[[[33,9,27],[33,24,26],[33,10,23],[5,26,12],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,81],[93,26],[95,36],[96,30],[97,75],[99,84],[100,84]],"per":[[5,47],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":440},{"t":37,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,63,155,14,0,83],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 54, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 53, 0, 24, 0, 0, 0, 0, 0, 0, 234],"hops":[[[33,9,25],[33,24,25],[33,10,21],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,81],[93,26],[95,36],[96,30],[97,75],[99,76],[100,84]],"per":[[5,46],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":432},{"t":38,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,57,159,14,0,80],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 51, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50, 0, 25, 0, 0, 0, 0, 0, 0, 220],"hops":[[[33,9,24],[33,24,24],[33,10,20],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,81],[93,26],[95,36],[96,30],[97,75],[99,76],[100,75]],"per":[[5,45],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":423},{"t":39,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,52,163,14,0,77],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 47, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 47, 0, 25, 0, 0, 0, 0, 0, 0, 207],"hops":[[[33,9,22],[33,24,22],[33,10,19],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,72],[93,26],[95,36],[96,30],[97,75],[99,76],[100,75]],"per":[[5,44],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":414},{"t":40,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,47,166,13,0,75],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 44, 38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 44, 0, 25, 0, 0, 0, 0, 0, 0, 195],"hops":[[[33,9,21],[33,24,21],[33,10,18],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,72],[93,26],[95,36],[96,30],[97,75],[99,67],[100,75]],"per":[[5,43],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":405},{"t":41,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,43,169,13,0,73],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 42, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42, 0, 25, 0, 0, 0, 0, 0, 0, 184],"hops":[[[33,9,20],[33,24,20],[33,10,17],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,72],[93,26],[95,36],[96,30],[97,66],[99,67],[100,75]],"per":[[5,42],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":396},{"t":42,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,39,172,13,0,71],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 40, 34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40, 0, 25, 0, 0, 0, 0, 0, 0, 175],"hops":[[[33,9,19],[33,24,19],[33,10,16],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,72],[93,26],[95,36],[96,30],[97,66],[99,67],[100,66]],"per":[[5,41],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":387},{"t":43,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,36,175,12,0,69],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 38, 33, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 0, 25, 0, 0, 0, 0, 0, 0, 166],"hops":[[[33,9,18],[33,24,18],[33,10,16],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,63],[93,26],[95,36],[96,30],[97,67],[99,67],[100,66]],"per":[[5,40],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":379},{"t":44,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,33,178,12,0,67],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 36, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 36, 0, 25, 0, 0, 0, 0, 0, 0, 159],"hops":[[[33,9,17],[33,24,17],[33,10,15],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,63],[93,26],[95,36],[96,30],[97,58],[99,67],[100,66]],"per":[[5,39],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":370},{"t":45,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,30,181,12,0,65],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 34, 29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 35, 0, 25, 0, 0, 0, 0, 0, 0, 152],"hops":[[[33,24,17],[33,9,16],[33,10,14],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 24, 9, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,63],[93,26],[95,36],[96,30],[97,58],[99,58],[100,66]],"per":[[5,38],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":361},{"t":46,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,27,184,12,0,63],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 33, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 0, 25, 0, 0, 0, 0, 0, 0, 146],"hops":[[[33,9,16],[33,24,16],[33,10,14],[5,26,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,63],[93,26],[95,36],[96,30],[97,58],[99,58],[100,57]],"per":[[5,37],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":352},{"t":47,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,25,187,11,0,61],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 31, 27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31, 0, 25, 0, 0, 0, 0, 0, 0, 140],"hops":[[[33,9,15],[33,24,15],[5,26,13],[33,10,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,54],[93,26],[95,36],[96,30],[97,58],[99,58],[100,57]],"per":[[5,36],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":343},{"t":48,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,23,190,11,0,59],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 30, 26, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 0, 25, 0, 0, 0, 0, 0, 0, 135],"hops":[[[33,9,15],[33,24,15],[5,26,13],[33,10,13],[5,8,11]],[]],"ws":[33, 5, 9, 24, 10, 26, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,54],[93,26],[95,36],[96,30],[97,58],[99,50],[100,57]],"per":[[5,35],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":335},{"t":49,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,21,193,11,0,57],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 29, 25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 0, 25, 0, 0, 0, 0, 0, 0, 130],"hops":[[[33,24,15],[33,9,14],[5,26,13],[33,10,12],[5,8,11]],[]],"ws":[33, 5, 24, 9, 26, 10, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,54],[93,26],[95,36],[96,30],[97,49],[99,50],[100,57]],"per":[[5,34],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":326},{"t":50,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,19,196,10,0,55],"act":[0, 0, 0, 0, 0, 79, 0, 0, 11, 27, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29, 0, 25, 0, 0, 0, 0, 0, 0, 126],"hops":[[[33,24,14],[5,26,13],[33,9,13],[33,10,12],[5,8,11]],[]],"ws":[33, 5, 24, 9, 26, 10, 8],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,54],[93,26],[95,36],[96,30],[97,49],[99,50],[100,48]],"per":[[5,33],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":317},{"t":51,"fox":[18,19],"dog":[1,0,""],"fires":[],"m":[0,18,196,10,0,53],"act":[51, 0, 0, 25, 0, 79, 0, 0, 11, 26, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 27, 0, 25, 0, 7, 0, 0, 0, 0, 122],"hops":[[[0,3,25],[5,26,13],[33,9,13],[33,24,13],[33,10,12],[5,8,11]],[[3,28,7]],[]],"ws":[33, 5, 0, 24, 9, 26, 3, 10],"action":"stay","why":"nothing pulls","ev":[],"fast":[[43,45],[93,26],[95,36],[96,30],[97,49],[99,50],[100,48]],"per":[[5,32],[33,100]],"slept":false,"burrows":[[63,39,"Ash"],[0,0,"Bryn"],[11,22,"Dee"],[54,34,"the stream"],[33,9,"the big rock"],[50,15,"the windmill"],[24,5,"the old oak"],[42,5,"the spring"]],"backlog":308}],"keys":[{"t":13,"h":0,"label":"Cai hears Bryn cry for help: Bryn, 'a cry for help' and danger come to mind"},{"t":13,"h":-1,"label":"Going to help wins: Cai walks towards where the cry came from"},{"t":17,"h":-1,"label":"The cry has brought danger to mind too; later it runs"}],"persist":500,"hopsPerTick":4};
+const NS = "http://www.w3.org/2000/svg";
+const $ = id => document.getElementById(id);
+function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+$("title").textContent = D.title;
+$("subtitle").innerHTML = D.subtitle + ' <span class="badge">' + (D.form === "compiled" ? "compiled form, decompiled for viewing" : "graph form") + '</span>';
+
+// ---------- layout ----------
+const N = D.nodes.length;
+const pos = new Array(N);
+const gx = x => 40 + x * (600 / D.grid[0]), gy = y => 40 + y * (440 / D.grid[1]);
+D.nodes.forEach((n, i) => { if (n.kind === "place") pos[i] = [gx(n.x), gy(n.y)]; });
+const byPlace = {};
+D.nodes.forEach((n, i) => { if (n.kind === "thing") { const k = n.at >= 0 ? n.at : -1 - i; (byPlace[k] = byPlace[k] || []).push(i); } });
+for (const k in byPlace) {
+  const list = byPlace[k];
+  list.forEach((i, j) => {
+    const n = D.nodes[i];
+    const c = +k >= 0 ? pos[+k] : [gx(n.x), gy(n.y)];
+    const a = Math.PI * 0.75 + j * (Math.PI * 2 / Math.max(list.length, 3));
+    pos[i] = [c[0] + Math.cos(a) * 44, c[1] + Math.sin(a) * 40];
+  });
+}
+let bi = 0, ci = 0;
+D.nodes.forEach((n, i) => {
+  if (n.kind === "body") { pos[i] = [740, 70 + bi * 86]; bi++; }
+  else if (n.kind === "concept") { pos[i] = [ci % 2 ? 905 : 830, 50 + ci * 70]; ci++; }
+});
+
+// ---------- static graph ----------
+const G = $("graph");
+const gLinks = el("g", {}, G), gFast = el("g", {}, G), gFlow = el("g", {}, G), gNodes = el("g", {}, G);
+el("text", { x: 40, y: 22, fill: "#6b7280", "font-size": 11 }, G).textContent = "places and things, laid out where they are in the world";
+el("text", { x: 700, y: 22, fill: "#6b7280", "font-size": 11 }, G).textContent = "body states and concepts";
+function curve(u, v) {
+  const [x1, y1] = pos[u], [x2, y2] = pos[v];
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, dx = x2 - x1, dy = y2 - y1;
+  const k = 0.12;
+  return `M${x1.toFixed(1)},${y1.toFixed(1)} Q${(mx - dy * k).toFixed(1)},${(my + dx * k).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+}
+const linkEls = D.links.map(([u, v, ty, w], li) => el("path", { d: curve(u, v), fill: "none", stroke: "#c3c8d0", "stroke-width": 0.4 + w / 450, opacity: w > 0 ? 0.55 : 0 }, gLinks));
+const linkIndex = {};
+D.links.forEach(([u, v], li) => { const k = u + "," + v; (linkIndex[k] = linkIndex[k] || []).push(li); });
+const nodeEls = D.nodes.map((n, i) => {
+  const g = el("g", { transform: `translate(${pos[i][0].toFixed(1)},${pos[i][1].toFixed(1)})` }, gNodes);
+  const ring = el("circle", { r: 10, fill: "none", stroke: "var(--surp)", "stroke-width": 0, opacity: 0.9 }, g);
+  const shape = n.kind === "place" ? el("rect", { x: -9, y: -9, width: 18, height: 18, rx: 4 }, g) : el("circle", { r: 9 }, g);
+  shape.setAttribute("stroke", n.kind === "thing" || n.kind === "place" ? "#374151" : "#9ca3af");
+  shape.setAttribute("stroke-width", n.kind === "thing" ? 2 : 1);
+  const label = el("text", { y: 0, "text-anchor": "middle", "font-size": 11, fill: "#1f2328", "paint-order": "stroke", stroke: "#ffffff", "stroke-width": 3 }, g);
+  label.textContent = n.name;
+  return { g, shape, ring, label };
+});
+
+// ---------- map ----------
+const M = $("map");
+const mx = x => 3.5 + x * 7, my = y => 3.5 + y * 7;
+el("rect", { x: 0, y: 0, width: 448, height: 280, fill: "var(--map)", rx: 6 }, M);
+const stream = D.places.find(p => p.name === "stream");
+if (stream) el("path", { d: `M${mx(stream.x - 3)},0 C${mx(stream.x + 2)},${my(stream.y - 6)} ${mx(stream.x - 2)},${my(stream.y + 6)} ${mx(stream.x + 1)},280`, stroke: "var(--water)", "stroke-width": 6, fill: "none", opacity: 0.7 }, M);
+D.places.forEach(p => {
+  el("circle", { cx: mx(p.x), cy: my(p.y), r: 6 * 7, fill: p.home ? "#fde68a" : "#ffffff", opacity: 0.35 }, M);
+  const t = el("text", { x: mx(p.x), y: my(p.y) - 9, "text-anchor": "middle", "font-size": 11, fill: "#374151", "paint-order": "stroke", stroke: "#fff", "stroke-width": 3 }, M);
+  t.textContent = p.name;
+  el("rect", { x: mx(p.x) - 3, y: my(p.y) - 3, width: 6, height: 6, fill: "#374151", rx: 1 }, M);
+});
+const sight = el("circle", { r: 70, fill: "#f59e0b", opacity: 0.07 }, M);
+const trail = el("polyline", { fill: "none", stroke: "#ea580c", "stroke-width": 1.5, opacity: 0.5 }, M);
+const gBurrows = el("g", {}, M);
+const gFires = el("g", {}, M);
+const dogEl = el("g", {}, M); el("circle", { r: 6, fill: "#4b5563" }, dogEl); const dogT = el("text", { y: -9, "text-anchor": "middle", "font-size": 10, fill: "#374151" }, dogEl);
+const foxEl = el("g", {}, M); el("circle", { r: 6.5, fill: "#ea580c", stroke: "#fff", "stroke-width": 1.5 }, foxEl);
+el("text", { y: 3.5, "text-anchor": "middle", "font-size": 9, fill: "#fff", "font-weight": 700 }, foxEl).textContent = D.me || "F";
+
+// ---------- bars ----------
+const B = $("bars");
+const barDefs = [[D.drive || "hunger", 0, 1000, "#d97706"], ["arousal", 0, 1000, "#dc2626"], ["mood", -1000, 1000, "#0f766e"], ["fatigue (backlog)", 0, 1000, "#6b7280"], ["focus (held intent)", 0, 1000, "#9f1239"], ["stress", 0, 1000, "#7c3aed"]];
+const barEls = barDefs.map(([name, lo, hi, col], i) => {
+  const y = 6 + i * 22;
+  el("text", { x: 0, y: y + 11, "font-size": 12, fill: "#374151" }, B).textContent = name;
+  el("rect", { x: 70, y, width: 250, height: 14, fill: "#eef0f3", rx: 3 }, B);
+  if (lo < 0) el("line", { x1: 195, x2: 195, y1: y - 2, y2: y + 16, stroke: "#9ca3af" }, B);
+  const r = el("rect", { x: 70, y, width: 0, height: 14, fill: col, rx: 3 }, B);
+  const v = el("text", { x: 328, y: y + 11, "font-size": 12, fill: "#374151" }, B);
+  return { r, v, lo, hi };
+});
+
+// ---------- timeline ----------
+const T = $("timeline");
+const F = D.frames;
+const tx = i => 10 + i * (960 / Math.max(F.length - 1, 1));
+function line(fn, lo, hi, col) {
+  const pts = F.map((f, i) => `${tx(i).toFixed(1)},${(74 - (fn(f) - lo) / (hi - lo) * 68).toFixed(1)}`).join(" ");
+  el("polyline", { points: pts, fill: "none", stroke: col, "stroke-width": 1.5 }, T);
+}
+el("line", { x1: 10, x2: 970, y1: 40, y2: 40, stroke: "#e5e7eb" }, T);
+F.forEach((f, i) => { if (f.ev.length || f.slept) el("line", { x1: tx(i), x2: tx(i), y1: 2, y2: 78, stroke: f.slept ? "#1e3a8a" : "#fca5a5", "stroke-width": f.slept ? 3 : 1 }, T); });
+line(f => f.m[2], -1000, 1000, "#0f766e");
+line(f => f.m[1], 0, 1000, "#dc2626");
+line(f => f.m[0], 0, 1000, "#d97706");
+line(f => f.m[5], 0, 1000, "#7c3aed");
+line(f => f.m[3], 0, 1000, "#6b7280");
+const cursor = el("line", { y1: 0, y2: 80, stroke: "#111827", "stroke-width": 1.5 }, T);
+T.addEventListener("click", e => { const r = T.getBoundingClientRect(); const i = Math.round(((e.clientX - r.left) / r.width * 980 - 10) / 960 * (F.length - 1)); go(Math.max(0, Math.min(F.length - 1, i)), -1); });
+
+// ---------- state ----------
+let fi = 0, hop = -1, playing = false, timer = null;
+const slider = $("slider"); slider.max = F.length - 1;
+function snapshotAt(t) { let s = null; for (const x of D.snapshots) if (x.t <= t) s = x; return s; }
+function valColor(v) {
+  const a = Math.min(Math.abs(v) / 700, 1);
+  const base = [200, 204, 210], tgt = v < 0 ? [194, 65, 12] : [15, 118, 110];
+  const c = base.map((b, k) => Math.round(b + (tgt[k] - b) * a));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function shownAct(f, h) {
+  if (h < 0) return f.act;
+  const prev = fi > 0 ? F[fi - 1].act : new Array(N).fill(0);
+  const a = prev.map(x => Math.round(x * D.persist / 1000));
+  for (let k = 0; k <= h && k < f.hops.length; k++) for (const [u, v, amt] of f.hops[k]) a[v] += amt;
+  return a;
+}
+function render() {
+  const f = F[fi];
+  slider.value = fi;
+  const nh = f.hops.length;
+  $("ticklabel").textContent = `tick ${f.t}` + (hop >= 0 ? ` · hop ${hop + 1} of ${nh}` : "");
+  $("hoplabel").textContent = hop >= 0 ? `(hop ${hop + 1} of ${nh})` : "(end of tick)";
+  const snap = snapshotAt(f.t);
+  const vals = snap ? snap.val : null;
+  // links: slow weight from the latest snapshot
+  if (snap) D.links.forEach(([u, v, ty, w0], li) => { const w = snap.w[li]; linkEls[li].setAttribute("stroke-width", 0.4 + w / 450); linkEls[li].setAttribute("opacity", w > 0 ? 0.55 : 0); });
+  gFast.innerHTML = "";
+  for (const [li, w] of f.fast) { const [u, v] = D.links[li]; el("path", { d: curve(u, v), fill: "none", stroke: "var(--fast)", "stroke-width": 0.5 + w / 200, opacity: 0.55, "stroke-dasharray": "4 3" }, gFast); }
+  gFlow.innerHTML = "";
+  const hopsToShow = hop >= 0 ? [hop] : [];
+  for (const k of hopsToShow) {
+    const fl = f.hops[k] || [];
+    for (const [u, v, amt] of fl) el("path", { d: curve(u, v), fill: "none", stroke: "var(--flow)", "stroke-width": Math.min(1 + amt / 90, 9), opacity: 0.85, "stroke-linecap": "round" }, gFlow);
+  }
+  const act = shownAct(f, hop);
+  const surprised = new Set(f.per.filter(p => p[1] >= 400).map(p => p[0]));
+  D.nodes.forEach((n, i) => {
+    const a = Math.max(0, act[i]);
+    const r = 7 + Math.sqrt(a) * 0.42;
+    const e = nodeEls[i];
+    if (n.kind === "place") { e.shape.setAttribute("x", -r); e.shape.setAttribute("y", -r); e.shape.setAttribute("width", 2 * r); e.shape.setAttribute("height", 2 * r); }
+    else e.shape.setAttribute("r", r);
+    e.shape.setAttribute("fill", vals ? valColor(vals[i]) : "#ccc");
+    e.shape.setAttribute("fill-opacity", a > 0 ? 0.95 : 0.35);
+    const inWs = f.ws.includes(i);
+    e.shape.setAttribute("stroke", inWs ? "var(--ws)" : (n.kind === "thing" || n.kind === "place" ? "#374151" : "#9ca3af"));
+    e.shape.setAttribute("stroke-width", inWs ? 3.5 : (n.kind === "thing" ? 2 : 1));
+    e.ring.setAttribute("r", r + 6);
+    e.ring.setAttribute("stroke-width", surprised.has(i) ? 3 : 0);
+    e.label.setAttribute("y", r + 13);
+    e.label.setAttribute("font-weight", inWs ? 700 : 400);
+  });
+  // map
+  foxEl.setAttribute("transform", `translate(${mx(f.fox[0])},${my(f.fox[1])})`);
+  sight.setAttribute("cx", mx(f.fox[0])); sight.setAttribute("cy", my(f.fox[1]));
+  trail.setAttribute("points", F.slice(Math.max(0, fi - 40), fi + 1).map(x => `${mx(x.fox[0])},${my(x.fox[1])}`).join(" "));
+  if (f.dog) { dogEl.style.display = ""; dogEl.setAttribute("transform", `translate(${mx(f.dog[0])},${my(f.dog[1])})`); dogT.textContent = "boar " + f.dog[2]; } else dogEl.style.display = "none";
+  gBurrows.innerHTML = "";
+  for (const [x, y, label] of (f.burrows || [])) {
+    const g = el("g", { transform: `translate(${mx(x)},${my(y)})` }, gBurrows);
+    const person = /^[A-Z][a-z]+$/.test(label || "");
+    const water = /spring|stream/.test(label || "");
+    if (person) el("circle", { r: 5.5, fill: "#2563eb", stroke: "#fff", "stroke-width": 1.2 }, g);
+    else el("path", { d: "M-6,3 A6,6 0 0 1 6,3 Z", fill: water ? "#0ea5e9" : "#78350f", stroke: "#451a03", "stroke-width": 0.8 }, g);
+    const t = el("text", { y: 14, "text-anchor": "middle", "font-size": 9, fill: person ? "#1e3a8a" : "#451a03" }, g); t.textContent = label || "burrow";
+  }
+  gFires.innerHTML = "";
+  for (const [x, y, exp] of f.fires) {
+    const g = el("g", { transform: `translate(${mx(x)},${my(y)})` }, gFires);
+    el("path", { d: "M0,-9 C5,-3 6,3 0,7 C-6,3 -5,-3 0,-9 Z", fill: exp ? "#f97316" : "#dc2626", stroke: "#7c2d12", "stroke-width": 0.8 }, g);
+    const t = el("text", { y: 18, "text-anchor": "middle", "font-size": 10, fill: "#7c2d12" }, g); t.textContent = exp ? "campfire" : "fire!";
+  }
+  // bars
+  const vals5 = [f.m[0], f.m[1], f.m[2], f.m[3], f.m[4], f.m[5]];
+  barEls.forEach((b, i) => {
+    const v = vals5[i];
+    if (b.lo < 0) { const w = Math.abs(v) / 1000 * 125; b.r.setAttribute("x", v < 0 ? 195 - w : 195); b.r.setAttribute("width", w); }
+    else b.r.setAttribute("width", Math.max(0, v) / 1000 * 250);
+    b.v.textContent = v;
+  });
+  $("action").textContent = f.action;
+  $("why").textContent = f.why;
+  const wsMax = Math.max(1, ...f.ws.map(i => f.act[i]));
+  $("ws").innerHTML = f.ws.map(i => `<div class="ws-row"><span>${D.nodes[i].name}</span><span class="ws-bar" style="width:${(f.act[i] / wsMax * 100).toFixed(0)}%;background:${vals ? valColor(vals[i]) : '#999'}"></span><span>${f.act[i]}</span></div>`).join("");
+  const recent = [];
+  for (let k = fi; k >= 0 && recent.length < 6; k--) { for (const e of F[k].ev) recent.push([F[k].t, e]); if (F[k].slept) recent.push([F[k].t, "(slept: the day's episodes replayed, fast weights consolidated and cleared)"]); }
+  $("events").innerHTML = recent.slice(0, 6).map(([t, e]) => `<div class="ev"><span class="t">${t}</span>${e}</div>`).join("") || '<div class="ev" style="color:var(--muted)">nothing yet</div>';
+  cursor.setAttribute("x1", tx(fi)); cursor.setAttribute("x2", tx(fi));
+}
+function go(i, h) { fi = i; hop = h; render(); }
+function stepHop() {
+  const nh = F[fi].hops.length;
+  if (hop < nh - 1) hop++; else { hop = -1; if (fi < F.length - 1 && playing) { fi++; hop = 0; } }
+  render();
+}
+function tickPlay() { const nh = F[fi].hops.length; if (hop === -1 || hop >= nh - 1) { if (fi >= F.length - 1) { stop(); return; } fi++; hop = nh ? 0 : -1; } else hop++; render(); }
+function stop() { playing = false; clearInterval(timer); $("play").textContent = "Play"; }
+$("play").onclick = () => { if (playing) stop(); else { playing = true; $("play").textContent = "Pause"; timer = setInterval(tickPlay, 110); } };
+$("prev").onclick = () => { stop(); go(Math.max(0, fi - 1), -1); };
+$("next").onclick = () => { stop(); go(Math.min(F.length - 1, fi + 1), -1); };
+$("hop").onclick = () => { stop(); stepHop(); };
+slider.oninput = () => { stop(); go(+slider.value, -1); };
+document.addEventListener("keydown", e => { if (e.key === "ArrowRight") $("next").onclick(); if (e.key === "ArrowLeft") $("prev").onclick(); if (e.key === "h") $("hop").onclick(); if (e.key === " ") { e.preventDefault(); $("play").onclick(); } });
+// ?t=TICK&h=HOP opens a moment (for pictures).
+const q = new URLSearchParams(location.search);
+if (q.has("t")) { const t = +q.get("t"); const i = F.findIndex(f => f.t >= t); fi = i < 0 ? F.length - 1 : i; hop = q.has("h") ? +q.get("h") : -1; }
+render();
+window.__ready = true;
+</script>
+</body>
+</html>
