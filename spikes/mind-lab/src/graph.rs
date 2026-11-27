@@ -22,8 +22,11 @@ pub mod lt {
     pub const FEELS: u8 = 6;
     /// A plain association between concepts.
     pub const ASSOC: u8 = 7;
-    pub const COUNT: usize = 8;
-    pub const NAMES: [&str; COUNT] = ["wants", "kind", "holds", "at", "near", "like", "feels", "assoc"];
+    /// Where a belief came from: a told fact ↔ the one who told it (or the note that holds it).
+    /// Source memory: it fades faster than the fact (stage 2).
+    pub const SOURCE: u8 = 8;
+    pub const COUNT: usize = 9;
+    pub const NAMES: [&str; COUNT] = ["wants", "kind", "holds", "at", "near", "like", "feels", "assoc", "source"];
 }
 
 /// Node tags (a bit set). `ANCHORED` nodes carry a world reference; the rest are open connectors.
@@ -33,6 +36,8 @@ pub mod tag {
     pub const PLACE: u8 = 4;
     pub const BODY: u8 = 8;
     pub const DANGER: u8 = 16;
+    /// A creature or other mobile thing: recognised by its look wherever it is seen, not only
+    /// near where the mind last placed it (the dog, a person, a carried note).
     pub const CREATURE: u8 = 32;
     pub const ANCHORED: u8 = 64;
     /// Anger and aggression: favoured under stress.

@@ -61,6 +61,13 @@ pub trait Store: Form + Clone + Send + Sync {
     fn add_link(&mut self, u: u32, v: u32, ty: u8, w: i32, lval: i32) -> LinkKey;
     fn bytes(&self) -> Bytes;
     fn link_count(&self) -> usize;
+    /// How many of `u`'s links came from the species base (the rest are the mind's own).
+    fn base_degree(&self, u: u32) -> usize;
+    /// Remove one of the mind's own links (never a base link). The links after it on the same
+    /// node move down one position, so their keys (and fast weights) move with them.
+    fn remove_link(&mut self, key: LinkKey);
+    /// Nodes that have links of the mind's own, in id order.
+    fn own_sources(&self) -> Vec<u32> { (0..self.len() as u32).filter(|&u| self.links_vec(u).len() > self.base_degree(u)).collect() }
 
     fn slow(&self, key: LinkKey) -> i16 { self.link(key).slow }
     fn fast(&self, key: LinkKey) -> i16 { self.link(key).fast }
@@ -398,6 +405,22 @@ impl Store for Runtime {
     }
     fn bytes(&self) -> Bytes { Bytes { shared: self.base.bytes(), own: self.ov.bytes(), fast: self.fast.bytes() } }
     fn link_count(&self) -> usize { self.base.links + self.ov.added.len() }
+    fn base_degree(&self, u: u32) -> usize { self.base.degree(u) }
+    fn own_sources(&self) -> Vec<u32> { let mut v: Vec<u32> = self.ov.added.iter().map(|a| a.src).collect(); v.dedup(); v }
+    fn remove_link(&mut self, key: LinkKey) {
+        let (u, k) = (link_src(key), link_pos(key));
+        let i = self.added_index(u, k);
+        self.ov.added.remove(i);
+        let (s, e) = (self.fast.start(u), self.fast.start(u + 1));
+        let mut moved = Sparse::default();
+        for j in s..e {
+            let (kk, v) = (self.fast.keys[j], self.fast.vals[j]);
+            if link_pos(kk) == k { continue; }
+            moved.keys.push(if link_pos(kk) > k { kk - 1 } else { kk }); moved.vals.push(v);
+        }
+        self.fast.keys.splice(s..e, moved.keys);
+        self.fast.vals.splice(s..e, moved.vals);
+    }
 }
 
 // ------------------------------------------------------------------------------------- expanded
@@ -524,4 +547,12 @@ impl Store for Expanded {
     }
     fn bytes(&self) -> Bytes { Bytes { shared: 0, own: self.graph_bytes(), fast: self.fast.len() * 2 } }
     fn link_count(&self) -> usize { self.targets.len() }
+    fn base_degree(&self, u: u32) -> usize { self.base_deg[u as usize] as usize }
+    fn remove_link(&mut self, key: LinkKey) {
+        let u = link_src(key);
+        assert!(link_pos(key) >= self.base_deg[u as usize] as usize, "not one of the mind's own links");
+        let l = self.idx(key);
+        self.targets.remove(l); self.ltype.remove(l); self.slow.remove(l); self.lval.remove(l); self.fast.remove(l);
+        for o in &mut self.offsets[u as usize + 1..] { *o -= 1; }
+    }
 }

@@ -29,3 +29,34 @@ pub fn pack(seed: u64, n: usize, ticks: u32, threads: usize, order: &[usize]) ->
     for _ in 0..ticks { p.step(threads, order); }
     p.state_hash()
 }
+
+/// The pinned teaching runs (stage 2): people talking, a dry spring, an eavesdropper, a note lost
+/// and a map, each stepped on `threads` threads in the order given (a permutation of 0..4).
+pub fn people_runs(threads: usize) -> Vec<(&'static str, u64)> {
+    use crate::people::person::Medium;
+    use crate::people::scenarios::{Setup, Spring, BRYN, DAY, DEE};
+    use crate::people::world::Event;
+    let order: Vec<usize> = (0..4).collect();
+    let drive = |mut v: crate::people::sim::Valley, ticks: u32| { for _ in 0..ticks { v.step(threads, &order); } v.state_hash() };
+    let mut out = vec![];
+    out.push(("teaching: told, found, thanked (1 day)", drive(Setup::new(1).temper(1).build(), DAY)));
+    let mut s = Setup::new(2).temper(0); s.spring = Spring::DriesAt(5);
+    out.push(("teaching: the spring dries, Ash corrects itself (3 days)", { let mut v = s.build(); let (x, y) = v.w.spring(); v.at(DAY + 20, Event::Put { who: 0, x: x + 2, y: y + 2 }); drive(v, 3 * DAY) }));
+    let mut s = Setup::new(3).temper(2); s.pos[DEE] = (17, 25); s.knows[DEE].retain(|&x| x != crate::people::world::STREAM);
+    out.push(("teaching: an eavesdropper (2 days)", drive(s.build(), 2 * DAY)));
+    let mut s = Setup::new(4).temper(1); s.medium = Medium::Note; s.days = 5;
+    out.push(("teaching: a note, lost on day 2 (5 days)", { let mut v = s.build(); v.at(2 * DAY + 50, Event::LoseNotes { who: BRYN }); drive(v, 5 * DAY) }));
+    let mut s = Setup::new(5).temper(0); s.medium = Medium::Map;
+    out.push(("teaching: a drawn map (1 day)", drive(s.build(), DAY)));
+    out
+}
+
+/// The teaching valley (4 people, a note, a dry spring later) stepped on `threads` threads in
+/// `order`, for `ticks`: the hash of the world and every mind.
+pub fn people_order(threads: usize, order: &[usize], ticks: u32) -> u64 {
+    use crate::people::scenarios::{Setup, Spring, DEE};
+    let mut s = Setup::new(9).temper(1); s.medium = crate::people::person::Medium::Note; s.pos[DEE] = (17, 25); s.spring = Spring::DriesAt(400);
+    let mut v = s.build();
+    for _ in 0..ticks { v.step(threads, order); }
+    v.state_hash()
+}

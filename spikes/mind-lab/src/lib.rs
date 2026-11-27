@@ -19,6 +19,7 @@ pub mod fox;
 pub mod graph;
 pub mod hashes;
 pub mod mind;
+pub mod people;
 pub mod rng;
 pub mod scale;
 pub mod store;

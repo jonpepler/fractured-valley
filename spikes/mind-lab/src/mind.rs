@@ -75,6 +75,9 @@ pub const WAKE_AT: i32 = 100;
 pub const WAKE_HUNGER: i32 = 900;
 /// Score a surprising, not-bad thing in sight adds to its place, per mille of its error.
 pub const NOVELTY_PULL: i32 = 600;
+/// A fading link of the mind's own below this slow weight (with no fast trace) is forgotten
+/// outright: too weak to matter (the base itself stores weights in steps of 4).
+pub const PRUNE_BELOW: i16 = 8;
 /// Unresolved prediction error at which the mind searches.
 pub const SEARCH_AT: i32 = 300;
 
@@ -88,8 +91,21 @@ pub struct Config {
     /// Ablation: store the mind's own slow weights in steps of 4 too (as the base does), with
     /// consolidation's increments truncated. Off by default (the overlay keeps i16 weights).
     pub overlay_steps_of_4: bool,
+    /// Day learning rounds **stochastically** (stage 2): a link's increment is the exact product
+    /// `co-activation × (arousal + 60) × room`, divided once, and the remainder becomes one more
+    /// unit with probability remainder / divisor, rolled from `hash(mind, tick, link, salt)`. The
+    /// expected increment is exact, so a dimly held thought still learns, slowly. Off: the old
+    /// chained divisions, which truncate calm learning of dim nodes to zero (stage 1's finding).
+    pub stochastic_learning: bool,
+    /// Forgetting: each night, every one of the mind's **own** links learnt during its life (one
+    /// that touches a node added after `Mind::young_from`) loses this per mille of its slow weight,
+    /// per link type (stochastically rounded, so the expected loss is exact). A link that falls
+    /// below `PRUNE_BELOW`, with no fast trace, is removed. Use puts weight back through
+    /// consolidation. All zero (no forgetting) unless a species sets it; the fox adds no nodes,
+    /// so it is untouched.
+    pub own_fade: [u16; lt::COUNT],
 }
-impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false } } }
+impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT] } } }
 
 /// An individual's temperament: seeded per individual, and expressed as brain structure and
 /// modulator parameters, never as a script.
@@ -136,11 +152,25 @@ pub struct KindInfo {
     pub shelter: bool,
     /// A creature that can hurt (pain marks it as a source; it can be snapped at).
     pub creature: bool,
+    /// A moving thing the mind keeps track of (a person): seen within `TRACK_NEAR` cells of where
+    /// the mind last placed it, it is predicted, whatever the place.
+    pub tracked: bool,
 }
+
+/// A tracked thing seen this close to where the mind last saw it is no surprise.
+pub const TRACK_NEAR: i32 = 3;
 
 /// What a mind's senses and body give it each tick.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Sense { pub tick: u32, pub seed: u64, pub body: Body, pub seen: Vec<Seen> }
+pub struct Sense {
+    pub tick: u32,
+    pub seed: u64,
+    pub body: Body,
+    pub seen: Vec<Seen>,
+    /// Activation a species' own senses add this tick, as (node, amount): what was heard or read,
+    /// already grounded in this mind's own nodes. Empty for the fox.
+    pub cues: Vec<(u32, i32)>,
+}
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct Body { pub x: i32, pub y: i32, pub hunger: i32, pub pain: i32, pub asleep: bool }
 /// A thing in sight: its kind (an index into the species' kinds), where, whether it came closer.
@@ -172,6 +202,8 @@ pub struct Species {
     pub geo: Geometry,
     /// The founding links an individual's temperament sets: (from, to, type, weight).
     pub temperament: fn(&Roles, &Temperament) -> Vec<(u32, u32, u8, i32)>,
+    /// Feelings a place the mind adds itself gets empty `feels` slots to (both ways).
+    pub feelings: Vec<u32>,
 }
 
 // ------------------------------------------------------------------------------------- state
@@ -265,6 +297,12 @@ pub struct Mind<S: Store = Runtime> {
     pub napping: bool,
     /// Learnt volatility per kind (0..1000).
     pub volatility: Vec<i16>,
+    pub feelings: Vec<u32>,
+    /// Nodes from this id on were learnt in the mind's life (not founding): links touching them
+    /// can fade (`Config::own_fade`).
+    pub young_from: u32,
+    /// Nights slept (seeds the rounding of forgetting).
+    pub nights: u32,
 }
 
 impl<S: Store> Hash for Mind<S> {
@@ -274,6 +312,7 @@ impl<S: Store> Hash for Mind<S> {
         self.consol.hash(h); self.puzzle.hash(h); self.search_wp.hash(h); self.search_n.hash(h); self.napping.hash(h); self.volatility.hash(h);
         // Settings too: two minds that would behave differently next tick must not hash alike.
         self.cfg.hash(h); self.params.hash(h); self.learn.hash(h); self.skip_sleep.hash(h); self.pin_arousal.hash(h); self.pin_mood.hash(h); self.idle_consolidation.hash(h);
+        self.place_nodes.hash(h); self.entity_nodes.hash(h); self.entity_kinds.hash(h); self.young_from.hash(h); self.nights.hash(h);
     }
 }
 
@@ -312,7 +351,9 @@ impl<S: Store> Mind<S> {
             expect: vec![vec![0i16; nk * 2]; sp.place_nodes.len()], episodes: vec![], goal: None, flee_left: 0, flee_from: (0, 0), prev_pain: 0,
             trace: false, last: Report::default(), learn: true, pin_arousal: None, pin_mood: None, skip_sleep: false, temperament,
             idle_consolidation: true, consol: Consol::default(), puzzle: None, search_wp: None, search_n: 0, napping: false, volatility: vec![0; nk],
+            feelings: sp.feelings.clone(), young_from: 0, nights: 0,
         };
+        m.young_from = m.store.len() as u32;
         for &(pi, k) in &sp.expect { m.expect[pi][key(k, false)] = 900; }
         m
     }
@@ -323,7 +364,7 @@ impl<S: Store> Mind<S> {
             entity_kinds: self.entity_kinds.clone(), expect: self.expect.clone(), episodes: self.episodes.clone(), goal: self.goal, flee_left: self.flee_left, flee_from: self.flee_from,
             prev_pain: self.prev_pain, trace: self.trace, last: self.last.clone(), learn: self.learn, pin_arousal: self.pin_arousal, pin_mood: self.pin_mood, skip_sleep: self.skip_sleep,
             temperament: self.temperament, idle_consolidation: self.idle_consolidation, consol: self.consol, puzzle: self.puzzle, search_wp: self.search_wp, search_n: self.search_n,
-            napping: self.napping, volatility: self.volatility.clone() }
+            napping: self.napping, volatility: self.volatility.clone(), feelings: self.feelings.clone(), young_from: self.young_from, nights: self.nights }
     }
 
     /// A hash of everything the mind holds (form-independent).
@@ -378,6 +419,8 @@ impl<S: Store> Mind<S> {
         let n0 = self.place_nodes.len() - self.spare_places;
         let pi = match (n0..self.place_nodes.len()).find(|&pi| !self.place_learnt(pi)) {
             Some(pi) => pi,
+            // A species without spare slots grows a new place node instead.
+            None if self.spare_places == 0 => { let n = self.place_nodes.len(); return Some(self.add_place(&format!("place {}", n + 1), x, y, None)); }
             None => {
                 let here = self.place_index_at(x, y);
                 let weight = |pi: usize| -> i64 { self.store.links_vec(self.place_nodes[pi]).iter().map(|l| l.slow as i64 + l.fast as i64).sum() };
@@ -404,6 +447,31 @@ impl<S: Store> Mind<S> {
         let nk = self.kinds.len();
         self.expect[pi] = vec![0; nk * 2];
         Some(pi)
+    }
+
+    /// Add a new place node of the mind's own (a place it found, or one it was told of), anchored
+    /// at a cell, with empty `feels` slots to the species' feelings. It is linked by real distance
+    /// (`near_weight`) to the learnt places listed in `near`, or to every learnt place if `None`.
+    /// Returns its place index.
+    pub fn add_place(&mut self, name: &str, x: i32, y: i32, near: Option<&[usize]>) -> usize {
+        let pn = self.store.add_node(name, 0, tag::PLACE, Some(Anchor::Place { x: x as i16, y: y as i16 }), self.who);
+        for c in self.feelings.clone() { self.store.add_link(pn, c, lt::FEELS, 0, 0); self.store.add_link(c, pn, lt::FEELS, 0, 0); }
+        let pi = self.place_nodes.len();
+        let others: Vec<usize> = match near { Some(v) => v.to_vec(), None => (0..pi).filter(|&q| self.place_learnt(q)).collect() };
+        self.place_nodes.push(pn);
+        self.expect.push(vec![0; self.kinds.len() * 2]);
+        for qi in others { self.link_near(pi, qi); }
+        pi
+    }
+    /// Link two learnt places by their real distance (both ways), or reweigh the link if it exists.
+    pub fn link_near(&mut self, pi: usize, qi: usize) {
+        if pi == qi || !self.place_learnt(pi) || !self.place_learnt(qi) { return; }
+        let ((x, y), (qx, qy)) = (self.place_xy(pi), self.place_xy(qi));
+        let w = (self.near_weight)(dist(x, y, qx, qy));
+        let (p, q) = (self.place_nodes[pi], self.place_nodes[qi]);
+        for (a, b) in [(p, q), (q, p)] {
+            match self.store.find(a, b, lt::NEAR) { Some(k) => self.store.set_slow(k, w as i16), None => if w > 0 { self.store.add_link(a, b, lt::NEAR, w, 0); } }
+        }
     }
 
     pub fn node(&self, name: &str) -> u32 { self.store.id(name) }
@@ -433,7 +501,10 @@ impl<S: Store> Mind<S> {
         s.seen.iter().zip(nodes).map(|(e, node)| {
             let place = self.place_index_at(e.x, e.y);
             let k = key(e.kind, e.approaching);
-            let expected = place.map_or(0, |p| self.expect[p][k] as i32);
+            let mut expected = place.map_or(0, |p| self.expect[p][k] as i32);
+            if self.kinds[e.kind as usize].tracked {
+                if let Some(a) = self.store.anchor(node) { let (ax, ay) = a.xy(); if d2(e.x, e.y, ax, ay) <= TRACK_NEAR * TRACK_NEAR { expected = expected.max(900); } }
+            }
             Percept { entity: e.id, kind: e.kind, x: e.x, y: e.y, place, approaching: e.approaching, node, expected, error: 1000 - expected }
         }).collect()
     }
@@ -526,6 +597,8 @@ impl<S: Store> Mind<S> {
                 }
             }
         }
+        // A species that grows place nodes may have just added one.
+        st.ensure(self.store.len());
         let percepts = self.perceive(s);
         let mut inject: Vec<(u32, i32)> = vec![];
         let mut surprised: Vec<(u32, i32, i32)> = vec![];
@@ -588,6 +661,7 @@ impl<S: Store> Mind<S> {
         if fx.pain > 0 { inject.push((self.roles.pain, fx.pain)); }
         let here = self.place_index_at(fx.x, fx.y);
         if let Some(pl) = here { inject.push((self.place_nodes[pl], PLACE_CONTEXT)); }
+        inject.extend_from_slice(&s.cues);
         let pain_rise = (fx.pain - self.prev_pain).max(0);
         self.prev_pain = fx.pain;
         if pain_rise > 0 { for p in &percepts { if self.kinds[p.kind as usize].creature { surprised.push((p.node, p.x, p.y)); } } }
@@ -628,7 +702,7 @@ impl<S: Store> Mind<S> {
         // 5. Learn by day.
         if self.learn {
             self.learn_expectations(s, &percepts);
-            self.hebbian(st, &ws, here.map(|pi| self.place_nodes[pi]));
+            self.hebbian(st, &ws, here.map(|pi| self.place_nodes[pi]), s.tick);
             for &(pi, k, e) in &absent_now {
                 let (pn, n, c) = (self.place_nodes[pi], self.missing_node(pi, k), self.concept(k));
                 for (a, b) in [(pn, n), (n, pn), (pn, c), (c, pn)] {
@@ -941,7 +1015,7 @@ impl<S: Store> Mind<S> {
 
     /// Fast weights: links between co-active workspace nodes strengthen, scaled by arousal. Links
     /// touching a place learn only while the body is at that place.
-    fn hebbian(&mut self, st: &Activation, ws: &[u32], here: Option<u32>) {
+    fn hebbian(&mut self, st: &Activation, ws: &[u32], here: Option<u32>, tick: u32) {
         let a = self.mods.arousal as i64 + BASE_ENCODE;
         let mut ls: Vec<Link> = vec![];
         for &u in ws {
@@ -954,7 +1028,11 @@ impl<S: Store> Mind<S> {
                 if (place(u) && Some(u) != here) || (place(v) && Some(v) != here) { continue; }
                 let co = st.act[u as usize].min(1000) as i64 * st.act[v as usize].min(1000) as i64 / 1000;
                 let room = (1000 - l.fast as i64).max(0);
-                let d = (co * a / HEBB_RATE * room / 1000) as i32;
+                let d = if self.cfg.stochastic_learning {
+                    let (num, den) = (co * a * room, HEBB_RATE * 1000);
+                    let r = num % den;
+                    (num / den + (r > 0 && (hash(self.who, tick as u64, l.key, 0x4ebb) % den as u64) < r as u64) as i64) as i32
+                } else { (co * a / HEBB_RATE * room / 1000) as i32 };
                 if d != 0 { self.store.set_fast(l.key, (l.fast as i32 + d).min(1000) as i16); }
             }
         }
@@ -974,6 +1052,8 @@ impl<S: Store> Mind<S> {
     pub fn sleep(&mut self) {
         self.consol.last_units = 0;
         self.consolidate(NIGHT_TICKS as i64 * SLEEP_BUDGET, true);
+        self.fade_own();
+        self.nights += 1;
         self.st.clear();
         self.mods.arousal = 0;
         self.mods.stress = 0;
@@ -982,6 +1062,31 @@ impl<S: Store> Mind<S> {
         self.goal = None;
         self.flee_left = 0;
         self.search_wp = None;
+    }
+
+    /// Nightly forgetting of the links the mind learnt in its life (see `Config::own_fade`).
+    /// Returns (links faded, links removed).
+    pub fn fade_own(&mut self) -> (u32, u32) {
+        if self.cfg.own_fade.iter().all(|&f| f == 0) { return (0, 0); }
+        let (mut faded, mut gone) = (0, vec![]);
+        for u in self.store.own_sources() {
+            let bd = self.store.base_degree(u);
+            for l in self.store.links_vec(u).into_iter().skip(bd) {
+                if u < self.young_from && l.to < self.young_from { continue; }
+                let r = self.cfg.own_fade[l.ty as usize] as i64;
+                if r == 0 || l.slow <= 0 { if l.slow < PRUNE_BELOW && l.fast == 0 && r > 0 { gone.push(l.key); } continue; }
+                let num = l.slow as i64 * r;
+                let d = num / 1000 + ((hash(self.who, self.nights as u64, l.key, 0xfade) % 1000) < (num % 1000) as u64) as i64;
+                let w = (l.slow as i64 - d).max(0);
+                self.store.set_slow(l.key, w as i16);
+                faded += 1;
+                if w < PRUNE_BELOW as i64 && l.fast == 0 { gone.push(l.key); }
+            }
+        }
+        let n = gone.len() as u32;
+        gone.sort_unstable();
+        for k in gone.into_iter().rev() { self.store.remove_link(k); }
+        (faded, n)
     }
 
     pub fn fast_total(&self) -> i64 { self.store.fast_total() }

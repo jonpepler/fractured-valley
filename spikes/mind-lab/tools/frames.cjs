@@ -1,5 +1,5 @@
 // Renders the key moments listed in viewer/frames.json as PNGs (deviceScaleFactor 2).
-//   cargo run --release --example viewers && node tools/frames.cjs [outdir]
+//   cargo run --release --example viewers && node tools/frames.cjs [outdir] [list.json]
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -7,7 +7,7 @@ const path = require('path');
   const root = path.resolve(__dirname, '..');
   const out = path.resolve(process.argv[2] || path.join(root, 'out', 'frames'));
   fs.mkdirSync(out, { recursive: true });
-  const list = JSON.parse(fs.readFileSync(path.join(root, 'viewer', 'frames.json'), 'utf8'));
+  const list = JSON.parse(fs.readFileSync(process.argv[3] ? path.resolve(process.argv[3]) : path.join(root, 'viewer', 'frames.json'), 'utf8'));
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
   for (const f of list) {

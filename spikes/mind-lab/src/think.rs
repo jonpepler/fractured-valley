@@ -97,7 +97,7 @@ pub fn tie<F: Form + ?Sized>(f: &F, p: &Params, n: u32) -> u64 {
 }
 
 /// Base gain per link type, per mille.
-pub const TYPE_GAIN: [i32; lt::COUNT] = [1000, 1000, 1000, 1000, 700, 600, 1000, 900];
+pub const TYPE_GAIN: [i32; lt::COUNT] = [1000, 1000, 1000, 1000, 700, 600, 1000, 900, 900];
 
 /// The target's tags that matter to the gain: food, rest, anger.
 #[inline]
@@ -119,7 +119,7 @@ impl Gain {
             for tc in 0..8usize {
                 let mut x = TYPE_GAIN[ty] as i64;
                 let t = ty as u8;
-                if t == lt::NEAR || t == lt::LIKE || t == lt::ASSOC { x = x * (1000 - a / 2) / 1000 * (1000 - s / 2) / 1000; }
+                if t == lt::NEAR || t == lt::LIKE || t == lt::ASSOC || t == lt::SOURCE { x = x * (1000 - a / 2) / 1000 * (1000 - s / 2) / 1000; }
                 // Stress favours anger; so does fatigue (a tired mind is irritable).
                 if tc & 4 != 0 { x += x * s * 2 / 1000 + x * f / 1000; }
                 if tc & 1 != 0 { x += x * h / 1000; }
@@ -201,6 +201,8 @@ impl Activation {
         for &(n, v) in &parked.act { a.act[n as usize] = v; a.active.push(n); }
         a
     }
+    /// Make room for `n` nodes (a mind that grew a node in the middle of its step).
+    pub fn ensure(&mut self, n: usize) { if self.act.len() < n { self.act.resize(n, 0); self.inc.resize(n, 0); } }
     /// Park the active list and give the scratch back to the thread, all zero again.
     pub fn detach(mut self) -> Parked {
         self.active.sort_unstable();

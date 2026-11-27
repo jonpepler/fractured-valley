@@ -1,4 +1,4 @@
-# Spike: the mind lab's shared mind (stage 1)
+# Spike: the mind lab's shared mind (stages 1 and 2)
 
 One mind library for every mind-lab scenario: teaching, danger, the hunt and the village build on it. It is the fox's mind from `spikes/thought-graph`, extracted and made general (any species, any number of minds), on the compact runtime form the compaction lab (`spikes/mind-compaction`) recommended. Headless, deterministic, integer maths only, no dependencies. The original fox is a dev-dependency, used only to prove the port faithful.
 
@@ -21,6 +21,7 @@ cargo run --release --example viewers && NODE_PATH=$(npm root -g) node tools/fra
 | `mind` | The mind: senses and prediction error, absence surprise, modulators (hunger, arousal, mood, fatigue, stress), workspace, Hebbian fast weights, extinction, episodes, the backlog as sleep pressure, idle consolidation, naps and sleep, learnt places, volatility, puzzles and search, novelty, temperament. Generic over the form and over a `Species` (its concepts, the kinds of thing it can tell apart, its founding graph). Reads a `Sense`, returns an `Action`. |
 | `fox` | The first species: the valley (now able to hold many foxes), the founding, the scenarios, `Sim` (one fox, recorded) and `Pack` (many foxes sharing one valley and one base, stepped on any number of threads in any order), the home experiment, the viewer. |
 | `scale` | Big minds: the fox's founding graph plus a generated body of knowledge (10k, 100k nodes), so the real scenarios run at scale. |
+| `people` | Stage 2, teaching. People as a species (concepts in the shared base; places, landmarks, the others and trust on each person's own overlay), a valley with sound in the air and paper notes, hearing and grounding a described place in one's own landmarks, source links, checking a claim against the world, mistake-or-lie evidence, notes and maps, talk chosen from the mind's own state, the fox shown the spring (`fox_demo`), the scenario runs (`runs`) and a viewer. |
 | `hashes` | The pinned determinism runs, also built for wasm32 (`src/bin/hashes.rs`). |
 
 **The open design question is a setting:** `Config::sleep_keep` (default 8): sleep keeps 1/`sleep_keep` of the day's plain strengthening. `tests/sleep_keep.rs` reports 1/8 against 1/3.
@@ -38,14 +39,26 @@ Ablation: `Config::overlay_steps_of_4` stores the mind's own learnt weights in s
 | `determinism.rs` | Pinned hashes; 24 foxes in one valley on 1, 2, 4 and 8 threads, minds in order, reversed and shuffled: one hash; the hash reacts to a changed seed, temperament, setting or a single fast weight; native and wasm32 builds agree. |
 | `storage.rs` | Bytes per mind (base, overlay, fast, state) and µs per tick, think, consolidation, sleep and told fact, at 27, 10k and 100k nodes, runtime against expanded. |
 | `sleep_keep.rs`, `sensitivity.rs` | Reports, not pass marks: the brief-09 question, and how far each outcome generalises. |
+| `teaching.rs` | Stage 2's nine scenarios over 6 seeds × 3 temperament sets, each printing its numbers. |
+| `teaching_determinism.rs` | Pinned teaching hashes; 4 people on 1, 2, 4, 8 threads in 3 orders: one hash; the hash reacts to small changes. |
+| `teaching_storage.rs` | What a told fact, source link, note and map cost; source links over a year; µs per person-tick. |
 
 Findings, numbers and what changed: `research/mind-lab/01-shared-mind.md` in the private store.
+
+Teaching viewer pages: `cargo run --release --example teaching_viewers && NODE_PATH=$(npm root -g) node tools/frames.cjs out/teaching viewer/teaching-frames.json`. Findings: `research/mind-lab/02-teaching.md` in the store.
+
+## Stage 2 changes to the shared library
+
+- Day learning rounds stochastically (`Config::stochastic_learning`): calm, dim co-activation now learns. It moves the fox's pinned hashes and makes a sleepless fox's backlog level off on day 4.
+- Forgetting of a mind's own learnt links (`Config::own_fade`, per link type, pruned below `PRUNE_BELOW`); a `source` link type; `Store::remove_link`.
+- Places can grow (`Mind::add_place`, `link_near`; a species with no spare slots grows them), with a resize of the thread's activation scratch mid-step.
+- `Sense::cues` (heard or read, already grounded), `KindInfo::tracked` (a moving thing seen near where it was last seen is predicted).
 
 ## Notes for later stages
 
 - A mind is `Mind<Runtime>` built from a `Species` (`Mind::new`). New species supply a `Base`, `Roles`, a kinds table and geometry. People, utterances and notes aren't here yet. The hooks are `Store::add_node` / `add_link` (told facts, new places, objects as anchored nodes, all with the mind's own stable keys) and `Mind::imagine` (cued thought without changing the mind).
-- **Calm learning truncates to zero.** Day learning adds `co-activation × (arousal + 60) / 4000` (soft-bounded), so a node held dimly (co-activation under ~67 when calm) never gains fast weight. A told fact that comes to mind weakly is never strengthened (`forms.rs`). Stage 2 will meet this.
+- **Home pulls too hard after a quiet day** (stage 2): with calm learning no longer truncated, home ↔ rest and home ↔ comfort saturate in a day at home, and comfort isn't gated by need, so a thirsty person can stay home. Open for brief 09.
 - `Mind::backlog()` walks the held episodes' links, and a tick calls it about 5 times. At 10k–100k nodes that is most of a tick beyond the think. Cache it if it matters.
 - Node keys are 32-bit: at 100k nodes 2 collide, and those ties fall back to the index.
 - `Runtime::recompile` folds a mind's overlay into a base of its own, keeping every link in place (weights to steps of 4).
-- Night still teleports the fox to its believed home.
+- Night still teleports the fox to its believed home; people sleep where they are and walk home at dusk if it pulls.

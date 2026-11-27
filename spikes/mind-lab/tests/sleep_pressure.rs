@@ -135,7 +135,11 @@ fn b_c_backlog_grows_without_sleep_degrades_thinking_and_sleep_restores_it() {
     let mut plateau = vec![];
     for d in 0..4 { while q.w.tick < d * DAY + NIGHT - 1 { q.step(); } plateau.push((q.m.backlog(), q.m.mods.fatigue)); }
     println!("a sleepless fox over 4 quiet days: backlog and fatigue at each nightfall {:?} ", plateau);
-    assert!(plateau.windows(2).all(|w| w[1].0 > w[0].0) && plateau[3].1 > plateau[0].1, "without sleep the backlog grows, and fatigue with it");
+    // Stage 2 changed day learning to round stochastically (calm learning of dim thoughts no
+    // longer truncates to zero). The backlog now fills faster and levels off by the fourth night
+    // (where learning and the fast weights' own fade balance), instead of still climbing: so the
+    // claim is "it grows, and never falls back by more than 1%", not "it grows every night".
+    assert!(plateau.windows(2).all(|w| w[1].0 * 100 > w[0].0 * 99) && plateau[2].0 > plateau[0].0 && plateau[3].1 > plateau[0].1, "without sleep the backlog grows, and fatigue with it");
 
     let days = 4;
     let mut s = scenarios::sleepless_eventful_days(SEED, days);

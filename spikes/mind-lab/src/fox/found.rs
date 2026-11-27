@@ -113,10 +113,11 @@ pub fn species(w: &World) -> Fox {
     let mut place_nodes = place_nodes;
     place_nodes.extend(spares);
     b.canonical();
-    let kinds = Kind::ALL.iter().map(|&k| KindInfo { name: k.name(), concept: kind_concept(&ids, k), landmark: k.landmark(), edible: matches!(k, Kind::Hen | Kind::Berry), shelter: k == Kind::Den, creature: k == Kind::Dog }).collect();
+    let kinds = Kind::ALL.iter().map(|&k| KindInfo { name: k.name(), concept: kind_concept(&ids, k), landmark: k.landmark(), edible: matches!(k, Kind::Hen | Kind::Berry), shelter: k == Kind::Den, creature: k == Kind::Dog, tracked: false }).collect();
     let species = Species {
         base: Arc::new(Base::compile(b.clone())), roles, kinds: Arc::new(kinds), place_nodes, spare_places: SPARE_PLACES, unlearnt: UNLEARNT, near_weight,
         entity_nodes, entity_kinds, expect, geo: Geometry { sight: SIGHT, place_radius: PLACE_RADIUS, grid_w: GRID_W, grid_h: GRID_H }, temperament: temperament_links,
+        feelings: feelings.to_vec(),
     };
     Fox { species, ids, founding: b }
 }

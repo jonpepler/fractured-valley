@@ -1,0 +1,13 @@
+[
+  {"file": "teaching-told.html", "t": 2, "h": 0, "name": "teaching-told-1", "label": "Bryn hears Ash: the words ground in Bryn's own landmarks (rock, windmill)"},
+  {"file": "teaching-told.html", "t": 3, "h": -1, "name": "teaching-told-2", "label": "Thirst runs to water and on to the told spring; Ash, the source, is on the mind"},
+  {"file": "teaching-told.html", "t": 27, "h": -1, "name": "teaching-told-3", "label": "Water seen where it was told: the tentative place is moved onto the real spring"},
+  {"file": "teaching-told.html", "t": 34, "h": -1, "name": "teaching-told-4", "label": "Bryn drinks at the spring"},
+  {"file": "teaching-dry.html", "t": 27, "h": 0, "name": "teaching-dry-1", "label": "The spring is dry: an expected thing missing, and a dry hollow where water should be"},
+  {"file": "teaching-dry.html", "t": 28, "h": -1, "name": "teaching-dry-2", "label": "Surprise and loss; the told water and its place fill the workspace"},
+  {"file": "teaching-dry.html", "t": 338, "h": -1, "name": "teaching-dry-3", "label": "Ash, having seen it dry, warns Bryn: the episode is judged a mistake"},
+  {"file": "teaching-note.html", "t": 2, "h": -1, "name": "teaching-note-1", "label": "Ash writes the claim on a note: Bryn reads it; the note has it, the fact is held less"},
+  {"file": "teaching-note.html", "t": 908, "h": 0, "name": "teaching-note-2", "label": "Days later, Bryn sees its lost note: the note's node lights, and the fact with it"},
+  {"file": "teaching-note.html", "t": 910, "h": -1, "name": "teaching-note-3", "label": "Picked up and reread: the faded fact and source come back"},
+  {"file": "teaching-chain.html", "t": 302, "h": -1, "name": "teaching-chain-1", "label": "Cai hears Bryn, who says Ash said: two source links, one to Bryn and one to Ash"}
+]

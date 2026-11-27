@@ -154,7 +154,7 @@ impl World {
                 .map(|e| Seen { id: e.id, kind: e.kind.k(), x: e.x, y: e.y, approaching: d2(e.x, e.y, f.x, f.y) < d2(e.px, e.py, f.x, f.y), available: e.servings > 0 })
                 .collect()
         };
-        Sense { tick: self.tick, seed: self.seed, body: Body { x: f.x, y: f.y, hunger: f.hunger, pain: f.pain, asleep: f.asleep }, seen }
+        Sense { tick: self.tick, seed: self.seed, body: Body { x: f.x, y: f.y, hunger: f.hunger, pain: f.pain, asleep: f.asleep }, seen, cues: vec![] }
     }
 
     /// Apply the script and move the dog. Call before minds read the world.

@@ -1,5 +1,6 @@
-//! Is the port faithful? With the three new choices switched off (the old exact arithmetic,
-//! ties by array index, and founding weights held exactly instead of in steps of 4), the shared
+//! Is the port faithful? With the new choices switched off (the old exact arithmetic, ties by
+//! array index, founding weights held exactly instead of in steps of 4, and, since stage 2, day
+//! learning that truncates instead of rounding stochastically), the shared
 //! mind must reproduce the original fox from `spikes/thought-graph` tick for tick: the same
 //! action, position, modulators, workspace and backlog. Then each new choice is switched on alone,
 //! to measure how far it moves the fox.
@@ -10,13 +11,14 @@ use fv_mind_lab::mind::Action;
 use fv_thought_graph as old;
 
 #[derive(Clone, Copy, Debug)]
-struct Choices { fixed: bool, key_ties: bool, quantised: bool }
-const LEGACY: Choices = Choices { fixed: false, key_ties: false, quantised: false };
+struct Choices { fixed: bool, key_ties: bool, quantised: bool, rounding: bool }
+const LEGACY: Choices = Choices { fixed: false, key_ties: false, quantised: false, rounding: false };
 
 fn apply(s: &mut Sim, c: Choices) {
     if !c.quantised { s.m.store = s.fox.mind_exact(s.m.temperament, s.m.who).store; }
     s.m.params.exact = !c.fixed;
     s.m.params.index_ties = !c.key_ties;
+    s.m.cfg.stochastic_learning = c.rounding;
 }
 
 fn act_old(a: old::world::Action) -> String {
@@ -83,7 +85,9 @@ fn each_new_choice_alone_how_far_it_moves_the_fox() {
         ("fixed-point gain only", Choices { fixed: true, ..LEGACY }),
         ("key ties only", Choices { key_ties: true, ..LEGACY }),
         ("u8 founding weights only", Choices { quantised: true, ..LEGACY }),
-        ("all three (the shared mind)", Choices { fixed: true, key_ties: true, quantised: true }),
+        ("stochastic learning only (stage 2)", Choices { rounding: true, ..LEGACY }),
+        ("stage 1's three (fixed, keys, u8), old rounding", Choices { fixed: true, key_ties: true, quantised: true, rounding: false }),
+        ("all four (the shared mind)", Choices { fixed: true, key_ties: true, quantised: true, rounding: true }),
     ];
     for (vn, c) in variants {
         println!("{vn}:");
