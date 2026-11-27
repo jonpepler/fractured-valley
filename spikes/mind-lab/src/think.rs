@@ -77,6 +77,9 @@ pub trait Form {
     fn key(&self, n: u32) -> u32;
     /// Links of `u` with a positive effective weight, in link-key order.
     fn edges(&self, u: u32, out: &mut Vec<Edge>);
+    /// Think v2: the links in v2's stored form (the shared sorted base and this mind's compiled
+    /// patches), brought up to date. `None`: v2 sorts each sender's `edges` on the spot instead.
+    fn sorted_view(&self) -> Option<crate::think2::View<'_>> { None }
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -231,8 +234,8 @@ impl Parked {
 pub struct Activation {
     pub act: Vec<i32>,
     pub active: Vec<u32>,
-    inc: Vec<i32>,
-    touched: Vec<u32>,
+    pub(crate) inc: Vec<i32>,
+    pub(crate) touched: Vec<u32>,
     edges: Vec<Edge>,
     /// Links visited and hops run in the last think.
     pub visits: u32,

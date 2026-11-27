@@ -291,6 +291,10 @@ pub struct Config {
     /// concepts in `Mind::rel_to`) are not moved by day learning or consolidation, only by the
     /// people layer's episodes. Off: the old rule (they drift with co-activation).
     pub protect_social: bool,
+    /// Round 2, stage 2 (9.2): **think v2** (`think2`, `SPEC-think.md`): gain from per-class
+    /// knots, saturating 32-bit arithmetic, links heaviest first with an exact early stop, the
+    /// same step the GPU runs. Off: `think::think`, the step as it was.
+    pub think_v2: bool,
 }
 // Hashed field by field, as the derive did; stage 4's setting only when on (so minds that don't
 // use it keep their pinned hashes).
@@ -305,7 +309,7 @@ impl std::hash::Hash for Config {
             if on { tag.hash(h); }
         }
         // Round 2's settings, each with a tag of its own when it differs from the old rule.
-        for (on, tag) in [(self.needs_in_choice, 0x61u8), (!self.courage_spread, 0x62), (!self.novelty_keep, 0x63), (!self.dormancy, 0x64), (!self.protect_social, 0x65)] {
+        for (on, tag) in [(self.needs_in_choice, 0x61u8), (!self.courage_spread, 0x62), (!self.novelty_keep, 0x63), (!self.dormancy, 0x64), (!self.protect_social, 0x65), (self.think_v2, 0x66)] {
             if on { tag.hash(h); }
         }
     }
@@ -313,12 +317,20 @@ impl std::hash::Hash for Config {
 /// Round 2 (9.6): the village's bug fix (`expect_at_edge`) is the default, and its model fixes
 /// (`food_contingent`, `felt_without_sources`, `habituate`) are the default provisionally.
 impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true, focus: true, flee_from_all: false, prune_places: false, expect_at_edge: true, food_contingent: true, felt_without_sources: true, habituate: true,
-    needs_in_choice: false, courage_spread: true, novelty_keep: true, dormancy: true, protect_social: true } } }
+    needs_in_choice: false, courage_spread: true, novelty_keep: true, dormancy: true, protect_social: true, think_v2: think_v2_default() } } }
 impl Config {
     /// Round 1's rules (stage 5's village settings off, choice-time gating, stage 3's courage, the
     /// fixed sleep share, no dormancy, feelings consolidated): an ablation for comparisons.
-    pub fn round1() -> Config { Config { expect_at_edge: false, food_contingent: false, felt_without_sources: false, habituate: false, needs_in_choice: true, courage_spread: false, novelty_keep: false, dormancy: false, protect_social: false, ..Config::default() } }
+    pub fn round1() -> Config { Config { expect_at_edge: false, food_contingent: false, felt_without_sources: false, habituate: false, needs_in_choice: true, courage_spread: false, novelty_keep: false, dormancy: false, protect_social: false, think_v2: false, ..Config::default() } }
 }
+
+/// The default of `Config::think_v2`. `FV_THINK=v1` or `FV_THINK=v2` in the environment overrides
+/// it, for before-and-after comparisons only (a run's hash records which step it used).
+pub fn think_v2_default() -> bool {
+    static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *D.get_or_init(|| match std::env::var("FV_THINK").as_deref() { Ok("v1") => false, Ok("v2") => true, _ => THINK_V2_DEFAULT })
+}
+pub const THINK_V2_DEFAULT: bool = false;
 
 /// Default `Config::walk_cost`: a place this many cells away counts half.
 pub const WALK_COST: i32 = 120;
@@ -1242,7 +1254,7 @@ impl<S: Store> Mind<S> {
         }
         let mut hops = vec![];
         let tr = if self.trace { Some(&mut hops) } else { None };
-        let ws = think::think(&self.store, st, &self.mods, &inject, &p, tr);
+        let ws = if self.cfg.think_v2 { crate::think2::think(&self.store, st, &self.mods, &inject, &p, tr) } else { think::think(&self.store, st, &self.mods, &inject, &p, tr) };
         rep.hops_run = st.hops_run; rep.frontier_cap = p.frontier; rep.visits = st.visits;
         self.mods.stress -= self.mods.stress / 40 + (self.mods.stress > 0) as i32;
         if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
@@ -2031,7 +2043,7 @@ impl<S: Store> Mind<S> {
         let mut a = Activation::new(self.store.len());
         let mut ws = vec![];
         let mut visits = 0;
-        for _ in 0..thinks { ws = think::think(&self.store, &mut a, mods, cue, &self.params, None); visits += a.visits; }
+        for _ in 0..thinks { ws = if self.cfg.think_v2 { crate::think2::think(&self.store, &mut a, mods, cue, &self.params, None) } else { think::think(&self.store, &mut a, mods, cue, &self.params, None) }; visits += a.visits; }
         (ws, a.act, visits)
     }
 }

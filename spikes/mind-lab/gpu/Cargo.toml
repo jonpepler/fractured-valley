@@ -1,0 +1,22 @@
+[package]
+name = "fv-mind-lab-gpu"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: think v2 of the mind lab as a wgpu integer compute shader, bit-identical to the CPU"
+
+[dependencies]
+fv-mind-lab = { path = ".." }
+wgpu = "25"
+pollster = "0.4"
+bytemuck = "1"
+
+[[bin]]
+name = "gpu-bench"
+path = "src/bin/gpu-bench.rs"
+
+[profile.release]
+codegen-units = 1
+
+[profile.test]
+opt-level = 3

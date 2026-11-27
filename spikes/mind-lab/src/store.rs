@@ -136,6 +136,8 @@ pub struct Base {
     /// Debug labels only.
     pub names: Vec<String>,
     pub links: usize,
+    /// Think v2: the same links sorted heaviest first with weight sums, built on first use.
+    pub sorted: std::sync::OnceLock<crate::think2::SortedBase>,
 }
 
 /// One decoded base link.
@@ -178,7 +180,7 @@ impl Base {
             }
             offsets[u as usize + 1] = stream.len() as u32;
         }
-        Base { offsets, stream, val: b.val, tags: b.tags, keys: b.keys, anchors: b.anchors, names: b.names, links: b.links.len() }
+        Base { offsets, stream, val: b.val, tags: b.tags, keys: b.keys, anchors: b.anchors, names: b.names, links: b.links.len(), sorted: Default::default() }
     }
     pub fn len(&self) -> usize { self.val.len() }
     pub fn is_empty(&self) -> bool { self.val.is_empty() }
@@ -249,14 +251,17 @@ impl Overlay {
 // ------------------------------------------------------------------------------------- runtime
 
 /// The form a mind runs on: the shared species base, the mind's overlay, sparse fast weights.
+///
+/// `cache` is think v2's compiled form of the overlay (derived state: never hashed, rebuilt node
+/// by node as links change).
 #[derive(Clone, Debug)]
-pub struct Runtime { pub base: Arc<Base>, pub ov: Overlay, pub fast: Sparse }
+pub struct Runtime { pub base: Arc<Base>, pub ov: Overlay, pub fast: Sparse, pub cache: crate::think2::Compiled }
 
 impl Runtime {
     /// A new mind of a species, exactly its founding graph.
     pub fn new(base: Arc<Base>) -> Runtime {
         let ov = Overlay { val: base.val.clone(), anchors: base.anchors.clone(), ..Default::default() };
-        Runtime { base, ov, fast: Sparse::default() }
+        Runtime { base, ov, fast: Sparse::default(), cache: crate::think2::Compiled::new() }
     }
     /// The index in `ov.added` of link `k` of `u`, which must be one of u's added links.
     fn added_index(&self, u: u32, k: usize) -> usize {
@@ -298,6 +303,37 @@ impl Runtime {
         for (k, v) in self.fast.keys.iter().zip(&self.fast.vals) { r.fast.set(*k, Some(*v)); }
         r
     }
+    /// Does node `u` differ from the base (or is it the mind's own)? Then v2 keeps a patch for it.
+    fn differs(&self, u: u32) -> bool {
+        if u as usize >= self.base.len() { return true; }
+        let (lo, hi) = ((u as u64) << LINK_BITS, ((u as u64) + 1) << LINK_BITS);
+        let has = |sp: &Sparse| { let i = sp.start(u); i < sp.keys.len() && sp.keys[i] >= lo && sp.keys[i] < hi };
+        has(&self.ov.slow) || has(&self.ov.lval) || has(&self.fast) || !self.added_range(u).is_empty()
+    }
+    fn compile_node(&self, c: &mut crate::think2::Inner, u: u32, buf: &mut Vec<Edge>) {
+        if self.differs(u) {
+            buf.clear(); self.edges(u, buf);
+            let p = crate::think2::Patch::from_edges(self, buf);
+            if u as usize >= self.base.len() && p.e.is_empty() { c.set(u, None); } else { c.set(u, Some(p)); }
+        } else { c.set(u, None); }
+        c.recompiled += 1;
+    }
+    /// Bring think v2's compiled overlay up to date (every node the first time, then the dirty ones).
+    pub fn refresh(&self, c: &mut crate::think2::Inner) {
+        let mut buf = vec![];
+        let n = self.len();
+        if !c.ready {
+            c.patch_of.clear(); c.patch_of.resize(n, crate::think2::NONE); c.patches.clear(); c.free.clear();
+            for u in 0..n as u32 { self.compile_node(c, u, &mut buf); }
+            c.ready = true; c.dirty.clear(); c.is_dirty.clear(); c.is_dirty.resize(n, false);
+        } else if !c.dirty.is_empty() {
+            let d = std::mem::take(&mut c.dirty);
+            for &u in &d { c.is_dirty[u as usize] = false; if (u as usize) < n { self.compile_node(c, u, &mut buf); } }
+            let mut d = d; d.clear(); c.dirty = d;
+        }
+        if c.patch_of.len() < n { c.patch_of.resize(n, crate::think2::NONE); }
+        c.refreshes += 1;
+    }
 }
 
 impl Form for Runtime {
@@ -332,11 +368,17 @@ impl Form for Runtime {
             if w > 0 { out.push(Edge { to: a.to, w, ty: a.ty, val: a.lval as i32, link: key }); }
         }
     }
+    fn sorted_view(&self) -> Option<crate::think2::View<'_>> {
+        let base = self.base.sorted.get_or_init(|| crate::think2::SortedBase::build(&self.base));
+        let mut c = self.cache.0.lock().unwrap();
+        self.refresh(&mut c);
+        Some(crate::think2::View { base, c })
+    }
 }
 
 impl Store for Runtime {
     fn name(&self, n: u32) -> &str { let b = &self.base; if (n as usize) < b.len() { &b.names[n as usize] } else { &self.ov.new_names[n as usize - b.len()] } }
-    fn set_val(&mut self, n: u32, v: i16) { self.ov.val[n as usize] = v; }
+    fn set_val(&mut self, n: u32, v: i16) { if self.ov.val[n as usize] != v { self.cache.bump(); } self.ov.val[n as usize] = v; }
     fn anchor(&self, n: u32) -> Option<Anchor> { self.ov.anchors.binary_search_by_key(&n, |a| a.0).ok().map(|i| self.ov.anchors[i].1) }
     fn set_anchor(&mut self, n: u32, a: Anchor) {
         match self.ov.anchors.binary_search_by_key(&n, |a| a.0) { Ok(i) => self.ov.anchors[i].1 = a, Err(i) => self.ov.anchors.insert(i, (n, a)) }
@@ -368,6 +410,7 @@ impl Store for Runtime {
     }
     fn set_slow(&mut self, key: LinkKey, w: i16) {
         let (u, k) = (link_src(key), link_pos(key));
+        self.cache.touch(u);
         match self.base.base_link(u, k) {
             Some(b) => self.ov.slow.set(key, if w == b.w { None } else { Some(w) }),
             None => { let i = self.added_index(u, k); self.ov.added[i].w = w; }
@@ -375,23 +418,26 @@ impl Store for Runtime {
     }
     fn set_lval(&mut self, key: LinkKey, v: i16) {
         let (u, k) = (link_src(key), link_pos(key));
+        self.cache.touch(u);
         match self.base.base_link(u, k) {
             Some(b) => self.ov.lval.set(key, if v == b.lval { None } else { Some(v) }),
             None => { let i = self.added_index(u, k); self.ov.added[i].lval = v; }
         }
     }
-    fn set_fast(&mut self, key: LinkKey, f: i16) { self.fast.set(key, if f == 0 { None } else { Some(f) }); }
+    fn set_fast(&mut self, key: LinkKey, f: i16) { if self.fast.get(key).unwrap_or(0) != f { self.cache.touch(link_src(key)); } self.fast.set(key, if f == 0 { None } else { Some(f) }); }
     fn fast_entries(&self) -> Vec<(LinkKey, i16)> { self.fast.keys.iter().copied().zip(self.fast.vals.iter().copied()).collect() }
     fn map_fast(&mut self, f: &mut dyn FnMut(i16) -> i16) {
         let mut i = 0;
         while i < self.fast.keys.len() {
             let v = f(self.fast.vals[i]);
+            if v != self.fast.vals[i] { self.cache.touch(link_src(self.fast.keys[i])); }
             if v == 0 { self.fast.keys.remove(i); self.fast.vals.remove(i); } else { self.fast.vals[i] = v; i += 1; }
         }
     }
     fn fast_total(&self) -> i64 { self.fast.vals.iter().map(|&f| (f as i64).abs()).sum() }
     fn add_node(&mut self, name: &str, val: i32, tags: u8, anchor: Option<Anchor>, origin: u64) -> u32 {
         let id = self.len() as u32;
+        self.cache.bump();
         self.ov.val.push(val.clamp(-1000, 1000) as i16);
         self.ov.new_tags.push(tags | if anchor.is_some() { tag::ANCHORED } else { 0 });
         self.ov.new_keys.push(node_key(origin, id as u64));
@@ -403,6 +449,7 @@ impl Store for Runtime {
         let r = self.added_range(u);
         let k = self.base.degree(u) + r.len();
         assert!(k < 1 << LINK_BITS);
+        self.cache.touch(u);
         self.ov.added.insert(r.end, Added { src: u, to: v, ty, w: w.clamp(0, 1000) as i16, lval: lval.clamp(-1000, 1000) as i16 });
         link_key(u, k)
     }
@@ -413,6 +460,7 @@ impl Store for Runtime {
     fn remove_link(&mut self, key: LinkKey) {
         let (u, k) = (link_src(key), link_pos(key));
         let i = self.added_index(u, k);
+        self.cache.touch(u);
         self.ov.added.remove(i);
         let (s, e) = (self.fast.start(u), self.fast.start(u + 1));
         let mut moved = Sparse::default();
