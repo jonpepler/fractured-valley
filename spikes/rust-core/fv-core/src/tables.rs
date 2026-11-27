@@ -234,6 +234,10 @@ impl Tables {
         let k = k_index(t.0);
         let lo = self.saturated_ug_per_l[k];
         let hi = self.saturated_ug_per_l[(k + 1).min(MAX_K)];
+        // Not toward "unlimited" (from 100 °C up): between 373 K and the
+        // boiling point that would hand a surface at 99.9 °C room for ~10¹⁷
+        // µg of vapour a litre, a heat sink that pinned wet log faces there.
+        if hi >= i64::MAX / 8 { return lo }
         let frac = (t.0 - k as i64 * 1_000).clamp(0, 1_000);
         lo + ((hi - lo) as i128 * frac as i128 / 1_000) as i64
     }

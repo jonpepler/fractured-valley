@@ -339,7 +339,7 @@ fn mccaffrey_rise(z: f64, q: f64, t0: f64) -> f64 {
 }
 
 #[test]
-#[ignore = "open: the plume is ~6x too cool (+119 K at 0.45 m over a 71 kW fire, McCaffrey +800 K); about two thirds of the heat leaves the bed as radiation and the plume draws too much air through the fuel (26 Nov)"]
+#[ignore = "open: the plume is ~7x too cool (+99 K at 0.45 m over 53 kW, McCaffrey +727 K). Measured: only ~19 % of the heat rises in the plume; 46 % is released in the bed's own 10 cm cell and goes to fuel, ground and wet grass, and latent heat takes ~25 %. No wrong mechanism found: the flame base is unresolved at 10 cm (research 27 Nov, section 20)"]
 fn the_plume_over_a_campfire_is_as_hot_as_mccaffrey_measured() {
     // Through the flickering flame and the plume above it (z/Q^⅖ from 0.08
     // to 0.3), the centreline's mean temperature rise within ×2 of

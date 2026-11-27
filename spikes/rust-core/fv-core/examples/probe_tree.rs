@@ -7,7 +7,7 @@ fn main() {
     let dead = std::env::args().any(|a| a == "dead");
     let seed: u64 = std::env::var("SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
     let (w, torch) = crib_and_tree(seed, 48, 48, dead);
-    let mut sim = Sim::new(w, Sky::afternoon());
+    let mut sim = Sim::new(w, if std::env::var("NIGHT").is_ok() { Sky::NIGHT } else { Sky::afternoon() });
     for t in 0..200 { for (i, p) in torch.iter().enumerate().filter(|(i, _)| i % 3 == 0) { sim.schedule(Scheduled { tick: t, peer: 0, seq: i as u32, command: Command::Heat { x: p[0] as u16, y: p[1] as u16, z: p[2] as u16, energy: joules(500) } }) } }
     let t0 = std::time::Instant::now();
     let ticks: u64 = std::env::var("TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(1600);
