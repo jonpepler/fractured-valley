@@ -158,7 +158,7 @@ where F: Fn(usize, &mut Person) -> Deed + Sync {
 /// whichever thread's allocator arena it happened to get, so four threads ran *slower* than one.
 /// Here each worker lives for the whole run and always gets the same people (by their place in
 /// the stepping order), so what a person allocated is freed where it was allocated.
-pub struct Pool { tx: Vec<std::sync::mpsc::Sender<Job>>, rx: std::sync::mpsc::Receiver<(usize, Vec<(usize, Person, Deed)>)>, handles: Vec<std::thread::JoinHandle<()>> }
+pub struct Pool { tx: Vec<std::sync::mpsc::Sender<Job>>, rx: std::sync::mpsc::Receiver<(usize, Option<Vec<(usize, Person, Deed)>>)>, handles: Vec<std::thread::JoinHandle<()>> }
 enum Job { Think(std::sync::Arc<World>, Vec<(usize, Person)>), Night(std::sync::Arc<Vec<crate::mind::Sense>>, Vec<(usize, Person)>) }
 
 impl Pool {
@@ -171,11 +171,13 @@ impl Pool {
             let dtx = dtx.clone();
             handles.push(std::thread::spawn(move || {
                 while let Ok(job) = jrx.recv() {
-                    let out = match job {
+                    // (Review: a panicking worker must fail the run, not leave it waiting.)
+                    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
                         Job::Think(w, ps) => ps.into_iter().map(|(i, mut p)| { let d = if p.village.is_some() { crate::village::life::think(&mut p, &w) } else { p.think(&w) }; (i, p, d) }).collect(),
-                        Job::Night(s, ps) => ps.into_iter().map(|(i, mut p)| { p.m.night(&s[i]); (i, p, Deed::default()) }).collect(),
-                    };
-                    if dtx.send((k, out)).is_err() { break; }
+                        Job::Night(s, ps) => ps.into_iter().map(|(i, mut p)| { p.m.night(&s[i]); (i, p, Deed::default()) }).collect::<Vec<_>>(),
+                    }));
+                    let failed = out.is_err();
+                    if dtx.send((k, out.ok())).is_err() || failed { break; }
                 }
             }));
             tx.push(jtx);
@@ -195,7 +197,7 @@ impl Pool {
             sent += 1;
         }
         let mut deeds = vec![Deed::default(); n];
-        for _ in 0..sent { let (_, out) = self.rx.recv().expect("worker alive"); for (i, p, d) in out { slots[i] = Some(p); deeds[i] = d; } }
+        for _ in 0..sent { let (k, out) = self.rx.recv().expect("worker alive"); let out = out.unwrap_or_else(|| panic!("pool worker {k} panicked")); for (i, p, d) in out { slots[i] = Some(p); deeds[i] = d; } }
         *folk = slots.into_iter().map(|p| p.expect("every person back")).collect();
         deeds
     }

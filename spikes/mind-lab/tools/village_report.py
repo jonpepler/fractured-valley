@@ -39,12 +39,13 @@ def compare(m0, m1, keys):
     print(f"| measure (per run) | {m0} mean | {m1} mean | change | {m1} higher / lower | sign test p |")
     print("|---|---|---|---|---|---|")
     for k in keys:
+        if k not in by[m0][seeds[0]]: continue
         a = [by[m0][s][k] for s in seeds]; b = [by[m1][s][k] for s in seeds]
         up, dn, p = sign_test(a, b)
         ch = (mean(b) - mean(a)) / mean(a) * 100 if mean(a) else float("nan")
         print(f"| {k} | {mean(a):.1f} | {mean(b):.1f} | {ch:+.1f}% | {up} / {dn} | {p:.3g} |")
 
-KEYS = ["meals", "drinks", "gossip", "help", "proposals", "caught", "gored", "surprised", "said", "danger_ticks", "feast", "trust1", "warmth1", "total_b", "own_b", "places", "brain_us_per_mind_tick"]
+KEYS = ["danger_thought", "surprised_per_1000_thinks", "meals", "drinks", "gossip", "help", "proposals", "caught", "gored", "surprised", "said", "danger_ticks", "feast", "trust1", "warmth1", "total_b", "own_b", "places", "brain_us_per_mind_tick"]
 if "full" in by and "cheap" in by: compare("full", "cheap", KEYS)
 if "full" in by and "prune" in by: compare("full", "prune", KEYS + ["pruned_places", "pruned_links"])
 if "full" in by and "oldvoice" in by: compare("full", "oldvoice", ["heard_per_tick", "air_per_tick", "gossip", "said", "drinks", "meals", "surprised", "trust1", "warmth1"])

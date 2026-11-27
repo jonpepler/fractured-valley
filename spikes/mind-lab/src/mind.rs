@@ -256,11 +256,11 @@ impl std::hash::Hash for Config {
         self.sleep_keep.hash(h); self.overlay_steps_of_4.hash(h); self.stochastic_learning.hash(h); self.own_fade.hash(h); self.comfort_gate.hash(h);
         self.walk_cost.hash(h); self.hold_goal.hash(h); self.focus.hash(h);
         if self.flee_from_all { self.flee_from_all.hash(h); }
-        if self.prune_places { self.prune_places.hash(h); }
-        if self.expect_at_edge { self.expect_at_edge.hash(h); }
-        if self.food_contingent { self.food_contingent.hash(h); }
-        if self.felt_without_sources { self.felt_without_sources.hash(h); }
-        if self.habituate { self.habituate.hash(h); }
+        // Stage 5's settings: a tag of its own for each that is on (review: hashing `true` alone
+        // let two minds with different single settings hash alike).
+        for (on, tag) in [(self.prune_places, 0x51u8), (self.expect_at_edge, 0x52), (self.food_contingent, 0x53), (self.felt_without_sources, 0x54), (self.habituate, 0x55)] {
+            if on { tag.hash(h); }
+        }
     }
 }
 impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true, focus: true, flee_from_all: false, prune_places: false, expect_at_edge: false, food_contingent: false, felt_without_sources: false, habituate: false } } }

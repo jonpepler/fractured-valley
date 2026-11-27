@@ -8,7 +8,9 @@ use fv_mind_lab::hashes::village_runs;
 use fv_mind_lab::village::runs::{run, Setup};
 
 /// Pinned when stage 5 was written.
-const PINNED: [u64; 3] = [0xc6de73db1522c1bc, 0x643637be3ce2a470, 0xce42a81eae48647e];
+/// (Restated after review: each stage-5 setting is now hashed with a tag of its own; behaviour is
+/// unchanged, only the hash of the settings moved.)
+const PINNED: [u64; 3] = [0x0f86acaca55cc1e7, 0x0e432c21ac14aeb2, 0x214eb0e3c029db79];
 
 #[test]
 fn village_runs_give_identical_pinned_hashes() {
@@ -35,6 +37,18 @@ fn village_same_hash_on_any_thread_count_and_any_order() {
             assert_eq!(h, reference);
         } }
     }
+}
+
+/// (Review) The early stop's three settings give the same village (it is exact).
+#[test]
+fn village_same_hash_with_and_without_the_early_stop() {
+    use fv_mind_lab::think::{EARLY_STOP, STOP_OFF, STOP_SKIP, STOP_SORTED};
+    use std::sync::atomic::Ordering;
+    let s = Setup::new(6, 30, 1);
+    let mut hs = vec![];
+    for m in [STOP_OFF, STOP_SORTED, STOP_SKIP] { EARLY_STOP.store(m, Ordering::Relaxed); hs.push(run(&s, 1, None).0.hash); }
+    println!("early stop off / sorted / skip: {hs:x?}");
+    assert!(hs.iter().all(|&h| h == hs[0]));
 }
 
 #[test]

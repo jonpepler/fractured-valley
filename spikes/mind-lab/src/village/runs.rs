@@ -42,10 +42,12 @@ pub struct Setup {
     pub prune: bool,
     /// The voice model (off: the old falloff, ordinary speech heard to about 27 cells).
     pub voice: bool,
+    /// The two surprise fixes, `expect_at_edge` and `habituate` (off: an ablation).
+    pub fixes: bool,
 }
 impl Setup {
     pub fn new(seed: u64, people: usize, days: u32) -> Setup {
-        Setup { seed, people, days, every: 1, far: 16, observer: None, foxes: 3, boar: true, deer: true, gossip: true, prune: false, voice: true }
+        Setup { seed, people, days, every: 1, far: 16, observer: None, foxes: 3, boar: true, deer: true, gossip: true, prune: false, voice: true, fixes: true }
     }
 }
 
@@ -98,6 +100,8 @@ pub fn feelings(seed: u64, n: usize) -> (Vec<Vec<i32>>, Vec<Vec<i32>>) {
 pub fn build(s: &Setup) -> Valley {
     let l = layout(s.seed);
     let n = s.people;
+    // (Review: a person's look and gossip's "about" are bytes; keep well inside them.)
+    assert!((1..=200).contains(&n), "a village holds 1 to 200 people");
     let mut w = World::valley(s.seed);
     for t in w.things.iter_mut() {
         let p = match t.id { CAMP => l.camp, STREAM => l.stream, SPRING => l.spring, ROCK => l.rock, WINDMILL => l.windmill, OAK => l.oak, _ => (t.x, t.y) };
@@ -141,10 +145,10 @@ pub fn build(s: &Setup) -> Valley {
         let mut p = Person::new_in(&sp, &w, i, t, &f);
         p.traits = Traits { honesty: if h(30, 10) == 0 { 300 } else { 900 }, helpful: 500 + h(31, 501) as i32 };
         p.m.cfg.prune_places = s.prune;
-        p.m.cfg.expect_at_edge = true;
+        p.m.cfg.expect_at_edge = s.fixes;
         p.m.cfg.food_contingent = true;
         p.m.cfg.felt_without_sources = true;
-        p.m.cfg.habituate = true;
+        p.m.cfg.habituate = s.fixes;
         // Everyone knows how to hunt; a third know where the deer grazes. A deer is food.
         let knows_meadow = s.deer && h(40, 3) == 0;
         hunter::found(&mut p, &w, if knows_meadow { Some(l.meadows[0]) } else { None }, 2);
@@ -162,14 +166,14 @@ pub fn build(s: &Setup) -> Valley {
         near.sort_by_key(|&(bx, by)| (pw::d2(bx, by, x, y), bx, by));
         v.beasts = vec![boar::forager(&boar::boars_for(n), &v.w, 0, x, y, &near[..2])];
     }
-    for m in v.deer_minds.iter_mut().chain(v.beasts.iter_mut()) { m.cfg.expect_at_edge = true; m.cfg.food_contingent = true; m.cfg.habituate = true; }
+    for m in v.deer_minds.iter_mut().chain(v.beasts.iter_mut()) { m.cfg.expect_at_edge = s.fixes; m.cfg.food_contingent = true; m.cfg.habituate = s.fixes; }
     let fx = fox::foxes(n);
     v.fox_minds = (0..s.foxes).map(|k| {
         let den = l.dens[k % l.dens.len()];
         let mut near: Vec<(i32, i32)> = l.bushes.clone();
         near.sort_by_key(|&(x, y)| (pw::d2(x, y, den.0, den.1), x, y));
         let mut m = fox::mind(&fx, &v.w, k, den, &near[..2]);
-        m.cfg.expect_at_edge = true; m.cfg.food_contingent = true; m.cfg.habituate = true;
+        m.cfg.expect_at_edge = s.fixes; m.cfg.food_contingent = true; m.cfg.habituate = s.fixes;
         m
     }).collect();
     v
@@ -211,6 +215,9 @@ pub struct Record {
     /// Per person: ticks in a danger response, ticks surprised.
     pub danger: Vec<u32>,
     pub surprised: Vec<u32>,
+    /// Ticks on which the mind thought and was in a danger response (the cheap tier's body keeps
+    /// its last response between thinks, which `danger` counts).
+    pub danger_thought: Vec<u32>,
     /// Words heard per person per awake tick (summed), and utterances in the air (summed over ticks).
     pub heard: u64,
     pub air: u64,
@@ -303,7 +310,7 @@ pub fn run(s: &Setup, threads: usize, order: Option<&[usize]>) -> (Record, Valle
     let l = layout(s.seed);
     let n = s.people;
     let ord: Vec<usize> = order.map(|o| o.to_vec()).unwrap_or_else(|| (0..n).collect());
-    let mut rec = Record { n, at: vec![[0; PLACE_CLASSES]; n], close: vec![0; n * n], walked: vec![0; n], said: vec![[0; SAY_KINDS]; n], danger: vec![0; n], surprised: vec![0; n], ..Record::default() };
+    let mut rec = Record { n, at: vec![[0; PLACE_CLASSES]; n], close: vec![0; n * n], walked: vec![0; n], said: vec![[0; SAY_KINDS]; n], danger: vec![0; n], surprised: vec![0; n], danger_thought: vec![0; n], ..Record::default() };
     let ticks = s.days * DAY;
     // More than one thread: a pool that lives for the whole run (see `sim::Pool`).
     let pool = (threads > 1).then(|| crate::people::sim::Pool::new(threads));
@@ -324,7 +331,7 @@ pub fn run(s: &Setup, threads: usize, order: Option<&[usize]>) -> (Record, Valle
             rec.at[i][place_class(&v.w, &l, q.x, q.y)] += 1;
             rec.walked[i] += (q.x - q.px).unsigned_abs().max((q.y - q.py).unsigned_abs());
             let p = &v.folk[i];
-            if p.m.held.response.is_some() { rec.danger[i] += 1; }
+            if p.m.held.response.is_some() { rec.danger[i] += 1; if p.village.as_ref().is_some_and(|l| l.thought) { rec.danger_thought[i] += 1; } }
             if p.village.as_ref().is_some_and(|l| l.thought) && (p.m.last.percepts.iter().any(|x| x.error >= IGNORE_BELOW) || !p.m.last.absent.is_empty()) { rec.surprised[i] += 1; day.surprised += 1; }
             if !q.asleep { for j in i + 1..n { let o = &v.w.people[j]; if pw::d2(q.x, q.y, o.x, o.y) <= 9 { rec.close[i * n + j] += 1; rec.close[j * n + i] += 1; } } }
         }

@@ -19,7 +19,7 @@ fn main() {
     std::fs::create_dir_all("out/village").unwrap();
     let f = |name: &str| Mutex::new(std::fs::File::create(format!("out/village/{name}{tag}.csv")).unwrap());
     let (runs, daysf, people) = (f("runs"), f("days"), f("people"));
-    writeln!(runs.lock().unwrap(), "seed,mode,n,days,hash,brain_us_per_mind_tick,thinks,skipped,woken,meals,drinks,gossip,help,proposals,caught,gored,surprised,said,heard_per_tick,air_per_tick,trust0,trust1,warmth0,warmth1,warm_sat,cold_sat,total_b,own_b,places,pruned_places,pruned_links,danger_ticks,feast").unwrap();
+    writeln!(runs.lock().unwrap(), "seed,mode,n,days,hash,brain_us_per_mind_tick,thinks,skipped,woken,meals,drinks,gossip,help,proposals,caught,gored,surprised,said,heard_per_tick,air_per_tick,trust0,trust1,warmth0,warmth1,warm_sat,cold_sat,total_b,own_b,places,pruned_places,pruned_links,danger_ticks,feast,danger_thought,surprised_per_1000_thinks").unwrap();
     writeln!(daysf.lock().unwrap(), "seed,mode,day,before_total,after_total,base_share,places_b,people_b,sources_b,plans_b,notes_b,other_own_b,fast_before,state,expect,layer,place_count,source_links,told,nodes,links,meals,drinks,gossip,help,proposals,caught,surprised").unwrap();
     writeln!(people.lock().unwrap(), "seed,mode,i,reactivity,aggression,honesty,helpful,places,waters,bushes,{},walked,{},danger,surprised,drinks,meals,best_friend,best_close,warmth_out,trust_out,warmth_in,gossip_said,gossip_heard,hunts_led,told,source_links",
         (0..PLACE_CLASSES).map(|k| format!("at{k}")).collect::<Vec<_>>().join(","), (0..SAY_KINDS).map(|k| format!("said{k}")).collect::<Vec<_>>().join(",")).unwrap();
@@ -35,6 +35,7 @@ fn main() {
                 if mode == "cheap" { s.every = 4; }
                 if mode == "prune" { s.prune = true; }
                 if mode == "oldvoice" { s.voice = false; }
+                if mode == "nofix" { s.fixes = false; }
                 let (rec, v) = run(&s, 1, None);
                 let st = stats(&v);
                 let (w0, t0) = feelings(seed, n);
@@ -47,12 +48,12 @@ fn main() {
                 let tot = |f: &dyn Fn(&fv_mind_lab::village::life::Stats) -> u32| st.iter().map(f).sum::<u32>();
                 let sum_day = |f: &dyn Fn(&fv_mind_lab::village::runs::DayRec) -> u32| rec.day.iter().map(f).sum::<u32>();
                 let pruned: (u32, u32) = v.folk.iter().fold((0, 0), |a, p| (a.0 + p.m.pruned.0, a.1 + p.m.pruned.1));
-                let line = format!("{seed},{mode},{n},{days},{:016x},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.1},{:.4},{:.4},{:.0},{:.0},{:.2},{},{},{},{}",
+                let line = format!("{seed},{mode},{n},{days},{:016x},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.1},{:.4},{:.4},{:.0},{:.0},{:.2},{},{},{},{},{},{:.2}",
                     rec.hash, rec.brain_ns as f64 / 1e3 / (rec.ticks as f64 * n as f64), tot(&|s| s.thinks), tot(&|s| s.skipped), tot(&|s| s.woken),
                     sum_day(&|d| d.meals), sum_day(&|d| d.drinks), sum_day(&|d| d.gossip), sum_day(&|d| d.help), sum_day(&|d| d.proposals), sum_day(&|d| d.caught), sum_day(&|d| d.gored), sum_day(&|d| d.surprised), sum_day(&|d| d.said),
                     rec.heard as f64 / (rec.ticks as f64 * n as f64), rec.air as f64 / rec.ticks as f64,
                     mean0(&t0), trust1 as f64 / pairs, mean0(&w0), warm1 as f64 / pairs, hot as f64 / pairs, cold as f64 / pairs,
-                    mean(&|s| s.total()), mean(&|s| s.own()), mean(&|s| s.place_count), pruned.0, pruned.1, rec.danger.iter().sum::<u32>(), sum_day(&|d| d.feast));
+                    mean(&|s| s.total()), mean(&|s| s.own()), mean(&|s| s.place_count), pruned.0, pruned.1, rec.danger.iter().sum::<u32>(), sum_day(&|d| d.feast), rec.danger_thought.iter().sum::<u32>(), sum_day(&|d| d.surprised) as f64 * 1000.0 / tot(&|s| s.thinks).max(1) as f64);
                 writeln!(runs.lock().unwrap(), "{line}").unwrap();
                 {
                     let mut df = daysf.lock().unwrap();
