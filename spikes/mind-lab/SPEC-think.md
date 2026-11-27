@@ -30,9 +30,9 @@ a tick does around it, including the look-ahead (`felt_in`) that choosing uses.
   (−1000..1000), focus with its intent node, courage with its ally node. Out-of-range values are
   clamped where they are read.
 - The injection list: `(node, amount)` in order; a node may appear more than once.
-- The params (`Params`), which must satisfy: `min_act ≥ 1`; `persist`, `carry_spread` and
+- The params (`Params`), which must satisfy: `1 ≤ min_act ≤ max_act`; `persist`, `carry_spread` and
   `hop_decay` in 0..1000; `max_act ≤ A_CAP`; `budget ≤ 131,071`. The GPU form also needs
-  `frontier ≤ 64`.
+  `frontier ≤ 64`. Both forms assert these (the GPU's host before it dispatches).
 
 **Outputs**
 - The new state: `(node, activation)` sorted by node, at most `active_cap` entries, every
@@ -97,8 +97,8 @@ two knots, and the multipliers and the clamp are monotone.
 
 Scratch: activation `act` and hop sums `inc` per node, all zero outside a think.
 
-1. **Persist.** For each state entry `(n, x)`: `x' = clamp(x, 0, A_CAP) × persist / 1000` (flag
-   `SAT_INJECT` if `x > A_CAP`). If `x' ≥ min_act`, `act[n] = x'` and `n` is active; otherwise it
+1. **Persist.** For each state entry `(n, x)`: `x' = clamp(x, 0, max_act) × persist / 1000` (flag
+   `SAT_INJECT` if `x > max_act`; a mind's own state never is, since every think leaves it ≤ `max_act`). If `x' ≥ min_act`, `act[n] = x'` and `n` is active; otherwise it
    is dropped.
 2. **Carry.** For each active `n`: `c = act[n] × carry_spread / 1000`; if `c > 0`, `inc[n] = c`.
 3. **Inject**, in list order: `a' = clamp(a, 0, A_CAP)` (flag if `a > A_CAP`); if `act[n] = 0` and
@@ -145,12 +145,13 @@ Scratch: activation `act` and hop sums `inc` per node, all zero outside a think.
 | `Σ act` | 16,383 × nodes | u32 for fewer than 262,144 active nodes |
 | `act × budget` | 16,383 × 131,071 | u32 |
 | `x × persist`, `act × carry` | 1.6·10⁷ | i32 |
+| `1000 × min_act` (`min_act ≤ max_act ≤ A_CAP`) | 1.6·10⁷ | u32 |
 
 The largest knot over all classes and modulators is 53,360 (wants into a food-, rest- and
 anger-tagged target, every modulator at its extreme, `hop_decay` 1000; 29,348 at the default 550),
 so with focus and courage it is at most 213,440: **`F_CAP` cannot bind** with today's gain table
-(`tests/think_v2.rs` checks it). `A_CAP` does bind, rarely: 33 of 31,274 thinks in a 3-day village
-had a hop sum into one node above 16,383 (§ measures in the findings note).
+(`tests/think_v2.rs` checks it). `A_CAP` does bind, rarely: in 11 of 31,274 thinks in a 3-day village a hop's sum into one
+node was above 16,383.
 
 ## 7. Storage
 
@@ -180,7 +181,8 @@ patch is derived from them, and is never hashed.
 ## 8. The GPU form
 
 One dispatch per batch of thinks, **all hops inside it**. **One workgroup (64 threads) per think**;
-each workgroup owns a scratch slot (`9 × n` words: activation, hop sums, marks, the active,
+each workgroup owns a scratch slot (`9 × stride` words, the stride fixed for the life of the
+scratch buffer and at least the largest mind's node count: activation, hop sums, marks, the active,
 touched and kept lists, candidates) and loops over thinks `wg, wg + W, …`, so a dispatch of `W`
 workgroups runs any number of thinks. **Thinks are ordered by species base** before dispatch, so
 neighbouring workgroups read the same base. The frontier (≤ 64) lives in workgroup memory.

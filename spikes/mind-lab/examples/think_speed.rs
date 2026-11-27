@@ -42,7 +42,7 @@ fn main() {
         if v2 {
             let per = |x: u64| x as f64 / s.thinks.max(1) as f64;
             println!("    of which bringing the compiled overlay up to date: {:.2} µs a think", s.refresh_ns as f64 / 1000.0 / s.thinks.max(1) as f64);
-            println!("    per think: {:.1} senders, {:.1} links evaluated, {:.1} stopped early, {:.1} flows, {:.1} touched; active before cap {:.1} (max {}); candidates a hop max {}; saturations: inject {} frontier {} sum {} factor {}",
+            println!("    per think: {:.1} senders, {:.1} links evaluated, {:.1} stopped early, {:.1} flows, {:.1} touched; active before cap {:.1} (max {}); candidates a hop max {}; thinks with a cap binding (over the 3 runs): inject {} frontier {} sum {} factor {}",
                 per(s.senders), per(s.evaluated), per(s.stopped), per(s.flows), per(s.touched), per(s.active_sum), s.active_max, s.cand_max, s.sat_inject, s.sat_front, s.sat_inc, s.sat_factor);
             PRUNE.store(false, Ordering::Relaxed);
             let (el2, us2, _, h2) = timed(f.as_ref());

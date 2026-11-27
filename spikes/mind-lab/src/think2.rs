@@ -296,7 +296,7 @@ pub fn think<F: Form + ?Sized>(f: &F, st: &mut Activation, m: &Mods, inject: &[(
 /// The step itself, through `view` when the form has one (else each sender's links are sorted
 /// on the spot from `Form::edges`, which gives the same result).
 pub fn think_in<F: Form + ?Sized>(f: &F, view: Option<&View>, st: &mut Activation, m: &Mods, inject: &[(u32, i32)], p: &Params, mut trace: Option<&mut Vec<Hop>>) -> Out {
-    assert!(p.min_act >= 1 && (0..=1000).contains(&p.persist) && (0..=1000).contains(&p.carry_spread) && (0..=1000).contains(&p.hop_decay) && p.max_act <= A_CAP && (0..=131_071).contains(&p.budget), "params outside v2's ranges");
+    assert!(p.min_act >= 1 && p.min_act <= p.max_act && (0..=1000).contains(&p.persist) && (0..=1000).contains(&p.carry_spread) && (0..=1000).contains(&p.hop_decay) && p.max_act <= A_CAP && (0..=131_071).contains(&p.budget), "params outside v2's ranges");
     let n = f.len();
     st.ensure(n);
     let k = Knots::new(m, p.hop_decay);
@@ -312,8 +312,8 @@ pub fn think_in<F: Form + ?Sized>(f: &F, view: Option<&View>, st: &mut Activatio
     let mut keep = Vec::with_capacity(st.active.len());
     for &u in &st.active {
         let a = &mut st.act[u as usize];
-        if *a > A_CAP { flags |= SAT_INJECT; }
-        let x = (*a).clamp(0, A_CAP) * p.persist / 1000;
+        if *a > p.max_act { flags |= SAT_INJECT; }
+        let x = (*a).clamp(0, p.max_act) * p.persist / 1000;
         if x >= min { *a = x; keep.push(u); } else { *a = 0; }
     }
     st.active = keep;

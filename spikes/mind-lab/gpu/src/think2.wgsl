@@ -182,8 +182,8 @@ fn think_one(t: u32, lid: u32) {
     let so = hdr[23]; let sl = hdr[24];
     for (var k = lid; k < sl; k += 64u) {
         let n = inp[so + 2u * k]; let x0 = bitcast<i32>(inp[so + 2u * k + 1u]);
-        if (x0 > A_CAP) { atomicOr(&flags, SAT_INJECT); }
-        let x = clamp(x0, 0, A_CAP) * persist / 1000;
+        if (x0 > maxa) { atomicOr(&flags, SAT_INJECT); }
+        let x = clamp(x0, 0, maxa) * persist / 1000;
         if (x >= mina) {
             st(ACT(n), u32(x));
             st(ACTL(atomicAdd(&nact, 1u)), n);
@@ -336,7 +336,7 @@ fn think_one(t: u32, lid: u32) {
 
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-    N = u.nmax;
+    N = u.nmax;   // the scratch stride (nodes per slot), fixed by the host
     S = wid.x * 9u * N;
     for (var t = wid.x; t < u.count; t += u.nwg) {
         think_one(t, lid);

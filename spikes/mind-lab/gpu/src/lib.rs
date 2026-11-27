@@ -25,7 +25,10 @@ pub struct Cost { pub dispatches: u64, pub bytes_up: u64, pub bytes_down: u64, p
 impl std::ops::AddAssign for Cost { fn add_assign(&mut self, o: Cost) { self.dispatches += o.dispatches; self.bytes_up += o.bytes_up; self.bytes_down += o.bytes_down; self.up_s += o.up_s; self.run_s += o.run_s; self.down_s += o.down_s; } }
 
 struct Buf { b: wgpu::Buffer, words: usize }
-struct Bufs { inp: Buf, idx: Buf, out: Buf, read: Buf, scr: Buf, uni: wgpu::Buffer }
+/// `stride`: words of node arrays per scratch slot. Fixed for the life of the scratch buffer, so a
+/// slot's activation, sums and marks always sit at the same place (the shader clears those three
+/// after each think; its lists are always written before they are read).
+struct Bufs { inp: Buf, idx: Buf, out: Buf, read: Buf, scr: Buf, uni: wgpu::Buffer, stride: usize }
 
 impl Gpu {
     /// The adapter `WGPU_BACKEND` (and, for Vulkan, `VK_ICD_FILENAMES`) points at, else the default.
@@ -47,7 +50,8 @@ impl Gpu {
         Resident { bases: mk(bases), minds: mk(minds), base_words: bases.len(), mind_words: minds.len() }
     }
 
-    fn ensure(&self, inp: usize, idx: usize, out: usize, scr: usize) {
+    /// Returns the scratch stride (nodes per slot) to use.
+    fn ensure(&self, inp: usize, idx: usize, out: usize, nwg: usize, nmax: usize) -> usize {
         let mut g = self.bufs.borrow_mut();
         let d = &self.device;
         let s = wgpu::BufferUsages::STORAGE;
@@ -55,15 +59,20 @@ impl Gpu {
         let grow = |w: usize| w.next_power_of_two().max(1024);
         if g.is_none() {
             *g = Some(Bufs { inp: mk(grow(inp), s | wgpu::BufferUsages::COPY_DST), idx: mk(grow(idx), s | wgpu::BufferUsages::COPY_DST), out: mk(grow(out), s | wgpu::BufferUsages::COPY_SRC),
-                read: mk(grow(out), wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST), scr: mk(scr, s), uni: d.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16, usage: s | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }) });
-            return;
+                read: mk(grow(out), wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST), scr: mk(1, s), uni: d.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16, usage: s | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }), stride: 0 });
         }
         let b = g.as_mut().unwrap();
         if b.inp.words < inp { b.inp = mk(grow(inp), s | wgpu::BufferUsages::COPY_DST); }
         if b.idx.words < idx { b.idx = mk(grow(idx), s | wgpu::BufferUsages::COPY_DST); }
         if b.out.words < out { b.out = mk(grow(out), s | wgpu::BufferUsages::COPY_SRC); b.read = mk(grow(out), wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST); }
-        // (A new scratch buffer starts zeroed; the shader leaves every slot clean after a think.)
-        if b.scr.words < scr { b.scr = mk(scr, s); }
+        // (Review: a stride that followed each batch's largest mind put a later batch's
+        // activations over an earlier batch's lists. The stride now only grows, and a new stride
+        // comes with a new, zeroed buffer.)
+        if nmax > b.stride || nwg * 9 * b.stride > b.scr.words {
+            b.stride = b.stride.max(nmax.next_power_of_two().max(256));
+            b.scr = mk(self.workgroups as usize * 9 * b.stride, s);
+        }
+        b.stride
     }
 
     /// Run `jobs` in one dispatch. Returns each think's output and state, in the jobs' order.
@@ -80,7 +89,10 @@ impl Gpu {
         let mut nmax = 0u32;
         for &i in &order {
             let j = &jobs[i];
-            assert!(j.params.frontier <= 64, "the GPU's frontier holds at most 64 senders");
+            let p = &j.params;
+            assert!(p.frontier <= 64, "the GPU's frontier holds at most 64 senders");
+            assert!(p.min_act >= 1 && p.min_act <= p.max_act && p.max_act <= think2::A_CAP && (0..=1000).contains(&p.persist) && (0..=1000).contains(&p.carry_spread)
+                && (0..=1000).contains(&p.hop_decay) && (0..=131_071).contains(&p.budget), "params outside v2's ranges (SPEC-think.md §2)");
             idx.push(inp.len() as u32);
             think2::pack_input(&mut inp, j.mind, j.base, out_words as u32, &j.mods, &j.params, &j.state, &j.inject);
             outs.push(out_words);
@@ -88,14 +100,14 @@ impl Gpu {
             nmax = nmax.max(j.n);
         }
         let nwg = (jobs.len() as u32).min(self.workgroups);
-        let scr_words = nwg as usize * 9 * nmax as usize;
-        self.ensure(inp.len(), idx.len(), out_words, scr_words);
+        let stride = self.ensure(inp.len(), idx.len(), out_words, nwg as usize, nmax as usize);
+        let scr_words = nwg as usize * 9 * stride;
         let g = self.bufs.borrow();
         let b = g.as_ref().unwrap();
         let q = &self.queue;
         q.write_buffer(&b.inp.b, 0, bytemuck::cast_slice(&inp));
         q.write_buffer(&b.idx.b, 0, bytemuck::cast_slice(&idx));
-        q.write_buffer(&b.uni, 0, bytemuck::cast_slice(&[jobs.len() as u32, nwg, nmax, 0]));
+        q.write_buffer(&b.uni, 0, bytemuck::cast_slice(&[jobs.len() as u32, nwg, stride as u32, 0]));
         let up_s = t0.elapsed().as_secs_f64();
         let t1 = std::time::Instant::now();
         let layout = self.pipeline.get_bind_group_layout(0);
