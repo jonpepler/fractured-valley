@@ -65,6 +65,12 @@ pub struct Tables {
     /// per mille, by σ in 1/m: the share of a fine fuel that must reach
     /// ignition before it lights (its surface layer; thin blades nearly all).
     pub heating_permille: Vec<i64>,
+    /// For the surface heat transfer of fine fuel (`chem::surface_h`): per
+    /// σ of the substances, per whole kelvin of the gas, 0.62 × 0.888 ×
+    /// √(d / (1000·ν(T))) in units of 2⁻²⁴, with d = 4/σ the twig's
+    /// diameter and ν the air's kinematic viscosity. Times √(v in mm/s) it
+    /// is the Churchill–Bernstein term 0.62·Re^½·Pr^⅓.
+    pub surface_g: Vec<(i64, Vec<u32>)>,
 }
 
 /// Largest surface-to-volume ratio the heating table covers, 1/m.
@@ -223,6 +229,19 @@ fn build() -> Tables {
             if sigma == 0 { return 0 }
             (libm::exp(-138.0 / (sigma as f64 * 0.3048)) * 1000.0).round() as i64
         }).collect(),
+        surface_g: {
+            let mut sigmas: Vec<i64> = crate::substance::table().iter().map(|s| s.surface_per_volume).filter(|&s| s > 0).collect();
+            sigmas.sort();
+            sigmas.dedup();
+            sigmas.into_iter().map(|sigma| {
+                let d = 4.0 / sigma as f64;
+                (sigma, (0..=MAX_K).map(|k| {
+                    let t = k.max(250) as f64;
+                    let nu = 1.5e-5 * libm::pow(t / 293.0, 1.75);
+                    (0.62 * 0.888 * libm::sqrt(d / (1000.0 * nu)) * (1u64 << 24) as f64).round() as u32
+                }).collect())
+            }).collect()
+        },
     }
 }
 
@@ -241,6 +260,22 @@ impl Tables {
         let frac = (t.0 - k as i64 * 1_000).clamp(0, 1_000);
         lo + ((hi - lo) as i128 * frac as i128 / 1_000) as i64
     }
+}
+
+impl Tables {
+    /// The `surface_g` row for a substance's σ.
+    pub fn surface_g_for(&self, sigma: i64) -> &[u32] {
+        &self.surface_g.iter().find(|(s, _)| *s == sigma).expect("σ of a substance in the table").1
+    }
+}
+
+/// ⌊√v⌋, exactly.
+pub fn isqrt(v: u64) -> u64 {
+    if v == 0 { return 0 }
+    let mut x = (v as f64).sqrt() as u64; // a starting guess only; corrected exactly below
+    while x as u128 * x as u128 > v as u128 { x -= 1 }
+    while (x as u128 + 1) * (x as u128 + 1) <= v as u128 { x += 1 }
+    x
 }
 
 /// Table index for a temperature in millikelvin.

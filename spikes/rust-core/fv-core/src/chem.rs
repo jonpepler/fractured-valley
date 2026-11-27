@@ -111,14 +111,16 @@ const WATER_SURFACE_MM2: i64 = FACE_MM2;
 /// air's Nu = 2. Kinematic viscosity of air ν ≈ 1.5×10⁻⁵·(T/293 K)^1.75.
 pub fn surface_h(sigma: i64, t_gas: Temperature, ambient: Temperature) -> i64 {
     if sigma <= 0 { return SURFACE_H_PER_SIGMA }
-    let v = crate::transport::buoyant_churn(t_gas, ambient) as f64 / 1000.0; // m/s
-    let d = 4.0 / sigma as f64;
-    let t = (t_gas.0.max(250_000) as f64) / 1000.0;
-    let nu = 1.5e-5 * libm::pow(t / 293.0, 1.75);
-    let re = v * d / nu;
-    let nusselt = (0.3 + 0.62 * libm::sqrt(re) * 0.888).max(2.0);
-    // h·d/k = Nu and SURFACE_H_PER_SIGMA is h at Nu = 2 per unit σ: scale it.
-    (SURFACE_H_PER_SIGMA as f64 * nusselt / 2.0).round() as i64
+    // In integers (the same bits on any CPU or GPU): Re^½ = √v · √(d/ν),
+    // the second factor from a table by whole kelvin (ν at T, never below
+    // 250 K), the first an exact integer square root (v in mm/s, ×2¹⁶).
+    let v = crate::transport::buoyant_churn(t_gas, ambient).max(0) as u64;
+    let g = tables().surface_g_for(sigma)[crate::tables::k_index(t_gas.0.max(250_000))] as u128;
+    let sqrt_v = crate::tables::isqrt(v << 32) as u128;
+    // Nu = 0.3 + 0.62·Re^½·0.888, never below still air's 2, in units of 2⁻³².
+    let nusselt = (1_288_490_189 + (sqrt_v * g >> 8)).max(2 << 32);
+    // h·d/k = Nu and SURFACE_H_PER_SIGMA is h at Nu = 2 per unit σ: scale it, rounding to nearest.
+    ((SURFACE_H_PER_SIGMA as u128 * nusselt + (1 << 32)) >> 33) as i64
 }
 
 /// The reaction step in still air.
@@ -163,7 +165,8 @@ fn inert_air(c: &Cell, subs: &[Substance], t: &Tables) -> bool {
 fn wind_over(vel: &dyn crate::transport::FaceVelocity, x: i64, y: i64, z: i64) -> i64 {
     let u = (vel.face(x - 1, y, z, 0) + vel.face(x, y, z, 0)) / 2;
     let v = (vel.face(x, y - 1, z, 1) + vel.face(x, y, z, 1)) / 2;
-    libm::sqrt((u * u + v * v) as f64) as i64
+    // Exact integer root: the same as the float one for every value here (< 2⁵²).
+    crate::tables::isqrt((u * u + v * v) as u64) as i64
 }
 
 /// Which cells' gas a flame can reach this tick: gas holding both fuel and
