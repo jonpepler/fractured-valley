@@ -140,12 +140,15 @@ fn compare_three(make: impl Fn() -> Sim, ticks: usize) { compare_three_on(make, 
 fn compare_three_on(make: impl Fn() -> Sim, ticks: usize, burning: bool) { compare_phases(make, ticks, burning, false) }
 
 /// Diffusion, the flow, carrying and reaction on the GPU (`with_flow`), or the three without the flow.
-fn compare_phases(make: impl Fn() -> Sim, ticks: usize, burning: bool, with_flow: bool) {
+fn compare_phases(make: impl Fn() -> Sim, ticks: usize, burning: bool, with_flow: bool) { compare_phases_lazy(make, ticks, burning, with_flow, false) }
+
+/// `lazy`: the state comes back only after the reaction (the four phases' hooks must all be set).
+fn compare_phases_lazy(make: impl Fn() -> Sim, ticks: usize, burning: bool, with_flow: bool, lazy: bool) {
     let mut cpu = make();
     let mut gpu = make();
     let n = gpu.world.bricks();
     let g = match fv_gpu::pool::PoolDiffusion::with_mode(&gpu.world, fv_gpu::pool::shuffled(n, 11), fv_gpu::pool::Mode::Scratch, true) {
-        Ok(g) => Arc::new(Mutex::new(g)),
+        Ok(mut g) => { g.lazy = lazy; Arc::new(Mutex::new(g)) }
         Err(e) => { no_gpu(e); return }
     };
     let (g2, g3, g4) = (g.clone(), g.clone(), g.clone());
@@ -236,3 +239,6 @@ fn the_flame_reach_fill_is_the_same_on_the_gpu() {
     }
     assert!(reached > 0, "no flame reached any gas");
 }
+
+#[test]
+fn a_campfire_burns_the_same_with_the_state_read_back_once_a_tick() { compare_phases_lazy(burning_campfire, 60, true, true, true) }

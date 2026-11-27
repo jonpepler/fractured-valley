@@ -27,6 +27,8 @@ fn main() {
     let n = b.world.bricks();
     let mut pool = PoolDiffusion::with_mode(&b.world, shuffled(n, 3), Mode::Scratch, true).expect("GPU");
     pool.carry_once = std::env::var("CARRY_TWICE").is_err();
+    // The state comes back once a tick, after the reaction (EAGER=1: after every phase).
+    pool.lazy = std::env::var("EAGER").is_err();
     println!("adapter: {} ({:?})", pool.adapter_info.name, pool.adapter_info.device_type);
     let g = Arc::new(Mutex::new(pool));
     let (g1, g2, g3, g4) = (g.clone(), g.clone(), g.clone(), g.clone());
@@ -37,11 +39,16 @@ fn main() {
     b.advect_hook = Some(Box::new(move |w, flow, steps| { let mut p = g2.lock().unwrap(); let t0 = Instant::now(); p.advect(w, flow, steps); l2.lock().unwrap().push(("advect".into(), t0.elapsed().as_secs_f64() * 1e3, p.kernel_ms.clone(), p.last)) }));
     b.react_hook = Some(Box::new(move |w, flow| { let mut p = g3.lock().unwrap(); let t0 = Instant::now(); p.react(w, flow); l3.lock().unwrap().push(("react".into(), t0.elapsed().as_secs_f64() * 1e3, p.kernel_ms.clone(), p.last)) }));
     let mut same = 0;
+    let (mut gpu_tick, mut cpu_tick) = (Vec::new(), Vec::new());
     let (mut cpu_adv, mut cpu_react, mut cpu_flow) = (f64::MAX, f64::MAX, f64::MAX);
     for _ in 0..ticks {
         // The CPU's carrying alone, timed on a copy of the state it starts from.
+        let t0 = Instant::now();
         a.step();
+        cpu_tick.push(t0.elapsed().as_secs_f64() * 1e3);
+        let t0 = Instant::now();
         b.step();
+        gpu_tick.push(t0.elapsed().as_secs_f64() * 1e3);
         if a.hash() == b.hash() && a.flow == b.flow { same += 1 }
     }
     for _ in 0..5 {
@@ -68,5 +75,15 @@ fn main() {
             best(&|r| r.1), kernels.iter().sum::<f64>(), kernels.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(" + "),
             best(&|r| r.3.upload), best(&|r| r.3.readback), best(&|r| r.3.prepare), best(&|r| r.3.unpack));
     }
+    // The one number: the four phases per tick on the GPU (every call's whole
+    // time, transfers included) against the same four on the CPU.
+    let phase_ms = |name: &str| { let v: Vec<f64> = log.iter().filter(|r| r.0 == name).map(|r| r.1).collect(); v.iter().copied().fold(f64::MAX, f64::min) };
+    let gpu4 = phase_ms("diffuse") + phase_ms("flow") + phase_ms("advect") + phase_ms("react");
+    let mut cpu_diff = f64::MAX;
+    for _ in 0..5 { let mut w = a.world.clone(); let t0 = Instant::now(); fv_core::transport::diffuse(&mut w, &a.flow); cpu_diff = cpu_diff.min(t0.elapsed().as_secs_f64() * 1e3) }
+    let cpu4 = cpu_diff + cpu_flow + cpu_adv + cpu_react;
+    let best = |v: &[f64]| v.iter().copied().fold(f64::MAX, f64::min);
+    println!("TICK: the four phases {gpu4:.1} ms on the GPU against {cpu4:.1} ms on the CPU ({:.1}x); whole tick {:.1} ms against {:.1} ms (best of {ticks}); exact: {}",
+        cpu4 / gpu4, best(&gpu_tick), best(&cpu_tick), same == ticks);
     println!("CPU, 4 threads (copying the world included): flow {cpu_flow:.1} ms, advect {cpu_adv:.1} ms, react {cpu_react:.1} ms");
 }

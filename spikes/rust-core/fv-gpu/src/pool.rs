@@ -115,6 +115,11 @@ pub struct PoolDiffusion {
     rp: [u32; 12],
     /// Rounds the last flame-reach fill took.
     pub reach_rounds: u32,
+    /// Read back only the tallies after diffusion and carrying, and the
+    /// whole state only after the reaction. The CPU's world is then stale
+    /// between those phases, so set it only when all four (diffusion, the
+    /// flow, carrying, reaction) run here, every tick.
+    pub lazy: bool,
 }
 
 impl PoolDiffusion {
@@ -174,7 +179,7 @@ impl PoolDiffusion {
         let pipelines = names.map(|e| device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&layout), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: None }));
         let bge: Vec<wgpu::BindGroupEntry> = (0..11).map(|b| wgpu::BindGroupEntry { binding: b as u32, resource: all[b].as_entire_binding() }).collect();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("pool"), layout: &bgl, entries: &bge });
-        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, limits: lim.clone(), faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new(), resident: None, carry_once: true, aux, rparams, fparams, gpu_sides: true, rp: [0; 12], reach_rounds: 0 };
+        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, limits: lim.clone(), faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new(), resident: None, carry_once: true, aux, rparams, fparams, gpu_sides: true, rp: [0; 12], reach_rounds: 0, lazy: false };
         p.write_table(w);
         Ok(p)
     }
@@ -347,7 +352,37 @@ impl PoolDiffusion {
 
     /// Reads back copy `copy` and the tallies, and writes them into the world
     /// as `World::run_phase` would (the tallies are added).
-    fn read_into(&mut self, w: &mut World, copy: u32, t: &mut Timings) { self.read_back(w, copy, t, true, false) }
+    /// After diffusion or carrying: the state (unless lazy) and the tallies.
+    fn read_into(&mut self, w: &mut World, copy: u32, t: &mut Timings) {
+        if self.lazy { self.read_tallies(w, t) } else { self.read_back(w, copy, t, true, false) }
+    }
+
+    /// Only the tallies (added to the world's) and the compact-range flag.
+    fn read_tallies(&mut self, w: &mut World, t: &mut Timings) {
+        let t0 = Instant::now();
+        let words = self.slots * 8 * 16 + 1;
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(&self.tallies, 0, &self.read, 0, (words * 4) as u64);
+        self.queue.submit([enc.finish()]);
+        let slice = self.read.slice(..(words * 4) as u64);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
+        let data: Vec<u32> = bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped")).to_vec();
+        self.read.unmap();
+        t.readback += ms(t0);
+        assert_eq!(data[self.slots * 8 * 16], 0, "a gas mass left the compact cell's u32 range");
+        let get = |o: usize| (data[o] as u64 | (data[o + 1] as u64) << 32) as i64;
+        for b in 0..self.slots {
+            let s = self.slot_of[b];
+            let mut tally = fv_core::world::Tally::default();
+            for tile in 0..8 {
+                let o = (s * 8 + tile) * 16;
+                tally.energy_in += get(o);
+                for k in 0..GASES { tally.gas_in[k] += get(o + 2 + 2 * k) }
+            }
+            w.tallies[b].add(&tally);
+        }
+    }
 
     /// Reads back copy `copy`, the tallies (added to the world's when
     /// `tallies`), and when `solid` the solid group too.
