@@ -43,6 +43,9 @@ fn main() {
     let mut released = 0.0f64;
     let last = 0i128;
     let mut plume1m = 0.0f64;
+    // Gas flowing up out of the burner's own cells and the ring around them,
+    // at the top of each of the first layers (kg/s), and its oxygen.
+    let mut rise = vec![[0.0f64; 2]; 8];
     for tick in 1..=ticks {
         sim.step();
         assert_eq!(sim.energy_gap(), 0);
@@ -82,6 +85,13 @@ fn main() {
             up[z] += sim.flow.face(cx as i64, cy as i64, z as i64, 2) as f64 / 1000.0;
         }
         tops.push((top - base) as f64 * 0.1);
+        for k in 0..8 { let z = base + k; for y in cy - 2..cy + 3 { for x in cx - 2..cx + 3 {
+            let u = sim.flow.face(x as i64, y as i64, z as i64, 2) as f64 / 1000.0;
+            let d = if u > 0.0 { w.get(x, y, z) } else { w.get(x, y, z + 1) };
+            let ml = d.gas_volume_ml(&w.subs) as f64; if ml <= 0.0 { continue }
+            let per = u * 0.01 / (ml * 1e-6) * 1e-9; // µg in cell → kg/s
+            rise[k][0] += d.gas_mass().0 as f64 * per; rise[k][1] += d.gas[Gas::Oxygen as usize].0 as f64 * per;
+        }}}
         // sensible heat up through 1 m (top of layer base+9)
         let z = base + 9;
         for y in 0..w.ny { for x in 0..w.nx {
@@ -104,6 +114,7 @@ fn main() {
     let total: f64 = heat_z.iter().sum();
     println!("burner {kw:.0} kW asked: released {q_gross:.1} kW gross, {q_net:.1} kW net; plume sensible heat through 1 m {:.1} kW ({:.0} % of net)", plume1m / n, 100.0 * plume1m / n / q_net);
     println!("flame height {flame:.2} m, Heskestad {hesk:.2} m; flame heat by height: {}", heat_z.iter().enumerate().filter(|(_, v)| **v / total.max(1e-9) > 0.01).map(|(z, v)| format!("{:.1}m:{:.2}", (z - base) as f64 * 0.1, v / total)).collect::<Vec<_>>().join(" "));
+    for k in 0..8 { println!("  up through {:.1} m (5x5 cells): gas {:.3} kg/s, O2 {:.4} kg/s", (k + 1) as f64 * 0.1, rise[k][0] / n, rise[k][1] / n) }
     println!("height m | centre °C rise | 3x3 mean rise | McCaffrey rise | up m/s");
     let t0 = 15.0;
     for z in base..(base + 16).min(nz) {
