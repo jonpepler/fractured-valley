@@ -71,7 +71,23 @@ pub struct Tables {
     /// diameter and ν the air's kinematic viscosity. Times √(v in mm/s) it
     /// is the Churchill–Bernstein term 0.62·Re^½·Pr^⅓.
     pub surface_g: Vec<(i64, Vec<u32>)>,
+    /// Share of a flammable mix that burns per tick when fuel and air are
+    /// stirred by eddies of a given size, per centimetre of it: 1 − e^(−dt/τ)
+    /// with τ = √(2l/g), the time buoyancy takes to turn over an eddy of size
+    /// l (FDS's τ_g, McGrattan et al., Technical Reference Guide §5.1, with l
+    /// the flame's own scale where that is larger than a cell; see
+    /// `chem::flame_reach`).
+    pub mixing_by_cm: Vec<Fraction>,
+    /// A fire's heat release, µW, whose characteristic diameter
+    /// D* = (Q/(ρ∞·c_p·T∞·√g))^(2/5) is a given number of centimetres, per
+    /// centimetre (ρ∞ = 1.204 kg/m³, c_p = 1.005 kJ/(kg·K), T∞ = 293 K). D*
+    /// is the size of a fire plume's largest eddies (McCaffrey 1979;
+    /// FDS User's Guide §10.2).
+    pub dstar_q_uw: Vec<i64>,
 }
+
+/// Largest eddy the mixing tables cover, cm.
+pub const MAX_EDDY_CM: usize = 1_000;
 
 /// Largest surface-to-volume ratio the heating table covers, 1/m.
 pub const MAX_SIGMA: usize = 20_000;
@@ -228,6 +244,14 @@ fn build() -> Tables {
         heating_permille: (0..=MAX_SIGMA).map(|sigma| {
             if sigma == 0 { return 0 }
             (libm::exp(-138.0 / (sigma as f64 * 0.3048)) * 1000.0).round() as i64
+        }).collect(),
+        mixing_by_cm: (0..=MAX_EDDY_CM).map(|cm| {
+            let l = (cm.max(1) as f64) / 100.0;
+            per_tick(1.0 / libm::sqrt(2.0 * l / 9.81))
+        }).collect(),
+        dstar_q_uw: (0..=MAX_EDDY_CM).map(|cm| {
+            let d = cm as f64 / 100.0;
+            (1.204 * 1005.0 * 293.15 * libm::sqrt(9.81) * libm::pow(d, 2.5) * 1e6).round() as i64
         }).collect(),
         surface_g: {
             let mut sigmas: Vec<i64> = crate::substance::table().iter().map(|s| s.surface_per_volume).filter(|&s| s > 0).collect();

@@ -169,14 +169,27 @@ fn wind_over(vel: &dyn crate::transport::FaceVelocity, x: i64, y: i64, z: i64) -
     crate::tables::isqrt((u * u + v * v) as u64) as i64
 }
 
-/// Which cells' gas a flame can reach this tick: gas holding both fuel and
-/// oxygen, joined through such gas to something that lights it (hot gas or
-/// a hot fuel surface, see [`lights`]). A flame is anchored to burning fuel
-/// and runs through the flammable gas around it: a 10 cm cell's average
-/// says nothing of the flame sheet inside it, and FDS has no ignition
-/// temperature for gas by default (its only test is the critical flame
-/// temperature, which `react_cell` applies to each cell).
-pub fn flame_reach(world: &World) -> Vec<bool> {
+/// Which cells' gas a flame can reach this tick, and the size of the eddies
+/// that stir its fuel and air there, mm (zero: no flame reaches it).
+///
+/// Reach: gas holding both fuel and oxygen, joined through such gas to
+/// something that lights it (hot gas or a hot fuel surface, see [`lights`]).
+/// A flame is anchored to burning fuel and runs through the flammable gas
+/// around it: a 10 cm cell's average says nothing of the flame sheet inside
+/// it, and FDS has no ignition temperature for gas by default (its only test
+/// is the critical flame temperature, which `react_cell` applies to each
+/// cell).
+///
+/// Eddies: fuel and air in a fire are brought together by the plume's own
+/// largest eddies, about the fire's characteristic diameter
+/// D* = (Q/(ρ∞c_pT∞√g))^(2/5) (0.3 m for 50 kW), not by eddies the size of
+/// a cell, which a 10 cm grid leaves under-resolved (FDS wants D*/Δ ≥ 4–16;
+/// a 50 kW fire here has 3). So each joined patch of reached gas takes the
+/// D* of the heat its flames could release this tick (each cell's at a
+/// cell's mixing), never less than a cell, and never more than the patch is
+/// wide through the cell (its narrower horizontal run): a long fire line a
+/// cell or two deep stirs on its depth, not its length.
+pub fn flame_reach(world: &World) -> Vec<u32> {
     let (o2, fuel) = (Gas::Oxygen as usize, Gas::Fuel as usize);
     let n = world.cells.len();
     let burnable = |c: &Cell| c.gas[fuel].0 > 0 && c.gas[o2].0 > 0;
@@ -186,23 +199,91 @@ pub fn flame_reach(world: &World) -> Vec<bool> {
         let c = &world.cells[i];
         if burnable(c) && lights(c, &world.subs) { lit[i] = true; queue.push(i) }
     }
+    let xyz = |i: usize| {
+        let ((ox, oy, oz), (lx, ly, lz)) = (world.brick_origin(i / BRICK_CELLS), World::local_xyz(i % BRICK_CELLS));
+        [(ox + lx) as i64, (oy + ly) as i64, (oz + lz) as i64]
+    };
+    let step = |p: [i64; 3], axis: usize, dir: i64| {
+        let mut p = p;
+        p[axis] += dir;
+        if world.inside(p[0], p[1], p[2]) { Some(world.idx(p[0] as usize, p[1] as usize, p[2] as usize)) } else { None }
+    };
     // Spread to face neighbours that hold burnable gas (deterministic: a
     // cell's final state doesn't depend on the order it's reached in).
     let mut head = 0;
     while head < queue.len() {
         let i = queue[head];
         head += 1;
-        let ((ox, oy, oz), (lx, ly, lz)) = (world.brick_origin(i / BRICK_CELLS), World::local_xyz(i % BRICK_CELLS));
-        let (x, y, z) = (ox + lx, oy + ly, oz + lz);
+        let p = xyz(i);
         for axis in 0..3 { for dir in [-1i64, 1] {
-            let mut p = [x as i64, y as i64, z as i64];
-            p[axis] += dir;
-            if !world.inside(p[0], p[1], p[2]) { continue }
-            let j = world.idx(p[0] as usize, p[1] as usize, p[2] as usize);
-            if !lit[j] && burnable(&world.cells[j]) && world.cells[j].permeable(&world.subs) { lit[j] = true; queue.push(j) }
+            if let Some(j) = step(p, axis, dir) {
+                if !lit[j] && burnable(&world.cells[j]) && world.cells[j].permeable(&world.subs) { lit[j] = true; queue.push(j) }
+            }
         }}
     }
-    lit
+    let mut scale = vec![0u32; n];
+    if queue.is_empty() { return scale }
+    // Each joined patch: its cells, and the heat its flames could release.
+    // Patches are found from the lowest index up, so the result doesn't
+    // depend on the order the reach spread in.
+    let t = tables();
+    let mut seen = vec![false; n];
+    let mut reached: Vec<usize> = queue;
+    reached.sort_unstable();
+    let mut patch = Vec::new();
+    for &s0 in &reached {
+        if seen[s0] { continue }
+        seen[s0] = true;
+        patch.clear();
+        patch.push(s0);
+        let mut h = 0;
+        while h < patch.len() {
+            let i = patch[h];
+            h += 1;
+            let p = xyz(i);
+            for axis in 0..3 { for dir in [-1i64, 1] {
+                if let Some(j) = step(p, axis, dir) { if lit[j] && !seen[j] { seen[j] = true; patch.push(j) } }
+            }}
+        }
+        // The release forecast at a cell's mixing overstates a big fire's
+        // (its fuel and air meet more slowly than that), so it is forecast
+        // once more at the D* that gives. µJ a tick → µW, then D* in cm from
+        // the table.
+        let dstar = |mix: u32| {
+            let release: i128 = patch.iter().map(|&i| flame_release(&world.cells[i], &world.subs, mix).0 as i128).sum();
+            let q = (release * 1_000 / TICK.0 as i128).min(i64::MAX as i128) as i64;
+            (t.dstar_q_uw.partition_point(|&e| e <= q).max(1) as i64 - 1) * 10
+        };
+        let first = dstar(CELL_MM as u32);
+        let dstar_mm = if first > CELL_MM { dstar(first as u32) } else { first };
+        for &i in &patch {
+            let p = xyz(i);
+            // The patch's narrower horizontal run through this cell.
+            let mut width = i64::MAX;
+            for axis in 0..2 {
+                let mut run = 1i64;
+                for dir in [-1i64, 1] {
+                    let mut q = p;
+                    while let Some(j) = step(q, axis, dir) {
+                        if !lit[j] || run * CELL_MM >= dstar_mm { break }
+                        run += 1;
+                        q[axis] += dir;
+                    }
+                }
+                width = width.min(run * CELL_MM);
+            }
+            scale[i] = dstar_mm.min(width).max(CELL_MM) as u32;
+        }
+    }
+    scale
+}
+
+/// Share of a flammable mix that burns per tick with eddies of `scale` mm
+/// (see [`flame_reach`]): a cell's own mixing up to a cell.
+pub fn mixing_at(scale: u32) -> Fraction {
+    if scale as i64 <= CELL_MM { return MIXING }
+    let t = tables();
+    t.mixing_by_cm[((scale / 10) as usize).min(crate::tables::MAX_EDDY_CM)]
 }
 
 /// Fine fuel (grass, twigs, leaves): a fuel bed air blows through, whose
@@ -344,20 +425,23 @@ fn flame_holds(c: &Cell, subs: &[Substance], pilot: bool) -> (bool, i64, Tempera
 }
 
 /// Heat a cell's flame will release this tick, from its state now: the fuel
-/// and air that mix in a tick, if a flame holds (zero otherwise). `pilot`
-/// is whether a flame reaches its gas ([`flame_reach`]).
-pub fn flame_release(c: &Cell, subs: &[Substance], pilot: bool) -> Energy {
+/// and air that mix in a tick, if a flame holds (zero otherwise). `reach`
+/// is the size of the eddies a reaching flame stirs with, mm, or zero if
+/// none reaches its gas ([`flame_reach`]).
+pub fn flame_release(c: &Cell, subs: &[Substance], reach: u32) -> Energy {
     let (fuel, o2) = (Gas::Fuel as usize, Gas::Oxygen as usize);
     if c.gas[fuel].0 <= 0 || c.gas[o2].0 <= 0 || !c.permeable(subs) || c.gas_volume_ml(subs) <= 0 { return Energy::ZERO }
-    let (holds, could, _) = flame_holds(c, subs, pilot);
+    let (holds, could, _) = flame_holds(c, subs, reach > 0);
     if !holds { return Energy::ZERO }
-    MIXING.of_mass(Mass(could)) * GAS_CHEMICAL[fuel]
+    mixing_at(reach).of_mass(Mass(could)) * GAS_CHEMICAL[fuel]
 }
 
 /// `wind`: horizontal air speed through the cell, mm/s (only open water uses it).
-pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool, wind: i64) -> Cell {
+/// `reach`: the eddy size of a flame reaching the cell's gas, mm, or zero
+/// ([`flame_reach`]).
+pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, reach: u32, wind: i64) -> Cell {
     let core_before = c.core_capacity(subs);
-    let mut c = react_inner(c, subs, t, ambient, pilot, wind);
+    let mut c = react_inner(c, subs, t, ambient, reach, wind);
     // Matter leaves from the surface, but a burning solid shrinks as a
     // whole (the surface layer is a share of it): the core gives up the heat
     // of what it no longer holds to the surface, keeping its temperature.
@@ -371,7 +455,8 @@ pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature,
     c
 }
 
-fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool, wind: i64) -> Cell {
+fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, reach: u32, wind: i64) -> Cell {
+    let pilot = reach > 0;
     // Whether a flame burns here this tick is decided below, afresh.
     c.lit = false;
     advance_front(&mut c, subs, ambient);
@@ -598,7 +683,7 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
         let kinetic = t.gas_burn[k_index(anchored.0)].of_mass(c.gas[fuel]).0;
         // Fuel and air must meet before they burn, however fast the
         // chemistry: no more than mixing brings together burns in a tick.
-        let mut mixable = MIXING.of_mass(Mass(could)).0;
+        let mut mixable = mixing_at(reach).of_mass(Mass(could)).0;
         // In fine fuel the flame burns at its front: in a tuft the front
         // hasn't reached, gas burns only in the share it has (fuel gas that
         // drifts further in waits, unburnt, for the front).

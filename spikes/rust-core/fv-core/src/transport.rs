@@ -134,11 +134,12 @@ pub const MIX_QUANTUM_UL: i64 = CELL_VOLUME_ML;
 /// Gas seeps through non-permeable porous solids this many times slower.
 pub const SEEP_DIVISOR: i64 = 20;
 
-pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side { side_lit(c, subs, ambient, false) }
+pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side { side_lit(c, subs, ambient, 0) }
 
 /// A cell's side, given whether a flame reaches its gas this tick
-/// ([`crate::chem::flame_reach`]).
-pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool) -> Side {
+/// and the size of the eddies it stirs with, mm (zero: none;
+/// [`crate::chem::flame_reach`]).
+pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, reach: u32) -> Side {
     let s = &subs[c.substance as usize];
     let share = c.solid_share(subs);
     let k = share.of(s.conductivity) + AIR_CONDUCTIVITY - share.of(AIR_CONDUCTIVITY);
@@ -166,7 +167,7 @@ pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool)
     // A flame in the open gas between fuel (the shafts of a crib, the air
     // over a bed) fills part of its cell: the part its heat release needs
     // at a flame's heat per volume.
-    let release = if pilot && gas_ml > 0 { crate::chem::flame_release(c, subs, true).0 } else { 0 };
+    let release = if reach > 0 && gas_ml > 0 { crate::chem::flame_release(c, subs, reach).0 } else { 0 };
     let flame_fill = (release as i128 * 1_000 / (FLAME_UJ_PER_ML as i128 * gas_ml.max(1) as i128)).min(1_000) as i64;
     // What a flame can give the faces around it: its gas's heat above the
     // surroundings, a sixth through each face. Not the heat it is forecast
