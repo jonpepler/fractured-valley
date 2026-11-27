@@ -1,0 +1,11 @@
+[package]
+name = "fv-thought-graph"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: a fox's mind as a modulated thought graph in a small grounded world"
+
+[dependencies]
+
+[profile.release]
+debug = false

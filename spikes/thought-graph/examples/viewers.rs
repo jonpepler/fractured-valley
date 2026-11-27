@@ -1,0 +1,105 @@
+//! Writes one self-contained viewer page per scenario into `viewer/`, and `viewer/frames.json`,
+//! the key moments `tools/frames.js` turns into pictures.
+//!
+//! cargo run --release --example viewers && node tools/frames.cjs
+use fv_thought_graph::hd::Hd;
+use fv_thought_graph::scenarios::{self, DAY2, FIRE_AT, NIGHT, SEED};
+use fv_thought_graph::sim::Sim;
+use fv_thought_graph::spread::Live;
+use fv_thought_graph::viewer::{page, Key};
+use fv_thought_graph::world::Action;
+use std::fmt::Write;
+
+fn first(s: &Sim, from: u32, f: impl Fn(&fv_thought_graph::sim::Frame) -> bool) -> u32 {
+    s.frames.iter().find(|x| x.tick >= from && f(x)).map(|x| x.tick).unwrap_or(from)
+}
+
+fn main() {
+    std::fs::create_dir_all("viewer").unwrap();
+    let mut frames = String::from("[\n");
+    let out = |file: &str, html: String, keys: &[Key], frames: &mut String| {
+        std::fs::write(format!("viewer/{file}.html"), html).unwrap();
+        for (i, (t, h, label)) in keys.iter().enumerate() {
+            writeln!(frames, "  {{\"file\": \"{file}.html\", \"t\": {t}, \"h\": {}, \"name\": \"{file}-{}\", \"label\": \"{label}\"}},", h.map(|h| h as i64).unwrap_or(-1), i + 1).unwrap();
+        }
+        println!("viewer/{file}.html");
+    };
+
+    // The dog, a night's sleep, and the next morning.
+    let mut s = scenarios::dog_day(SEED).recording();
+    s.run(DAY2 + 40);
+    let approach = first(&s, 0, |f| f.percepts.iter().any(|p| p.1 >= 400));
+    let bite = first(&s, 0, |f| f.events.iter().any(|e| e.contains("bites")));
+    let berries = first(&s, bite, |f| f.why.contains("berry bush"));
+    let eats = first(&s, bite, |f| matches!(f.action, Action::Eat { .. }));
+    let keys: Vec<Key> = vec![
+        (2, Some(1), "Hunger spreads: hunger → food → the hens and the berries".into()),
+        (6, None, "Hungry and calm: it heads for the henhouse, the nearer and richer food".into()),
+        (approach, None, "The dog charges: a prediction error interrupts the thought".into()),
+        (bite, None, "Bitten: pain and danger fill the workspace; it flees".into()),
+        (berries, None, "Fast weights make the henhouse feel bad; it turns to the berry bush".into()),
+        (eats, None, "It eats at the berry bush".into()),
+        (DAY2 + 4, None, "Next morning, after sleep: fast weights are empty, but the henhouse still feels bad".into()),
+    ];
+    let html = page(&s, "A bad day at the henhouse, and a night's sleep",
+        "Day 1: a hungry fox goes for the hens, is bitten by the dog, and turns to the berries. Night: episodes are replayed and fast weights consolidated. Day 2: the henhouse carries the fear.",
+        "graph", None, &keys);
+    out("dog-and-sleep", html, &keys, &mut frames);
+
+    // The meadow fire (day 2 of the same story), in the graph form and the compiled form.
+    for compiled in [false, true] {
+        let mut s = scenarios::meadow_fire(SEED).recording();
+        s.record_from = NIGHT + 1;
+        s.run(NIGHT + 1);
+        if compiled { s.m.use_compiled(2048, SEED); }
+        s.run(80);
+        let camp = first(&s, DAY2, |f| f.percepts.iter().any(|p| s.m.g.names[p.0 as usize] == "the campfire"));
+        let keys: Vec<Key> = vec![
+            (camp + 2, None, "Passing the camp: the campfire is expected there, so it is seen and ignored".into()),
+            (FIRE_AT, Some(0), "Fire in the meadow: a big prediction error injects fire and the meadow".into()),
+            (FIRE_AT, Some(1), "…and spreads to danger within the same tick".into()),
+            (FIRE_AT, None, "Same tick: danger is in the workspace and it flees".into()),
+        ];
+        let (name, title, form, dec) = if compiled {
+            let hd = s.m.compiled.as_ref().unwrap();
+            ("meadow-fire-compiled", "Fire in the meadow (compiled form)", "compiled", Some(hd.decompile(&s.m.g.names)))
+        } else { ("meadow-fire", "Fire in the meadow, fire at the camp", "graph", None) };
+        let sub = if compiled { "The same morning thought with the compiled bit-vector form (2048 bits per node). The links drawn are the compiled form decompiled back to a graph." }
+            else { "The morning after the bite, on the way to the berries. The campfire it passes is expected and ignored; a fire where none is expected interrupts within the tick." };
+        let html = page(&s, title, sub, form, dec.as_ref(), &keys);
+        out(name, html, &keys, &mut frames);
+    }
+
+    // One slow graph, four modulator states.
+    for (i, (name, h, a, m)) in scenarios::STATES.iter().enumerate() {
+        let mut s = scenarios::modulated(SEED, i).recording();
+        s.run(24);
+        let keys: Vec<Key> = vec![(0, Some(3), format!("{name}: the first think, hop 4")), (8, None, format!("{name}: after 8 ticks"))];
+        let file = format!("modulation-{}", name.replace(' ', "-"));
+        let html = page(&s, &format!("Same mind, {name}"), &format!("The fox at its den, hunger {h}, arousal held at {a}, mood held at {m}. Same slow graph in every state."), "graph", None, &keys);
+        out(&file, html, &keys, &mut frames);
+    }
+
+    // Home lifts the mood.
+    let mut s = scenarios::mood_at(SEED, "den").recording();
+    s.run(80);
+    let keys: Vec<Key> = vec![(1, None, "At the den in a low mood".into()), (60, None, "Home: comfort and rest come to mind and the mood lifts".into())];
+    let html = page(&s, "Being home", "A fox in a low mood (-500) at its den. The current place is an input: the den brings its feelings back.", "graph", None, &keys);
+    out("home-mood", html, &keys, &mut frames);
+
+    // Two temperaments meet the charging dog.
+    for (label, id) in [("calm", 26u32), ("quick", 18u32)] {
+        let mut s = scenarios::dog_charges(SEED, id).recording();
+        s.run(scenarios::CHARGE_AT + 16);
+        let t = s.m.temperament;
+        let c = scenarios::CHARGE_AT;
+        let keys: Vec<Key> = vec![(c, Some(0), format!("{label} fox: the dog charges, hop 1")), (c + 2, None, format!("{label} fox, two ticks in: stress {}", s.frames[(c + 2) as usize].mods.stress))];
+        let html = page(&s, &format!("A {label} fox meets the dog"), &format!("Fox #{id}, reactivity {}, aggression {} (seeded). Stress cuts hops and frontier, speeds flight and favours anger.", t.reactivity, t.aggression), "graph", None, &keys);
+        out(&format!("temperament-{label}"), html, &keys, &mut frames);
+    }
+    let _ = (Hd::compile::<Live>, ());
+
+    frames.truncate(frames.trim_end().len() - 1);
+    frames.push_str("\n]\n");
+    std::fs::write("viewer/frames.json", frames).unwrap();
+}

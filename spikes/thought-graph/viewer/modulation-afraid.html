@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Same mind, afraid</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --panel: #ffffff; --ink: #1f2328; --muted: #6b7280; --line: #d9dce1;
+    --neg: #c2410c; --pos: #0f766e; --flow: #f59e0b; --fast: #7c3aed; --ws: #ca8a04; --surp: #dc2626;
+    --map: #e9efe0; --water: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 12px 16px 4px; }
+  h1 { font-size: 18px; margin: 0; }
+  .sub { color: var(--muted); margin-top: 2px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #e5e7eb; margin-left: 6px; vertical-align: 2px; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 10px; padding: 8px 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-width: 0; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 4px; font-weight: 600; }
+  svg { display: block; width: 100%; height: auto; }
+  .right { display: grid; gap: 10px; align-content: start; }
+  .action { font-size: 15px; font-weight: 600; }
+  .why { color: var(--muted); min-height: 1.4em; }
+  .ws-row { display: grid; grid-template-columns: 120px 1fr 44px; gap: 6px; align-items: center; font-size: 12px; }
+  .ws-bar { height: 8px; border-radius: 4px; }
+  .ev { font-size: 12px; color: var(--ink); }
+  .ev .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 16px 0; }
+  button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; cursor: pointer; }
+  input[type=range] { flex: 1; min-width: 160px; }
+  .tick { font-variant-numeric: tabular-nums; min-width: 150px; }
+  .legend { color: var(--muted); font-size: 11px; padding: 4px 16px 14px; }
+  .legend span { margin-right: 14px; white-space: nowrap; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 5px; vertical-align: -1px; margin-right: 4px; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="sub" id="subtitle"></div>
+</header>
+<div class="controls">
+  <button id="play">Play</button>
+  <button id="prev" title="previous tick (←)">◀ tick</button>
+  <button id="next" title="next tick (→)">tick ▶</button>
+  <button id="hop" title="next hop within the tick (h)">hop ▸</button>
+  <input type="range" id="slider" min="0" value="0">
+  <span class="tick" id="ticklabel"></span>
+</div>
+<div class="wrap">
+  <div class="panel">
+    <h2>The fox's mind: activation spreading <span id="hoplabel"></span></h2>
+    <svg id="graph" viewBox="0 0 980 520"></svg>
+  </div>
+  <div class="right">
+    <div class="panel">
+      <h2>The world</h2>
+      <svg id="map" viewBox="0 0 448 280"></svg>
+    </div>
+    <div class="panel">
+      <h2>Modulators and body</h2>
+      <svg id="bars" viewBox="0 0 380 140"></svg>
+    </div>
+    <div class="panel">
+      <h2>Chosen action</h2>
+      <div class="action" id="action"></div>
+      <div class="why" id="why"></div>
+    </div>
+    <div class="panel">
+      <h2>Workspace (what's on its mind)</h2>
+      <div id="ws"></div>
+    </div>
+    <div class="panel">
+      <h2>Events</h2>
+      <div id="events"></div>
+    </div>
+  </div>
+</div>
+<div class="wrap" style="grid-template-columns: 1fr; padding-top: 0">
+  <div class="panel">
+    <h2>Over time: mood (teal), arousal (red), hunger (amber), stress (violet); events marked</h2>
+    <svg id="timeline" viewBox="0 0 980 80"></svg>
+  </div>
+</div>
+<div class="legend">
+  <span><i class="sw" style="background:var(--pos)"></i>good feeling</span>
+  <span><i class="sw" style="background:var(--neg)"></i>bad feeling</span>
+  <span>size = activation</span>
+  <span><i class="sw" style="background:var(--flow)"></i>activation crossing a link this hop</span>
+  <span><i class="sw" style="background:var(--fast)"></i>fast weight (today's trace)</span>
+  <span><i class="sw" style="border:2px solid var(--ws);background:none"></i>in the workspace</span>
+  <span><i class="sw" style="border:2px solid var(--surp);background:none"></i>surprise (prediction error)</span>
+  <span>squares = places at their real map position; ringed = things in the world; plain = connectors</span>
+</div>
+<script>
+const D = {"title":"Same mind, afraid","subtitle":"The fox at its den, hunger 700, arousal held at 600, mood held at 0. Same slow graph in every state.","form":"graph","grid":[64,40],"places":[{"name":"den","x":8,"y":30,"home":true},{"name":"stream","x":12,"y":16,"home":false},{"name":"henhouse","x":22,"y":8,"home":false},{"name":"berry bush","x":52,"y":8,"home":false},{"name":"camp","x":22,"y":26,"home":false},{"name":"meadow","x":34,"y":17,"home":false}],"nodes":[{"name":"hunger","kind":"body","x":-1,"y":-1,"at":-1,"place":-1},{"name":"fatigue","kind":"body","x":-1,"y":-1,"at":-1,"place":-1},{"name":"pain","kind":"body","x":-1,"y":-1,"at":-1,"place":-1},{"name":"food","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"water","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"fire","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"danger","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"rest","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"comfort","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"anger","kind":"concept","x":-1,"y":-1,"at":-1,"place":-1},{"name":"den","kind":"place","x":8,"y":30,"at":-1,"place":0},{"name":"stream","kind":"place","x":12,"y":16,"at":-1,"place":1},{"name":"henhouse","kind":"place","x":22,"y":8,"at":-1,"place":2},{"name":"berry bush","kind":"place","x":52,"y":8,"at":-1,"place":3},{"name":"camp","kind":"place","x":22,"y":26,"at":-1,"place":4},{"name":"meadow","kind":"place","x":34,"y":17,"at":-1,"place":5},{"name":"the dog","kind":"thing","x":24,"y":10,"at":12,"place":-1},{"name":"the hens","kind":"thing","x":22,"y":7,"at":12,"place":-1},{"name":"the berries","kind":"thing","x":52,"y":9,"at":13,"place":-1},{"name":"the stream water","kind":"thing","x":12,"y":17,"at":11,"place":-1},{"name":"the campfire","kind":"thing","x":23,"y":26,"at":14,"place":-1}],"links":[[0,3,0,800],[1,7,0,800],[2,6,0,700],[2,9,0,350],[2,10,6,0],[2,11,6,0],[2,12,6,0],[2,13,6,0],[2,14,6,0],[2,15,6,0],[2,16,6,0],[2,17,6,0],[2,18,6,0],[2,19,6,0],[2,20,6,0],[3,10,6,0],[3,11,6,0],[3,12,6,0],[3,13,6,0],[3,14,6,0],[3,15,6,0],[3,17,1,600],[3,18,1,600],[4,10,6,0],[4,11,6,0],[4,12,6,0],[4,13,6,0],[4,14,6,0],[4,15,6,0],[4,19,1,600],[5,6,1,700],[5,10,6,0],[5,11,6,0],[5,12,6,0],[5,13,6,0],[5,14,6,0],[5,15,6,0],[5,20,1,400],[6,5,1,300],[6,9,7,400],[6,10,6,0],[6,11,6,0],[6,12,6,0],[6,13,6,0],[6,14,6,0],[6,15,6,0],[6,16,1,400],[6,16,6,0],[6,17,6,0],[6,18,6,0],[6,19,6,0],[6,20,6,0],[7,8,7,500],[7,10,6,0],[7,10,7,600],[7,11,6,0],[7,12,6,0],[7,13,6,0],[7,14,6,0],[7,15,6,0],[8,7,7,400],[8,10,7,500],[9,6,7,300],[9,16,6,0],[10,2,6,0],[10,3,6,0],[10,4,6,0],[10,5,6,0],[10,6,6,0],[10,7,6,0],[10,7,7,600],[10,8,7,700],[10,11,4,425],[10,12,4,275],[10,14,4,425],[10,15,4,237],[11,2,6,0],[11,3,6,0],[11,4,6,0],[11,5,6,0],[11,6,6,0],[11,7,6,0],[11,10,4,425],[11,12,4,450],[11,13,4,100],[11,14,4,425],[11,15,4,325],[11,19,2,700],[12,2,6,0],[12,3,6,0],[12,4,6,0],[12,5,6,0],[12,6,6,0],[12,7,6,0],[12,10,4,275],[12,11,4,450],[12,13,4,225],[12,13,5,300],[12,14,4,375],[12,15,4,412],[12,16,2,700],[12,17,2,700],[13,2,6,0],[13,3,6,0],[13,4,6,0],[13,5,6,0],[13,6,6,0],[13,7,6,0],[13,11,4,100],[13,12,4,225],[13,12,5,300],[13,14,4,175],[13,15,4,350],[13,18,2,700],[14,2,6,0],[14,3,6,0],[14,4,6,0],[14,5,6,0],[14,6,6,0],[14,7,6,0],[14,10,4,425],[14,11,4,425],[14,12,4,375],[14,13,4,175],[14,15,4,412],[14,20,2,700],[15,2,6,0],[15,3,6,0],[15,4,6,0],[15,5,6,0],[15,6,6,0],[15,7,6,0],[15,10,4,237],[15,11,4,325],[15,12,4,412],[15,13,4,350],[15,14,4,412],[16,2,6,0],[16,6,1,700],[16,6,6,0],[16,9,6,0],[16,12,3,800],[17,2,6,0],[17,3,1,700],[17,6,6,0],[17,12,3,800],[18,2,6,0],[18,3,1,700],[18,6,6,0],[18,13,3,800],[19,2,6,0],[19,4,1,700],[19,6,6,0],[19,11,3,800],[20,2,6,0],[20,5,1,700],[20,6,6,0],[20,14,3,800]],"linkTypes":["wants","kind","holds","at","near","like","feels","assoc"],"snapshots":[{"t":0,"w":[800, 800, 700, 350, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 600, 600, 0, 0, 0, 0, 0, 0, 600, 700, 0, 0, 0, 0, 0, 0, 400, 300, 400, 0, 0, 0, 0, 0, 0, 400, 0, 0, 0, 0, 0, 500, 0, 600, 0, 0, 0, 0, 0, 400, 500, 300, 0, 0, 0, 0, 0, 0, 0, 600, 700, 425, 275, 425, 237, 0, 0, 0, 0, 0, 0, 425, 450, 100, 425, 325, 700, 0, 0, 0, 0, 0, 0, 275, 450, 225, 300, 375, 412, 700, 700, 0, 0, 0, 0, 0, 0, 100, 225, 300, 175, 350, 700, 0, 0, 0, 0, 0, 0, 425, 425, 375, 175, 412, 700, 0, 0, 0, 0, 0, 0, 237, 325, 412, 350, 412, 0, 700, 0, 0, 800, 0, 700, 0, 800, 0, 700, 0, 800, 0, 700, 0, 800, 0, 700, 0, 800],"val":[-200, -100, -600, 300, 150, -300, -700, 300, 500, -200, 400, 0, 0, 0, 0, 0, -300, 500, 250, 200, -150]}],"frames":[{"t":0,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[700,600,6,0,0,0],"act":[350, 0, 0, 365, 0, 0, 0, 23, 26, 0, 300, 12, 42, 35, 12, 6, 0, 175, 181, 0, 0],"hops":[[[0,3,261],[10,8,26],[10,7,23],[10,11,12],[10,14,12],[10,12,7],[10,15,6]],[[3,17,121],[3,18,121]],[[17,3,52],[18,3,52],[17,12,35],[18,13,35]],[[3,17,48],[3,18,48],[13,18,12],[12,17,6]]],"ws":[3, 0, 10, 18, 17, 12, 13, 8],"action":"stay","why":"stay at den (score 202)","ev":[],"fast":[],"per":[],"slept":false},{"t":1,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[702,600,12,1,0,0],"act":[526, 0, 0, 653, 0, 0, 0, 37, 43, 0, 450, 20, 88, 75, 20, 7, 0, 337, 347, 0, 0],"hops":[[[0,3,301],[10,8,30],[10,7,26],[3,17,25],[3,18,25],[10,11,14],[10,14,14],[17,3,11],[18,3,11],[10,12,9],[10,15,7],[17,12,7],[18,13,7]],[[3,17,150],[3,18,150],[17,3,9],[18,3,9],[17,12,7],[18,13,7]],[[17,3,65],[18,3,65],[17,12,44],[18,13,44],[3,17,8],[3,18,8]],[[3,17,60],[3,18,60],[13,18,14],[12,17,7]]],"ws":[3, 0, 10, 18, 17, 12, 13, 8],"action":"stay","why":"stay at den (score 303)","ev":[],"fast":[],"per":[],"slept":false},{"t":2,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[704,600,18,2,0,0],"act":[615, 0, 0, 889, 0, 0, 0, 46, 54, 0, 525, 25, 130, 114, 25, 8, 7, 479, 491, 0, 0],"hops":[[[0,3,323],[3,17,45],[3,18,45],[10,8,33],[10,7,28],[17,3,21],[18,3,21],[10,11,15],[10,14,15],[17,12,14],[18,13,14],[10,12,9],[10,15,8]],[[3,17,171],[3,18,171],[17,3,19],[18,3,19],[17,12,13],[18,13,13]],[[17,3,74],[18,3,74],[17,12,50],[18,13,50],[3,17,17],[3,18,17]],[[3,17,69],[3,18,69],[13,18,16],[12,17,9],[12,16,7],[17,3,6],[18,3,6]]],"ws":[3, 0, 10, 18, 17, 12, 13, 8],"action":"stay","why":"stay at den (score 354)","ev":[],"fast":[],"per":[],"slept":false},{"t":3,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[706,600,24,3,0,0],"act":[660, 0, 0, 1070, 0, 0, 0, 52, 61, 0, 562, 27, 170, 155, 27, 8, 7, 594, 613, 0, 0],"hops":[[[0,3,334],[3,17,62],[3,18,61],[10,8,34],[18,3,31],[17,3,30],[10,7,29],[18,13,20],[17,12,19],[10,11,15],[10,14,15],[10,12,10],[10,15,8]],[[3,17,185],[3,18,185],[17,3,25],[18,3,25],[17,12,17],[18,13,17],[13,18,6]],[[18,3,83],[17,3,80],[18,13,55],[17,12,53],[3,17,23],[3,18,23]],[[3,17,76],[3,18,75],[13,18,18],[12,17,9],[17,3,9],[18,3,9],[12,16,7],[17,12,6],[18,13,6]]],"ws":[3, 0, 18, 17, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 379)","ev":[],"fast":[],"per":[],"slept":false},{"t":4,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[708,600,30,4,0,0],"act":[684, 0, 0, 1227, 0, 0, 0, 55, 64, 0, 581, 28, 207, 193, 28, 8, 7, 700, 732, 0, 0],"hops":[[[0,3,341],[3,17,75],[3,18,75],[18,3,39],[17,3,38],[10,8,34],[10,7,29],[17,12,25],[18,13,25],[10,11,15],[10,14,15],[10,12,10],[10,15,8],[13,18,7]],[[3,17,198],[3,18,196],[18,3,35],[17,3,33],[18,13,23],[17,12,21],[13,18,8],[12,17,6]],[[17,3,89],[18,3,89],[17,12,58],[18,13,58],[3,17,31],[3,18,31],[13,18,7]],[[3,17,84],[3,18,83],[13,18,19],[18,3,15],[17,3,13],[18,13,10],[12,17,9],[17,12,8],[12,16,7]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 392)","ev":[],"fast":[],"per":[],"slept":false},{"t":5,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[710,600,36,5,0,0],"act":[697, 0, 0, 1348, 0, 0, 0, 57, 67, 0, 590, 29, 238, 226, 29, 8, 8, 786, 827, 0, 0],"hops":[[[0,3,345],[3,17,86],[3,18,85],[18,3,47],[17,3,46],[10,8,35],[18,13,31],[10,7,30],[17,12,30],[10,11,15],[10,14,15],[10,12,10],[13,18,9],[10,15,8]],[[3,17,208],[3,18,206],[18,3,40],[17,3,37],[18,13,26],[17,12,24],[13,18,9],[12,17,7]],[[17,3,94],[18,3,94],[17,12,62],[18,13,62],[3,17,35],[3,18,35],[13,18,8]],[[3,17,89],[3,18,88],[13,18,21],[18,3,18],[17,3,14],[12,17,11],[18,13,11],[17,12,9],[12,16,8]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 398)","ev":[],"fast":[],"per":[],"slept":false},{"t":6,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[712,600,42,6,0,0],"act":[704, 0, 0, 1451, 0, 0, 0, 58, 68, 0, 595, 29, 266, 257, 29, 8, 9, 864, 909, 0, 0],"hops":[[[0,3,349],[3,17,96],[3,18,95],[18,3,53],[17,3,51],[10,8,35],[18,13,35],[17,12,33],[10,7,30],[10,11,15],[10,14,15],[13,18,11],[10,12,10],[10,15,8],[12,17,6]],[[3,17,215],[3,18,213],[18,3,46],[17,3,44],[18,13,30],[17,12,29],[13,18,12],[12,17,7]],[[18,3,99],[17,3,97],[18,13,65],[17,12,64],[3,17,42],[3,18,42],[13,18,9]],[[3,17,93],[3,18,92],[13,18,22],[18,3,21],[17,3,17],[18,13,14],[12,17,12],[17,12,11],[12,16,9]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 402)","ev":[],"fast":[],"per":[],"slept":false},{"t":7,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[714,600,48,7,0,0],"act":[709, 0, 0, 1533, 0, 0, 0, 59, 69, 0, 597, 30, 288, 282, 30, 8, 15, 924, 976, 0, 0],"hops":[[[0,3,350],[3,17,103],[3,18,102],[18,3,59],[17,3,56],[18,13,39],[17,12,36],[10,8,35],[10,7,30],[10,11,16],[10,14,16],[13,18,13],[10,12,10],[10,15,8],[12,17,6]],[[3,17,222],[3,18,220],[18,3,50],[17,3,47],[18,13,33],[17,12,31],[13,18,13],[12,17,8],[12,16,6]],[[18,3,102],[17,3,101],[18,13,67],[17,12,66],[3,17,45],[3,18,45],[13,18,11]],[[3,17,96],[3,18,95],[18,3,24],[13,18,23],[17,3,19],[18,13,15],[12,17,12],[17,12,12],[12,16,9]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 404)","ev":[],"fast":[],"per":[],"slept":false},{"t":8,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[716,600,54,8,0,0],"act":[712, 0, 0, 1606, 0, 0, 0, 59, 69, 0, 598, 31, 307, 302, 31, 8, 22, 978, 1032, 0, 0],"hops":[[[0,3,354],[3,17,109],[3,18,108],[18,3,64],[17,3,61],[18,13,41],[17,12,39],[10,8,35],[10,7,30],[10,11,16],[10,14,16],[13,18,13],[10,12,10],[10,15,8],[12,17,7]],[[3,17,229],[3,18,227],[18,3,53],[17,3,51],[18,13,34],[17,12,33],[13,18,13],[12,17,8],[12,16,6]],[[18,3,106],[17,3,104],[18,13,69],[17,12,68],[3,17,50],[3,18,49],[13,18,11]],[[3,17,101],[3,18,99],[18,3,26],[13,18,24],[17,3,21],[18,13,17],[17,12,13],[12,17,12],[12,16,9]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 404)","ev":[],"fast":[],"per":[],"slept":false},{"t":9,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[718,600,59,9,0,0],"act":[715, 0, 0, 1667, 0, 0, 0, 59, 69, 0, 599, 31, 324, 319, 31, 8, 33, 1029, 1079, 0, 0],"hops":[[[0,3,355],[3,17,115],[3,18,114],[18,3,67],[17,3,64],[18,13,44],[17,12,41],[10,8,35],[10,7,30],[10,11,16],[10,14,16],[13,18,15],[10,12,10],[10,15,8],[12,17,8],[12,16,6]],[[3,17,234],[3,18,231],[18,3,57],[17,3,54],[18,13,36],[17,12,35],[13,18,14],[12,17,9],[12,16,7]],[[18,3,108],[17,3,107],[17,12,70],[18,13,70],[3,17,52],[3,18,52],[13,18,12],[12,17,6]],[[3,17,103],[3,18,101],[18,3,27],[17,3,25],[13,18,24],[18,13,18],[17,12,15],[12,17,13],[12,16,9]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 406)","ev":[],"fast":[],"per":[],"slept":false},{"t":10,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[720,600,64,10,0,0],"act":[701, 0, 0, 1681, 0, 0, 0, 57, 67, 0, 586, 30, 333, 324, 30, 7, 37, 1045, 1094, 0, 0],"hops":[[[0,3,357],[3,17,119],[3,18,118],[18,3,71],[17,3,67],[18,13,46],[17,12,44],[10,8,35],[10,7,30],[10,11,16],[10,14,16],[13,18,15],[10,12,10],[10,15,8],[12,17,8],[12,16,6]],[[3,17,239],[3,18,235],[18,3,59],[17,3,56],[18,13,37],[17,12,36],[13,18,15],[12,17,9],[12,16,7]],[[18,3,111],[17,3,110],[17,12,72],[18,13,72],[3,17,55],[3,18,54],[13,18,13],[12,17,6]],[[3,17,106],[3,18,105],[18,3,29],[17,3,26],[13,18,25],[18,13,18],[17,12,17],[12,17,13],[12,16,9]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 397)","ev":[],"fast":[],"per":[],"slept":false},{"t":11,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[722,600,69,11,0,0],"act":[690, 0, 0, 1682, 0, 0, 0, 56, 66, 0, 575, 29, 336, 330, 29, 7, 38, 1054, 1102, 0, 0],"hops":[[[0,3,357],[3,17,122],[3,18,120],[18,3,72],[17,3,68],[18,13,47],[17,12,45],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,10],[10,15,8],[12,17,8],[12,16,6]],[[3,17,241],[3,18,237],[18,3,60],[17,3,57],[18,13,39],[17,12,37],[13,18,15],[12,17,10],[12,16,7]],[[17,3,112],[18,3,112],[18,13,73],[17,12,72],[3,17,56],[3,18,55],[13,18,13],[12,17,6]],[[3,17,108],[3,18,107],[18,3,29],[17,3,26],[13,18,25],[18,13,19],[17,12,17],[12,17,13],[12,16,9]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 389)","ev":[],"fast":[],"per":[],"slept":false},{"t":12,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[724,600,74,12,0,0],"act":[683, 0, 0, 1684, 0, 0, 0, 56, 65, 0, 567, 28, 338, 331, 28, 7, 40, 1060, 1106, 0, 0],"hops":[[[0,3,358],[3,17,122],[3,18,120],[18,3,73],[17,3,69],[18,13,47],[17,12,45],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,10],[12,17,9],[10,15,8],[12,16,7]],[[3,17,243],[3,18,239],[18,3,60],[17,3,58],[18,13,39],[17,12,37],[13,18,15],[12,17,10],[12,16,7]],[[17,3,113],[18,3,113],[17,12,73],[18,13,73],[3,17,57],[3,18,56],[13,18,13],[12,17,6]],[[3,17,110],[3,18,108],[18,3,30],[17,3,27],[13,18,25],[18,13,19],[17,12,17],[12,17,13],[12,16,9]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 384)","ev":[],"fast":[],"per":[],"slept":false},{"t":13,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[726,600,79,13,0,0],"act":[678, 0, 0, 1686, 0, 0, 0, 55, 64, 0, 562, 27, 339, 331, 27, 7, 43, 1065, 1108, 0, 0],"hops":[[[0,3,359],[3,17,123],[3,18,121],[18,3,74],[17,3,70],[18,13,47],[17,12,45],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,10],[12,17,9],[10,15,8],[12,16,7]],[[3,17,245],[3,18,240],[18,3,61],[17,3,58],[18,13,39],[17,12,37],[13,18,15],[12,17,10],[12,16,7]],[[17,3,114],[18,3,114],[17,12,74],[18,13,74],[3,17,57],[3,18,56],[13,18,13],[12,17,6]],[[3,17,111],[3,18,109],[18,3,30],[17,3,27],[13,18,26],[18,13,19],[17,12,17],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 381)","ev":[],"fast":[],"per":[],"slept":false},{"t":14,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[728,600,84,14,0,0],"act":[676, 0, 0, 1688, 0, 0, 0, 54, 64, 0, 559, 26, 338, 331, 26, 7, 44, 1068, 1111, 0, 0],"hops":[[[0,3,359],[3,17,123],[3,18,121],[18,3,74],[17,3,71],[18,13,47],[17,12,45],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,10],[12,17,9],[10,15,8],[12,16,7]],[[3,17,247],[3,18,243],[18,3,61],[17,3,58],[18,13,39],[17,12,37],[13,18,15],[12,17,10],[12,16,7]],[[18,3,116],[17,3,114],[17,12,74],[18,13,74],[3,17,57],[3,18,56],[13,18,13],[12,17,6]],[[3,17,112],[3,18,110],[18,3,30],[17,3,28],[13,18,26],[18,13,19],[17,12,17],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 379)","ev":[],"fast":[],"per":[],"slept":false},{"t":15,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[730,600,89,15,0,0],"act":[675, 0, 0, 1689, 0, 0, 0, 54, 64, 0, 556, 26, 338, 330, 26, 7, 45, 1070, 1112, 0, 0],"hops":[[[0,3,360],[3,17,123],[3,18,121],[18,3,74],[17,3,71],[18,13,47],[17,12,46],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,248],[3,18,243],[18,3,61],[17,3,58],[18,13,39],[17,12,37],[13,18,15],[12,17,10],[12,16,7]],[[17,3,116],[18,3,116],[17,12,74],[18,13,74],[3,17,57],[3,18,56],[13,18,13],[12,17,6]],[[3,17,113],[3,18,111],[18,3,30],[17,3,28],[13,18,26],[18,13,19],[17,12,17],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 378)","ev":[],"fast":[],"per":[],"slept":false},{"t":16,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[732,600,93,16,0,0],"act":[673, 0, 0, 1688, 0, 0, 0, 54, 64, 0, 559, 26, 339, 330, 26, 7, 45, 1072, 1111, 0, 0],"hops":[[[0,3,362],[3,17,124],[3,18,121],[18,3,74],[17,3,71],[18,13,47],[17,12,46],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,250],[3,18,244],[18,3,62],[17,3,59],[18,13,39],[17,12,37],[13,18,15],[12,17,10],[12,16,7],[8,10,6]],[[17,3,117],[18,3,116],[17,12,75],[18,13,75],[3,17,58],[3,18,57],[13,18,13],[12,17,6]],[[3,17,114],[3,18,112],[18,3,30],[17,3,28],[13,18,26],[18,13,19],[17,12,18],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 380)","ev":[],"fast":[],"per":[],"slept":false},{"t":17,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[734,600,97,17,0,0],"act":[671, 0, 0, 1689, 0, 0, 0, 54, 63, 0, 558, 26, 338, 330, 26, 7, 44, 1074, 1113, 0, 0],"hops":[[[0,3,363],[3,17,124],[3,18,122],[18,3,74],[17,3,72],[18,13,47],[17,12,46],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,251],[3,18,246],[18,3,62],[17,3,59],[18,13,40],[17,12,37],[13,18,16],[12,17,10],[12,16,7],[8,10,6]],[[18,3,118],[17,3,117],[17,12,75],[18,13,75],[3,17,59],[3,18,57],[13,18,14],[12,17,6]],[[3,17,116],[3,18,113],[18,3,31],[17,3,29],[13,18,26],[18,13,19],[17,12,18],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 379)","ev":[],"fast":[],"per":[],"slept":false},{"t":18,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[736,600,101,18,0,0],"act":[669, 0, 0, 1689, 0, 0, 0, 54, 62, 0, 557, 26, 338, 331, 26, 7, 44, 1076, 1114, 0, 0],"hops":[[[0,3,364],[3,17,124],[3,18,122],[18,3,74],[17,3,73],[18,13,47],[17,12,46],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,253],[3,18,247],[18,3,62],[17,3,60],[18,13,40],[17,12,37],[13,18,16],[12,17,10],[12,16,7],[8,10,6]],[[17,3,118],[18,3,118],[17,12,76],[18,13,76],[3,17,60],[3,18,58],[13,18,14],[12,17,6]],[[3,17,117],[3,18,114],[18,3,31],[17,3,29],[13,18,26],[18,13,20],[17,12,18],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 379)","ev":[],"fast":[],"per":[],"slept":false},{"t":19,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[738,600,105,19,0,0],"act":[667, 0, 0, 1688, 0, 0, 0, 54, 62, 0, 554, 26, 338, 332, 26, 7, 44, 1078, 1118, 0, 0],"hops":[[[0,3,366],[3,17,125],[3,18,122],[18,3,74],[17,3,73],[18,13,48],[17,12,46],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,255],[3,18,249],[18,3,62],[17,3,60],[18,13,40],[17,12,38],[13,18,17],[12,17,10],[12,16,7],[8,10,6]],[[18,3,121],[17,3,119],[17,12,77],[18,13,77],[3,17,60],[3,18,58],[13,18,14],[12,17,6]],[[3,17,119],[3,18,116],[18,3,31],[17,3,29],[13,18,28],[18,13,20],[17,12,18],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 377)","ev":[],"fast":[],"per":[],"slept":false},{"t":20,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[740,600,109,20,0,0],"act":[665, 0, 0, 1690, 0, 0, 0, 53, 62, 0, 551, 26, 337, 332, 26, 7, 44, 1080, 1119, 0, 0],"hops":[[[0,3,367],[3,17,125],[3,18,122],[18,3,75],[17,3,73],[18,13,48],[17,12,46],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,256],[3,18,250],[18,3,62],[17,3,60],[18,13,40],[17,12,38],[13,18,17],[12,17,11],[12,16,7],[8,10,6]],[[17,3,121],[18,3,121],[17,12,77],[18,13,77],[3,17,61],[3,18,59],[13,18,14],[12,17,6]],[[3,17,121],[3,18,117],[18,3,33],[17,3,30],[13,18,28],[18,13,20],[17,12,18],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"stay","why":"stay at den (score 375)","ev":[],"fast":[],"per":[],"slept":false},{"t":21,"fox":[8,30],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[742,600,113,21,0,0],"act":[664, 0, 0, 1693, 0, 0, 0, 52, 62, 0, 549, 26, 336, 331, 26, 7, 44, 1083, 1120, 0, 0],"hops":[[[0,3,369],[3,17,125],[3,18,122],[18,3,75],[17,3,73],[18,13,48],[17,12,46],[10,8,35],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,258],[3,18,251],[18,3,62],[17,3,60],[18,13,40],[17,12,38],[13,18,17],[12,17,11],[12,16,7],[8,10,6]],[[17,3,122],[18,3,122],[17,12,77],[18,13,77],[3,17,61],[3,18,59],[13,18,14],[12,17,6]],[[3,17,122],[3,18,118],[18,3,33],[17,3,30],[13,18,28],[18,13,20],[17,12,18],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"walk to berry bush","why":"walk to berry bush (score 375)","ev":[],"fast":[],"per":[],"slept":false},{"t":22,"fox":[9,29],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[744,600,117,23,0,0],"act":[663, 0, 0, 1693, 0, 0, 0, 52, 63, 0, 546, 26, 338, 330, 26, 7, 44, 1085, 1121, 0, 0],"hops":[[[0,3,370],[3,17,126],[3,18,123],[18,3,76],[17,3,73],[18,13,48],[17,12,46],[10,8,36],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,260],[3,18,253],[18,3,63],[17,3,61],[18,13,40],[17,12,39],[13,18,17],[12,17,11],[12,16,7],[8,10,6]],[[17,3,123],[18,3,123],[17,12,78],[18,13,78],[3,17,62],[3,18,60],[13,18,14],[12,17,6]],[[3,17,123],[3,18,119],[18,3,33],[17,3,30],[13,18,28],[18,13,20],[17,12,19],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"walk to berry bush","why":"walk to berry bush (score 377)","ev":[],"fast":[],"per":[],"slept":false},{"t":23,"fox":[10,29],"dog":[24,10,"guards"],"fires":[[23,26,1]],"m":[746,600,121,25,0,0],"act":[662, 0, 0, 1693, 0, 0, 0, 52, 63, 0, 545, 26, 338, 330, 26, 7, 44, 1086, 1122, 0, 0],"hops":[[[0,3,371],[3,17,126],[3,18,123],[18,3,76],[17,3,73],[18,13,48],[17,12,46],[10,8,36],[10,7,30],[13,18,17],[10,11,15],[10,14,15],[10,12,9],[12,17,9],[10,15,8],[12,16,7]],[[3,17,261],[3,18,254],[18,3,63],[17,3,61],[18,13,40],[17,12,39],[13,18,17],[12,17,11],[12,16,7],[8,10,6]],[[17,3,123],[18,3,123],[17,12,78],[18,13,78],[3,17,62],[3,18,60],[13,18,14],[12,17,6]],[[3,17,123],[3,18,120],[18,3,33],[17,3,30],[13,18,28],[18,13,20],[17,12,19],[12,17,14],[12,16,11]]],"ws":[3, 18, 17, 0, 10, 12, 13, 8],"action":"walk to berry bush","why":"walk to berry bush (score 378)","ev":[],"fast":[],"per":[],"slept":false}],"keys":[{"t":0,"h":3,"label":"afraid: the first think, hop 4"},{"t":8,"h":-1,"label":"afraid: after 8 ticks"}],"persist":500,"hopsPerTick":4};
+const NS = "http://www.w3.org/2000/svg";
+const $ = id => document.getElementById(id);
+function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+$("title").textContent = D.title;
+$("subtitle").innerHTML = D.subtitle + ' <span class="badge">' + (D.form === "compiled" ? "compiled form, decompiled for viewing" : "graph form") + '</span>';
+
+// ---------- layout ----------
+const N = D.nodes.length;
+const pos = new Array(N);
+const gx = x => 40 + x * (600 / D.grid[0]), gy = y => 40 + y * (440 / D.grid[1]);
+D.nodes.forEach((n, i) => { if (n.kind === "place") pos[i] = [gx(n.x), gy(n.y)]; });
+const byPlace = {};
+D.nodes.forEach((n, i) => { if (n.kind === "thing") { const k = n.at >= 0 ? n.at : -1 - i; (byPlace[k] = byPlace[k] || []).push(i); } });
+for (const k in byPlace) {
+  const list = byPlace[k];
+  list.forEach((i, j) => {
+    const n = D.nodes[i];
+    const c = +k >= 0 ? pos[+k] : [gx(n.x), gy(n.y)];
+    const a = Math.PI * 0.75 + j * (Math.PI * 2 / Math.max(list.length, 3));
+    pos[i] = [c[0] + Math.cos(a) * 44, c[1] + Math.sin(a) * 40];
+  });
+}
+let bi = 0, ci = 0;
+D.nodes.forEach((n, i) => {
+  if (n.kind === "body") { pos[i] = [740, 70 + bi * 86]; bi++; }
+  else if (n.kind === "concept") { pos[i] = [ci % 2 ? 905 : 830, 50 + ci * 70]; ci++; }
+});
+
+// ---------- static graph ----------
+const G = $("graph");
+const gLinks = el("g", {}, G), gFast = el("g", {}, G), gFlow = el("g", {}, G), gNodes = el("g", {}, G);
+el("text", { x: 40, y: 22, fill: "#6b7280", "font-size": 11 }, G).textContent = "places and things, laid out where they are in the world";
+el("text", { x: 700, y: 22, fill: "#6b7280", "font-size": 11 }, G).textContent = "body states and concepts";
+function curve(u, v) {
+  const [x1, y1] = pos[u], [x2, y2] = pos[v];
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, dx = x2 - x1, dy = y2 - y1;
+  const k = 0.12;
+  return `M${x1.toFixed(1)},${y1.toFixed(1)} Q${(mx - dy * k).toFixed(1)},${(my + dx * k).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+}
+const linkEls = D.links.map(([u, v, ty, w], li) => el("path", { d: curve(u, v), fill: "none", stroke: "#c3c8d0", "stroke-width": 0.4 + w / 450, opacity: w > 0 ? 0.55 : 0 }, gLinks));
+const linkIndex = {};
+D.links.forEach(([u, v], li) => { const k = u + "," + v; (linkIndex[k] = linkIndex[k] || []).push(li); });
+const nodeEls = D.nodes.map((n, i) => {
+  const g = el("g", { transform: `translate(${pos[i][0].toFixed(1)},${pos[i][1].toFixed(1)})` }, gNodes);
+  const ring = el("circle", { r: 10, fill: "none", stroke: "var(--surp)", "stroke-width": 0, opacity: 0.9 }, g);
+  const shape = n.kind === "place" ? el("rect", { x: -9, y: -9, width: 18, height: 18, rx: 4 }, g) : el("circle", { r: 9 }, g);
+  shape.setAttribute("stroke", n.kind === "thing" || n.kind === "place" ? "#374151" : "#9ca3af");
+  shape.setAttribute("stroke-width", n.kind === "thing" ? 2 : 1);
+  const label = el("text", { y: 0, "text-anchor": "middle", "font-size": 11, fill: "#1f2328", "paint-order": "stroke", stroke: "#ffffff", "stroke-width": 3 }, g);
+  label.textContent = n.name;
+  return { g, shape, ring, label };
+});
+
+// ---------- map ----------
+const M = $("map");
+const mx = x => 3.5 + x * 7, my = y => 3.5 + y * 7;
+el("rect", { x: 0, y: 0, width: 448, height: 280, fill: "var(--map)", rx: 6 }, M);
+const stream = D.places.find(p => p.name === "stream");
+if (stream) el("path", { d: `M${mx(stream.x - 3)},0 C${mx(stream.x + 2)},${my(stream.y - 6)} ${mx(stream.x - 2)},${my(stream.y + 6)} ${mx(stream.x + 1)},280`, stroke: "var(--water)", "stroke-width": 6, fill: "none", opacity: 0.7 }, M);
+D.places.forEach(p => {
+  el("circle", { cx: mx(p.x), cy: my(p.y), r: 6 * 7, fill: p.home ? "#fde68a" : "#ffffff", opacity: 0.35 }, M);
+  const t = el("text", { x: mx(p.x), y: my(p.y) - 9, "text-anchor": "middle", "font-size": 11, fill: "#374151", "paint-order": "stroke", stroke: "#fff", "stroke-width": 3 }, M);
+  t.textContent = p.name;
+  el("rect", { x: mx(p.x) - 3, y: my(p.y) - 3, width: 6, height: 6, fill: "#374151", rx: 1 }, M);
+});
+const sight = el("circle", { r: 70, fill: "#f59e0b", opacity: 0.07 }, M);
+const trail = el("polyline", { fill: "none", stroke: "#ea580c", "stroke-width": 1.5, opacity: 0.5 }, M);
+const gFires = el("g", {}, M);
+const dogEl = el("g", {}, M); el("circle", { r: 6, fill: "#4b5563" }, dogEl); const dogT = el("text", { y: -9, "text-anchor": "middle", "font-size": 10, fill: "#374151" }, dogEl);
+const foxEl = el("g", {}, M); el("circle", { r: 6.5, fill: "#ea580c", stroke: "#fff", "stroke-width": 1.5 }, foxEl);
+el("text", { y: 3.5, "text-anchor": "middle", "font-size": 9, fill: "#fff", "font-weight": 700 }, foxEl).textContent = "F";
+
+// ---------- bars ----------
+const B = $("bars");
+const barDefs = [["hunger", 0, 1000, "#d97706"], ["arousal", 0, 1000, "#dc2626"], ["mood", -1000, 1000, "#0f766e"], ["fatigue", 0, 1000, "#6b7280"], ["pain", 0, 1000, "#9f1239"], ["stress", 0, 1000, "#7c3aed"]];
+const barEls = barDefs.map(([name, lo, hi, col], i) => {
+  const y = 6 + i * 22;
+  el("text", { x: 0, y: y + 11, "font-size": 12, fill: "#374151" }, B).textContent = name;
+  el("rect", { x: 70, y, width: 250, height: 14, fill: "#eef0f3", rx: 3 }, B);
+  if (lo < 0) el("line", { x1: 195, x2: 195, y1: y - 2, y2: y + 16, stroke: "#9ca3af" }, B);
+  const r = el("rect", { x: 70, y, width: 0, height: 14, fill: col, rx: 3 }, B);
+  const v = el("text", { x: 328, y: y + 11, "font-size": 12, fill: "#374151" }, B);
+  return { r, v, lo, hi };
+});
+
+// ---------- timeline ----------
+const T = $("timeline");
+const F = D.frames;
+const tx = i => 10 + i * (960 / Math.max(F.length - 1, 1));
+function line(fn, lo, hi, col) {
+  const pts = F.map((f, i) => `${tx(i).toFixed(1)},${(74 - (fn(f) - lo) / (hi - lo) * 68).toFixed(1)}`).join(" ");
+  el("polyline", { points: pts, fill: "none", stroke: col, "stroke-width": 1.5 }, T);
+}
+el("line", { x1: 10, x2: 970, y1: 40, y2: 40, stroke: "#e5e7eb" }, T);
+F.forEach((f, i) => { if (f.ev.length || f.slept) el("line", { x1: tx(i), x2: tx(i), y1: 2, y2: 78, stroke: f.slept ? "#1e3a8a" : "#fca5a5", "stroke-width": f.slept ? 3 : 1 }, T); });
+line(f => f.m[2], -1000, 1000, "#0f766e");
+line(f => f.m[1], 0, 1000, "#dc2626");
+line(f => f.m[0], 0, 1000, "#d97706");
+line(f => f.m[5], 0, 1000, "#7c3aed");
+const cursor = el("line", { y1: 0, y2: 80, stroke: "#111827", "stroke-width": 1.5 }, T);
+T.addEventListener("click", e => { const r = T.getBoundingClientRect(); const i = Math.round(((e.clientX - r.left) / r.width * 980 - 10) / 960 * (F.length - 1)); go(Math.max(0, Math.min(F.length - 1, i)), -1); });
+
+// ---------- state ----------
+let fi = 0, hop = -1, playing = false, timer = null;
+const slider = $("slider"); slider.max = F.length - 1;
+function snapshotAt(t) { let s = null; for (const x of D.snapshots) if (x.t <= t) s = x; return s; }
+function valColor(v) {
+  const a = Math.min(Math.abs(v) / 700, 1);
+  const base = [200, 204, 210], tgt = v < 0 ? [194, 65, 12] : [15, 118, 110];
+  const c = base.map((b, k) => Math.round(b + (tgt[k] - b) * a));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function shownAct(f, h) {
+  if (h < 0) return f.act;
+  const prev = fi > 0 ? F[fi - 1].act : new Array(N).fill(0);
+  const a = prev.map(x => Math.round(x * D.persist / 1000));
+  for (let k = 0; k <= h && k < f.hops.length; k++) for (const [u, v, amt] of f.hops[k]) a[v] += amt;
+  return a;
+}
+function render() {
+  const f = F[fi];
+  slider.value = fi;
+  const nh = f.hops.length;
+  $("ticklabel").textContent = `tick ${f.t}` + (hop >= 0 ? ` · hop ${hop + 1} of ${nh}` : "");
+  $("hoplabel").textContent = hop >= 0 ? `(hop ${hop + 1} of ${nh})` : "(end of tick)";
+  const snap = snapshotAt(f.t);
+  const vals = snap ? snap.val : null;
+  // links: slow weight from the latest snapshot
+  if (snap) D.links.forEach(([u, v, ty, w0], li) => { const w = snap.w[li]; linkEls[li].setAttribute("stroke-width", 0.4 + w / 450); linkEls[li].setAttribute("opacity", w > 0 ? 0.55 : 0); });
+  gFast.innerHTML = "";
+  for (const [li, w] of f.fast) { const [u, v] = D.links[li]; el("path", { d: curve(u, v), fill: "none", stroke: "var(--fast)", "stroke-width": 0.5 + w / 200, opacity: 0.55, "stroke-dasharray": "4 3" }, gFast); }
+  gFlow.innerHTML = "";
+  const hopsToShow = hop >= 0 ? [hop] : [];
+  for (const k of hopsToShow) {
+    const fl = f.hops[k] || [];
+    for (const [u, v, amt] of fl) el("path", { d: curve(u, v), fill: "none", stroke: "var(--flow)", "stroke-width": Math.min(1 + amt / 90, 9), opacity: 0.85, "stroke-linecap": "round" }, gFlow);
+  }
+  const act = shownAct(f, hop);
+  const surprised = new Set(f.per.filter(p => p[1] >= 400).map(p => p[0]));
+  D.nodes.forEach((n, i) => {
+    const a = Math.max(0, act[i]);
+    const r = 7 + Math.sqrt(a) * 0.42;
+    const e = nodeEls[i];
+    if (n.kind === "place") { e.shape.setAttribute("x", -r); e.shape.setAttribute("y", -r); e.shape.setAttribute("width", 2 * r); e.shape.setAttribute("height", 2 * r); }
+    else e.shape.setAttribute("r", r);
+    e.shape.setAttribute("fill", vals ? valColor(vals[i]) : "#ccc");
+    e.shape.setAttribute("fill-opacity", a > 0 ? 0.95 : 0.35);
+    const inWs = f.ws.includes(i);
+    e.shape.setAttribute("stroke", inWs ? "var(--ws)" : (n.kind === "thing" || n.kind === "place" ? "#374151" : "#9ca3af"));
+    e.shape.setAttribute("stroke-width", inWs ? 3.5 : (n.kind === "thing" ? 2 : 1));
+    e.ring.setAttribute("r", r + 6);
+    e.ring.setAttribute("stroke-width", surprised.has(i) ? 3 : 0);
+    e.label.setAttribute("y", r + 13);
+    e.label.setAttribute("font-weight", inWs ? 700 : 400);
+  });
+  // map
+  foxEl.setAttribute("transform", `translate(${mx(f.fox[0])},${my(f.fox[1])})`);
+  sight.setAttribute("cx", mx(f.fox[0])); sight.setAttribute("cy", my(f.fox[1]));
+  trail.setAttribute("points", F.slice(Math.max(0, fi - 40), fi + 1).map(x => `${mx(x.fox[0])},${my(x.fox[1])}`).join(" "));
+  if (f.dog) { dogEl.style.display = ""; dogEl.setAttribute("transform", `translate(${mx(f.dog[0])},${my(f.dog[1])})`); dogT.textContent = "dog " + f.dog[2]; } else dogEl.style.display = "none";
+  gFires.innerHTML = "";
+  for (const [x, y, exp] of f.fires) {
+    const g = el("g", { transform: `translate(${mx(x)},${my(y)})` }, gFires);
+    el("path", { d: "M0,-9 C5,-3 6,3 0,7 C-6,3 -5,-3 0,-9 Z", fill: exp ? "#f97316" : "#dc2626", stroke: "#7c2d12", "stroke-width": 0.8 }, g);
+    const t = el("text", { y: 18, "text-anchor": "middle", "font-size": 10, fill: "#7c2d12" }, g); t.textContent = exp ? "campfire" : "fire!";
+  }
+  // bars
+  const vals5 = [f.m[0], f.m[1], f.m[2], f.m[3], f.m[4], f.m[5]];
+  barEls.forEach((b, i) => {
+    const v = vals5[i];
+    if (b.lo < 0) { const w = Math.abs(v) / 1000 * 125; b.r.setAttribute("x", v < 0 ? 195 - w : 195); b.r.setAttribute("width", w); }
+    else b.r.setAttribute("width", Math.max(0, v) / 1000 * 250);
+    b.v.textContent = v;
+  });
+  $("action").textContent = f.action;
+  $("why").textContent = f.why;
+  const wsMax = Math.max(1, ...f.ws.map(i => f.act[i]));
+  $("ws").innerHTML = f.ws.map(i => `<div class="ws-row"><span>${D.nodes[i].name}</span><span class="ws-bar" style="width:${(f.act[i] / wsMax * 100).toFixed(0)}%;background:${vals ? valColor(vals[i]) : '#999'}"></span><span>${f.act[i]}</span></div>`).join("");
+  const recent = [];
+  for (let k = fi; k >= 0 && recent.length < 6; k--) { for (const e of F[k].ev) recent.push([F[k].t, e]); if (F[k].slept) recent.push([F[k].t, "(slept: the day's episodes replayed, fast weights consolidated and cleared)"]); }
+  $("events").innerHTML = recent.slice(0, 6).map(([t, e]) => `<div class="ev"><span class="t">${t}</span>${e}</div>`).join("") || '<div class="ev" style="color:var(--muted)">nothing yet</div>';
+  cursor.setAttribute("x1", tx(fi)); cursor.setAttribute("x2", tx(fi));
+}
+function go(i, h) { fi = i; hop = h; render(); }
+function stepHop() {
+  const nh = F[fi].hops.length;
+  if (hop < nh - 1) hop++; else { hop = -1; if (fi < F.length - 1 && playing) { fi++; hop = 0; } }
+  render();
+}
+function tickPlay() { const nh = F[fi].hops.length; if (hop === -1 || hop >= nh - 1) { if (fi >= F.length - 1) { stop(); return; } fi++; hop = nh ? 0 : -1; } else hop++; render(); }
+function stop() { playing = false; clearInterval(timer); $("play").textContent = "Play"; }
+$("play").onclick = () => { if (playing) stop(); else { playing = true; $("play").textContent = "Pause"; timer = setInterval(tickPlay, 110); } };
+$("prev").onclick = () => { stop(); go(Math.max(0, fi - 1), -1); };
+$("next").onclick = () => { stop(); go(Math.min(F.length - 1, fi + 1), -1); };
+$("hop").onclick = () => { stop(); stepHop(); };
+slider.oninput = () => { stop(); go(+slider.value, -1); };
+document.addEventListener("keydown", e => { if (e.key === "ArrowRight") $("next").onclick(); if (e.key === "ArrowLeft") $("prev").onclick(); if (e.key === "h") $("hop").onclick(); if (e.key === " ") { e.preventDefault(); $("play").onclick(); } });
+// ?t=TICK&h=HOP opens a moment (for pictures).
+const q = new URLSearchParams(location.search);
+if (q.has("t")) { const t = +q.get("t"); const i = F.findIndex(f => f.t >= t); fi = i < 0 ? F.length - 1 : i; hop = q.has("h") ? +q.get("h") : -1; }
+render();
+window.__ready = true;
+</script>
+</body>
+</html>
