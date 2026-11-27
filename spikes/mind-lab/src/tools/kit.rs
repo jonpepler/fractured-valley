@@ -165,8 +165,39 @@ pub const LEDGER: &str = r#"
 pub const GO_FIND: &str = r#"
 (tool "go-find"
   (uses timetable routes)
-  (slot none (key) count int 1)
   (ask (sub routes "" ((place place) (goal (sub timetable "" ((who who) (tod tod)) 0))))))"#;
+
+/// Play (see the note's catalogue): small tools written to see how easy the language is.
+/// When does trouble happen: surprise per time of day.
+pub const DANGER_CLOCK: &str = r#"
+(tool "danger-clock"
+  (slot when (key tod) count int 12)
+  (observe (if (= kind surprise) (put when (tod) 0 val)))
+  (ask (val (get when (tod) count)))
+  (forget (fade when 2)))"#;
+
+/// Who is usually at a place at this time of day (the timetable turned round).
+pub const WHO_WILL_BE_THERE: &str = r#"
+(tool "who-will-be-there"
+  (slot there (key place tod) (votes 4) entity 512)
+  (observe (if (= kind seen) (put there (place tod) who 1)))
+  (ask (top there (place tod) 4))
+  (forget (fade there 3)))"#;
+
+/// Composition: would telling `to` about `what` be news? Asks who-knows.
+pub const IS_IT_NEWS: &str = r#"
+(tool "is-it-news"
+  (uses who-knows)
+  (ask (val (if (= (sub who-knows "" ((who to) (what what)) 0) 1) 0 1))))"#;
+
+/// Composition on a made map: the places next to my goal (where to wait, or to look around),
+/// through the map's "near" view. Works with whatever map this mind made, or none.
+pub const NEAR_GOAL: &str = r#"
+(tool "near-goal"
+  (uses map)
+  (ask (sub map "near" ((place goal)))))"#;
+
+pub const PLAY: [&str; 4] = [DANGER_CLOCK, WHO_WILL_BE_THERE, IS_IT_NEWS, NEAR_GOAL];
 
 pub const FOUNDATION: [&str; 11] = [TIMETABLE, ROUTES, ROUTE_END, WHAT_WORKED, WHO_KNOWS, VOLATILITY, RHYTHM, WHO_IS_THERE, TROUBLE_SPOTS, LEDGER, LAST_AND_HABIT];
 

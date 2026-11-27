@@ -40,6 +40,12 @@ pub fn stamp(r: &mut Rec, tick: u32, day_len: u32) {
     r[F::Tod as usize] = ((tick % d) as i64 * TOD as i64 / d as i64) as i32;
 }
 
+/// The name a made tool goes by: `map` for a map, `ways` for a table of journeys, `where-N` for
+/// where person N is, else `made`.
+pub fn role(m: &Made) -> String {
+    if m.map { "map".into() } else if m.from == kind::MOVED { "ways".into() } else if m.from == kind::SEEN && m.who != NONE { format!("where-{}", m.who) } else { "made".into() }
+}
+
 /// Settings for a mind's tools. Off by default.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct ToolConfig {
@@ -207,7 +213,12 @@ impl Belt {
             if self.tools[pi].desc.shape() == d.shape() || made.score <= pm.score { return None; }
         }
         let (name, cheap_name) = (d.name.clone(), cheap.as_ref().map(|c| c.0.name.clone()));
-        let t = self.filled(*d);
+        // A made tool is known by its role, so other tools can use it ("my map"); its shape stays
+        // in its description (and in `made`).
+        let mut d = *d;
+        d.name = role(&made);
+        let cheap = cheap.map(|c| { let mut c = *c; c.0.name = format!("{}-quick", role(&made)); c });
+        let t = self.filled(d);
         let idx = match prev { Some((_, _, pi, _)) => { self.replace(pi, t); pi } None => { let b = self.bound_of(&t.desc); self.tools.push(t); self.bounds.push(b); self.tools.len() - 1 } };
         let cheap_idx = cheap.map(|c| {
             let t = self.filled(c.0);

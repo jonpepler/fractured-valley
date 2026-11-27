@@ -30,7 +30,6 @@ use super::lang::*;
 use super::study::where_is;
 use crate::people::world::{person_of, Event, SIGHT};
 use crate::rng::hash;
-use crate::store::Store;
 use crate::think::Form;
 use crate::village::runs::{build, layout, set_tiers, Setup};
 

@@ -752,7 +752,7 @@ impl Desc {
                 Cell::Count => format!("for each {}, a running total ({})", if k.is_empty() { "thing".into() } else { k.join(" and ") }, s.name),
                 Cell::Hist(n) => format!("for each {}, how often each of {n} {}s ({})", k.join(" and "), TY_NAMES[s.val as usize], s.name) }
         }).collect();
-        o.push_str(&ss.join("; "));
+        if ss.is_empty() { o = format!("\"{}\": I keep nothing of my own", self.name); } else { o.push_str(&ss.join("; ")); }
         let _ = write!(o, ". Asked, I give {}.", a_words(self, &self.ask));
         if !self.forget.is_empty() { o.push_str(" Each night it fades."); }
         o

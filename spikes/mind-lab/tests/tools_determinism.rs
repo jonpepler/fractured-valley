@@ -5,7 +5,7 @@ use fv_mind_lab::tools::{data, kit, study};
 use std::hash::{Hash, Hasher};
 
 /// Pinned: generated worlds only (the village rows move with the village's own code).
-const PINS: [u64; 4] = [0x7bd9db872f317c22, 0x3cd62a90edfe6d60, 0xb73b380212892ea3, 0x627d2bf0e66560a8];
+const PINS: [u64; 4] = [0x7bd9db872f317c22, 0x274e96956d3b91be, 0x7c1682010a2bcff5, 0xb55497f1d35647c8];
 
 #[test]
 fn pinned_and_repeatable() {

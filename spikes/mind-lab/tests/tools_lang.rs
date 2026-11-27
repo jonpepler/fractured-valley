@@ -79,3 +79,25 @@ fn a_path_over_a_map() {
     assert_eq!(t.answer_only(&q(0, 4), &mut f).unwrap()[0].0, 1, "round by 1 once 0–5 is blocked");
     assert_eq!(t.answer_only(&q(4, 0), &mut f).unwrap()[0].0, 3);
 }
+
+#[test]
+fn play_tools_parse_and_compose() {
+    for src in kit::PLAY { let d = kit::load(src); assert_eq!(parse(&d.to_string()).unwrap(), d); println!("{}", d.explain()); }
+    // near-goal on a made map, through the belt (the map is found by its role).
+    use fv_mind_lab::tools::belt::{Belt, Reach, ToolConfig};
+    use fv_mind_lab::tools::cost::Brain;
+    use fv_mind_lab::tools::maker::{build, Shape};
+    let mut b = Belt::new(ToolConfig { on: true, ..ToolConfig::default() });
+    let mut m = build(F::Next, kind::MOVED, &Shape::Map { both: true, avoid: false, journeys: false }, 64); m.name = "map".into();
+    b.add(m);
+    let ng = b.add(kit::load(kit::NEAR_GOAL));
+    for (a, c) in [(1, 2), (2, 3), (2, 4)] { b.tell(rec_of(&[(F::Kind, kind::MOVED), (F::Place, a), (F::Next, c)]), 1); }
+    let (ans, _) = b.ask(ng, rec_of(&[(F::Goal, 2)]), 2, Reach::calm(Brain::Fast)).unwrap();
+    let mut v: Vec<i32> = ans.iter().map(|a| a.0).collect(); v.sort();
+    assert_eq!(v, vec![1, 3, 4]);
+    // Rediscovery: the maker's (who, tod) table answers exactly as the hand-written timetable.
+    let made = build(F::Place, kind::SEEN, &Shape::Table { feats: vec![Feat::Field(F::Who), Feat::Field(F::Tod)], cell: Cell::Votes(3), back: false }, 512);
+    let st = fv_mind_lab::tools::data::routine(3, 8, 6, &[1, 2], 100);
+    let s = fv_mind_lab::tools::study::schedules(&st, &[kit::load(kit::TIMETABLE), made], None, None, false);
+    assert_eq!((s[0].hit1, s[0].hit3, s[0].n), (s[1].hit1, s[1].hit3, s[1].n), "same answers");
+}
