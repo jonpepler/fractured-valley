@@ -67,6 +67,8 @@ pub struct Told {
     pub blamed: bool,
     /// The telling met a belief of my own that the place is dry: (told strength, own strength).
     pub conflict: Option<(i32, i32)>,
+    /// Round 2 (9.4): the bad evidence against the teller this claim's verdict has added.
+    pub verdict_ev: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -107,7 +109,48 @@ pub struct Person {
     pub hunt: Option<Box<crate::hunt::hunter::Hunter>>,
     /// Stage 5: the village layer (its tier, gossip, the idea of a hunt), for villagers.
     pub village: Option<Box<crate::village::life::Life>>,
+    /// Round 2 (9.4): the evidence behind each feeling about another person (see `Rel`).
+    pub rel: Vec<Rel>,
+    /// Round 2 (9.5): what was heard on the ticks since the last think (taken in at the next).
+    pub heard_buf: Vec<(super::world::Utterance, i32, bool)>,
 }
+
+/// Round 2 (9.4): **beta reputation with forgetting** (A. Jøsang and R. Ismail, "The Beta
+/// Reputation System", 15th Bled eCommerce Conference, 2002). A feeling about someone (trust, and
+/// warmth) is the expectation of a beta distribution over good and bad evidence, with the
+/// person's own founding feeling as the prior: `E = (r + W·a) / (r + s + W)`, where `a` is the
+/// baseline, `W` (`REP_W`) how many events' worth the baseline is held at, and `r`, `s` the good
+/// and bad evidence (in thousandths of an event). Each night the evidence is forgotten by
+/// `REP_KEEP` per mille, so with nothing new a feeling decays back towards the baseline, and with
+/// steady evidence it levels off where the evidence points. The value lives in the graph (the
+/// link to "truth", the node's valence); this is the bookkeeping that sets it.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub struct Rel { pub base_t: i32, pub base_w: i32, pub rt: i32, pub st: i32, pub rw: i32, pub sw: i32 }
+/// The baseline's weight in events, and the share of evidence kept each night (per mille: a
+/// half-life of about 46 nights, as for a told fact).
+pub const REP_W: i64 = 10_000;
+pub const REP_KEEP: i64 = 985;
+/// Evidence (thousandths of an event) for each kind of episode. Each is set so that, from a
+/// feeling with no evidence yet, the first such episode moves it about as far as round 1's rule
+/// did (closing a share `g` of the gap is `W·g / (1 − g)` events; multiplying by `f` is
+/// `W·(1 − f) / f`): a confirmed claim (trust +1/5 of the gap) 2,500; a thank-you or a confirmed
+/// claim (warmth +1/8) 1,430; a hunt that fed me (trust +1/10, warmth +1/16) 1,110 and 670; a
+/// teller caught contradicting itself (trust × 0.6) 6,670; a verdict of a lie (× 0.3) 23,300, of
+/// a mistake (× 0.9) 1,110, undecided (× 0.6) 6,670; warmth lost to a lie or a betrayal (about
+/// −300) 3,330; a drawn map that agrees with me (per pair: +1/20) 530, or disagrees (× 0.9) 1,110;
+/// gossip (round 1: 60 × trust of 2,000) 700 × trust / 1000, halved if overheard.
+pub const EV_CONFIRM: i32 = 2500;
+pub const EV_THANKS: i32 = 1430;
+pub const EV_FED_T: i32 = 1110;
+pub const EV_FED_W: i32 = 670;
+pub const EV_CONTRADICT: i32 = 6670;
+pub const EV_LIE: i32 = 23300;
+pub const EV_MISTAKE: i32 = 1110;
+pub const EV_UNDECIDED: i32 = 6670;
+pub const EV_BLAME: i32 = 3330;
+pub const EV_MAP_AGREE: i32 = 530;
+pub const EV_MAP_DISAGREE: i32 = 1110;
+pub const EV_GOSSIP: i32 = 700;
 
 pub const READ_AT: i32 = 60;
 pub const REREAD_GAP: u32 = 40;
@@ -127,6 +170,7 @@ impl Hash for Person {
         // Element by element: std hashes a slice of `usize` as raw bytes (8 on native, 4 on wasm32),
         // which made native and wasm32 hashes part as soon as someone owed thanks (stage 3).
         self.owe_thanks.len().hash(h); for &a in &self.owe_thanks { (a as u64).hash(h); } self.corrected_to.hash(h); self.model_on.hash(h); self.offload.hash(h); self.last_ask.hash(h); self.said.hash(h); self.pending.hash(h); self.curious.hash(h); self.away.hash(h); self.seen_d.hash(h);
+        self.rel.hash(h); self.heard_buf.hash(h);
         if let Some(x) = &self.hunt { x.hash(h); }
         if let Some(x) = &self.village { x.hash(h); }
     }
@@ -155,8 +199,55 @@ impl Person {
     pub fn new_in(sp: &super::species::People, w: &World, i: usize, t: Temperament, f: &Founding) -> Person {
         let (m, lex, pnode) = super::species::found_in(sp, w, i, t, f);
         let n = pnode.len();
-        Person { i, m, ids: sp.ids, traits: Traits::default(), medium: Medium::Speak, lex, pnode, told: vec![], notes: vec![], owe_thanks: vec![], corrected_to: vec![],
-            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: vec![-1; n], hunt: None, village: None }
+        let rel = (0..n).map(|j| if j == i { Rel::default() } else { Rel { base_t: f.trust[j], base_w: f.warmth[j], ..Rel::default() } }).collect();
+        let mut p = Person { i, m, ids: sp.ids, traits: Traits::default(), medium: Medium::Speak, lex, pnode, told: vec![], notes: vec![], owe_thanks: vec![], corrected_to: vec![],
+            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: vec![-1; n], hunt: None, village: None,
+            rel, heard_buf: vec![] };
+        // Round 2: who the others are to this mind (their feelings are the people layer's), the
+        // landmarks it has words for (they don't go dormant), and its turn when thinking less often.
+        p.m.social = p.pnode.iter().copied().filter(|&x| x != u32::MAX).collect(); p.m.social.sort_unstable();
+        p.m.rel_to = vec![sp.ids.truth, sp.ids.debt, sp.ids.ally]; p.m.rel_to.sort_unstable();
+        p.sync_named();
+        p.m.phase = i as u32;
+        p
+    }
+    /// Round 2 (9.8): the places this mind has a word for are kept out of dormancy.
+    pub fn sync_named(&mut self) { self.m.named = self.lex.iter().map(|l| l.1).collect(); self.m.named.sort_unstable(); self.m.named.dedup(); }
+
+    /// Round 2 (9.4): new evidence about person `j`: good and bad for trust, good and bad for warmth
+    /// (thousandths of an event). The feelings in the graph are set from it (`Rel`).
+    pub fn feel_evidence(&mut self, j: usize, rt: i32, st: i32, rw: i32, sw: i32) {
+        let r = &mut self.rel[j];
+        r.rt += rt.max(0); r.st += st.max(0); r.rw += rw.max(0); r.sw += sw.max(0);
+        self.write_rel(j);
+    }
+    fn write_rel(&mut self, j: usize) {
+        let r = self.rel[j];
+        let e = |pos: i32, neg: i32, a: i32| -> i32 { ((pos as i64 * 1000 + REP_W * a as i64) / (pos as i64 + neg as i64 + REP_W)) as i32 };
+        let t = e(r.rt, r.st, r.base_t);
+        let w = e(r.rw, r.sw, (r.base_w + 1000) / 2) * 2 - 1000;
+        self.set_trust(j, t);
+        self.m.store.set_val(self.pnode[j], w.clamp(-1000, 1000) as i16);
+    }
+    /// Staging: set the baseline feelings for `j` (forgetting any evidence), as founding would.
+    pub fn set_base(&mut self, j: usize, warmth: Option<i32>, trust: Option<i32>) {
+        if let Some(w) = warmth { self.rel[j].base_w = w; }
+        if let Some(t) = trust { self.rel[j].base_t = t; }
+        self.rel[j].rt = 0; self.rel[j].st = 0; self.rel[j].rw = 0; self.rel[j].sw = 0;
+        self.write_rel(j);
+    }
+    /// A night: the mind sleeps; then evidence about people is forgotten a little (so feelings
+    /// decay towards their baselines), and told records whose claim has gone dormant are let go.
+    pub fn night(&mut self, s: &Sense) {
+        self.m.night(s);
+        for j in 0..self.rel.len() {
+            if j == self.i || self.pnode[j] == u32::MAX { continue; }
+            let r = &mut self.rel[j];
+            if r.rt == 0 && r.st == 0 && r.rw == 0 && r.sw == 0 { continue; }
+            for x in [&mut r.rt, &mut r.st, &mut r.rw, &mut r.sw] { *x = (*x as i64 * REP_KEEP / 1000) as i32; }
+            self.write_rel(j);
+        }
+        if !self.m.cold.is_empty() { let m = &self.m; self.told.retain(|t| !m.is_cold(t.thing)); }
     }
     pub fn state_hash(&self) -> u64 { let mut h = crate::rng::StateHasher::new(self.m.who); self.hash(&mut h); h.finish() }
 
@@ -254,6 +345,7 @@ impl Person {
             let pi = self.m.add_place(&format!("landmark {} (from a map)", d.landmark), x, y, None);
             let pn = self.m.place_nodes[pi];
             self.lex.push((d.landmark, pn));
+            self.sync_named();
         }
         // Which place: water I already know (or a place I was told of) within the description's
         // uncertainty, or a new place of my own.
@@ -284,12 +376,12 @@ impl Person {
             Some(t) => { self.told[t].times += 1; t }
             None => {
                 self.told.push(Told { thing: s, place: pi, from, via: c.via, note, overheard, drawn: !c.drawn.is_empty(), est, tol, at: tick, times: 1, arrived: None, confirmed: None, dry: None,
-                    self_contradiction: false, corrected: false, trust_before: trust, landmark_checks: (agree, disagree), dry_claim: c.dry, blamed: false, conflict: None });
+                    self_contradiction: false, corrected: false, trust_before: trust, landmark_checks: (agree, disagree), dry_claim: c.dry, blamed: false, conflict: None, verdict_ev: 0 });
                 self.told.len() - 1
             }
         };
         if agree + disagree > 0 && self.told[idx].times == 1 {
-            if let Some(a) = from { let t0 = self.trust(a); self.set_trust(a, t0 + agree as i32 * (1000 - t0) / 20 - disagree as i32 * t0 / 10); }
+            if let Some(a) = from { self.feel_evidence(a, agree as i32 * EV_MAP_AGREE, disagree as i32 * EV_MAP_DISAGREE, 0, 0); }
         }
         let trust = from.map(|a| self.trust(a)).unwrap_or(400);
         let mut enc = 300 + trust * 7 / 10;
@@ -312,10 +404,9 @@ impl Person {
                 if !self.told[idx].self_contradiction && self.told.iter().any(|t| t.place == pi && t.from == Some(a) && t.dry_claim) {
                     self.told[idx].self_contradiction = true;
                     strengthen(&mut self.m, s, ids.lie, lt::ASSOC, 700, None);
-                    let tr = self.trust(a); self.set_trust(a, tr * 6 / 10);
                     // Caught out: blamed as for a lie found at the spring (warmth falls once).
                     self.told[idx].blamed = true;
-                    let n = self.pnode[a]; let v = self.m.store.val(n) as i32; self.m.store.set_val(n, (v - 300).max(-1000) as i16);
+                    self.feel_evidence(a, 0, EV_CONTRADICT, 0, EV_BLAME);
                 }
             }
             strengthen(&mut self.m, s, ids.water, lt::KIND, tf, None);
@@ -359,7 +450,8 @@ impl Person {
     // ------------------------------------------------------------------------- notes
 
     fn note_node(&mut self, id: u32, writer: usize, x: i32, y: i32) -> u32 {
-        if let Some(&(_, n, _)) = self.notes.iter().find(|x| x.0 == id) { return n; }
+        // (Round 2: a note found again is a cue: a dormant note comes back with what it held.)
+        if let Some(&(_, n, _)) = self.notes.iter().find(|x| x.0 == id) { self.m.revive(n); return n; }
         let n = self.m.store.add_node(&format!("note from {}", name(writer as usize)), 150, tag::CREATURE, Some(Anchor::Entity { id, x: x as i16, y: y as i16 }), self.m.who);
         self.m.entity_nodes.push((id, n)); self.m.entity_kinds.push(Kind::Note.k());
         strengthen(&mut self.m, n, self.ids.note, lt::KIND, 600, None);
@@ -381,7 +473,27 @@ impl Person {
 
     /// One tick: hear, read, check, think, speak. Reads the world as it was at the start of the
     /// tick; writes only this person (and returns what it does to the world).
-    pub fn think(&mut self, w: &World) -> Deed { let heard = w.heard(self.i); self.think_heard(w, heard) }
+    pub fn think(&mut self, w: &World) -> Deed { let heard = w.heard(self.i); match self.gate(w, heard) { Ok(all) => self.think_heard(w, all), Err(d) => d } }
+    /// Round 2 (9.5): does this person think this tick? Thinking every `m.every` ticks, it thinks
+    /// when its turn comes, when a reflex interrupts (`Mind::reflex`), or when it is spoken to or
+    /// hears a shout. Otherwise the tick is idle: what it hears is kept for its next think, the
+    /// mind does its upkeep, and the body goes on (`Err`, with the deed). `Ok`: everything heard
+    /// since its last think.
+    pub fn gate(&mut self, w: &World, heard: Vec<(super::world::Utterance, i32, bool)>) -> Result<Vec<(super::world::Utterance, i32, bool)>, Deed> {
+        let i = self.i;
+        if self.m.every > 1 && !self.away && !w.people[i].away && !w.people[i].asleep {
+            let s = w.sense(i, false);
+            let woken = heard.iter().any(|(u, _, to_me)| *to_me || u.vol >= super::world::SHOUT);
+            if !woken && !self.m.due(&s) {
+                self.heard_buf.extend(heard);
+                let a = self.m.idle(&s);
+                return Err(Deed { action: Some(a), ..Deed::default() });
+            }
+        }
+        let mut all = std::mem::take(&mut self.heard_buf);
+        all.extend(heard);
+        Ok(all)
+    }
     /// `think` with what was heard given (stage 5: a distant mind that thinks less often hears
     /// on every tick, and takes in what it heard since its last think).
     pub fn think_heard(&mut self, w: &World, heard: Vec<(super::world::Utterance, i32, bool)>) -> Deed {
@@ -410,7 +522,7 @@ impl Person {
                 }
                 Say::AskOther(wd) => { if *to_me { asked_other.push((a, *wd)); } }
                 Say::Thanks => {
-                    if *to_me { let n = self.pnode[a]; let v = self.m.store.val(n); self.m.store.set_val(n, (v + (1000 - v) / 8) as i16); }
+                    if *to_me { self.feel_evidence(a, 0, 0, EV_THANKS, 0); }
                 }
                 Say::Tell(c) | Say::Remind(c) | Say::Correct(c) => {
                     let idx = self.ground(c, Some(a), !*to_me, None, w.tick, &mut cues);
@@ -434,7 +546,7 @@ impl Person {
                             let (x, y) = (ests.iter().map(|e| e.0).sum::<i32>() / k, ests.iter().map(|e| e.1).sum::<i32>() / k);
                             let pi = self.m.add_place(&format!("landmark {wd} (told by {})", name(a as usize)), x, y, None);
                             let pn = self.m.place_nodes[pi];
-                            self.lex.push((*wd, pn));
+                            self.lex.push((*wd, pn)); self.sync_named();
                             let (an, lv) = (self.pnode[a], self.trust(a) - 500); strengthen(&mut self.m, pn, an, lt::SOURCE, 700, Some(lv));
                         }
                     }
@@ -501,8 +613,10 @@ impl Person {
             if in_danger {
                 let with_me = p.approaching || threat.is_some_and(|(tx, ty)| dist(p.x, p.y, tx, ty) <= 4);
                 let left = self.seen_d[j] >= 0 && d > self.seen_d[j] && !with_me;
-                if with_me { strengthen(&mut self.m, self.pnode[j], ids.ally, lt::ASSOC, 60, None); }
-                else if left { if let Some(k) = self.m.store.find(self.pnode[j], ids.ally, lt::ASSOC) { let w0 = self.m.store.slow(k) as i32; self.m.store.set_slow(k, (w0 * 9 / 10) as i16); } }
+                // (Round 2, 9.5: rates per tick; a think integrates the ticks since the last.)
+                let dt = self.m.dt;
+                if with_me { strengthen(&mut self.m, self.pnode[j], ids.ally, lt::ASSOC, crate::mind::per_ticks(60, dt), None); }
+                else if left { if let Some(k) = self.m.store.find(self.pnode[j], ids.ally, lt::ASSOC) { let mut w0 = self.m.store.slow(k) as i32; for _ in 0..dt { w0 = w0 * 9 / 10; } self.m.store.set_slow(k, w0 as i16); } }
             }
             self.seen_d[j] = d;
         }
@@ -532,8 +646,8 @@ impl Person {
                 self.m.expect[pi][key(Kind::Water.k(), false)] = 900;
                 for k in 0..self.told.len() { if self.told[k].thing == s_node && self.told[k].confirmed.is_none() { self.told[k].confirmed = Some(tick); } }
                 if let Some(a) = self.told[t].from {
-                    let tr = self.trust(a); self.set_trust(a, tr + (1000 - tr) / 5);
-                    let n = self.pnode[a]; let v = self.m.store.val(n); self.m.store.set_val(n, (v + (1000 - v) / 8) as i16);
+                    self.feel_evidence(a, EV_CONFIRM, 0, EV_THANKS, 0);
+                    let n = self.pnode[a];
                     strengthen(&mut self.m, n, ids.debt, lt::ASSOC, 600, None);
                     if !self.owe_thanks.contains(&a) { self.owe_thanks.push(a); }
                 }
@@ -566,10 +680,14 @@ impl Person {
         if self.told[t].corrected { strengthen(&mut self.m, s_node, ids.mistake, lt::ASSOC, 1000, None); strengthen(&mut self.m, s_node, ids.mistake, lt::ASSOC, 1000, None); }
         let (lie, mis) = (weight(&self.m, s_node, ids.lie, lt::ASSOC), weight(&self.m, s_node, ids.mistake, lt::ASSOC));
         let a = self.told[t].from.unwrap();
-        let tb = self.told[t].trust_before;
-        let factor = if lie >= mis + 200 { 3 } else if mis >= lie + 200 { 9 } else { 6 };
-        self.set_trust(a, tb * factor / 10);
-        if lie >= mis + 200 && !self.told[t].blamed { self.told[t].blamed = true; let n = self.pnode[a]; let v = self.m.store.val(n) as i32; self.m.store.set_val(n, (v - 300).max(-1000) as i16); }
+        // (Round 2: the verdict is evidence against the teller, counted once: a later verdict on
+        // the same claim replaces the earlier one's evidence.)
+        let want = if lie >= mis + 200 { EV_LIE } else if mis >= lie + 200 { EV_MISTAKE } else { EV_UNDECIDED };
+        let d = want - self.told[t].verdict_ev;
+        self.told[t].verdict_ev = want;
+        self.rel[a].st = (self.rel[a].st + d).max(0);
+        self.write_rel(a);
+        if lie >= mis + 200 && !self.told[t].blamed { self.told[t].blamed = true; self.feel_evidence(a, 0, 0, 0, EV_BLAME); }
     }
     /// How this mind classes a disconfirmed claim now: (lie weight, mistake weight).
     pub fn verdict(&self, s_node: u32) -> (i32, i32) { (weight(&self.m, s_node, self.ids.lie, lt::ASSOC), weight(&self.m, s_node, self.ids.mistake, lt::ASSOC)) }

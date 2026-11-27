@@ -45,6 +45,8 @@ pub trait Store: Form + Clone + Send + Sync {
     fn set_val(&mut self, n: u32, v: i16);
     fn anchor(&self, n: u32) -> Option<Anchor>;
     fn set_anchor(&mut self, n: u32, a: Anchor);
+    /// Round 2 (9.8): forget where a node is (a dormant thing has no anchor in the running graph).
+    fn remove_anchor(&mut self, n: u32);
     /// Every link of `u`, in key order, appended to `out`.
     fn links(&self, u: u32, out: &mut Vec<Link>);
     fn link(&self, key: LinkKey) -> Link;
@@ -339,6 +341,7 @@ impl Store for Runtime {
     fn set_anchor(&mut self, n: u32, a: Anchor) {
         match self.ov.anchors.binary_search_by_key(&n, |a| a.0) { Ok(i) => self.ov.anchors[i].1 = a, Err(i) => self.ov.anchors.insert(i, (n, a)) }
     }
+    fn remove_anchor(&mut self, n: u32) { if let Ok(i) = self.ov.anchors.binary_search_by_key(&n, |a| a.0) { self.ov.anchors.remove(i); } }
     fn links(&self, u: u32, out: &mut Vec<Link>) {
         let mut deg = 0;
         if (u as usize) < self.base.len() {
@@ -506,6 +509,7 @@ impl Store for Expanded {
     fn set_anchor(&mut self, n: u32, a: Anchor) {
         match self.anchors.binary_search_by_key(&n, |a| a.0) { Ok(i) => self.anchors[i].1 = a, Err(i) => self.anchors.insert(i, (n, a)) }
     }
+    fn remove_anchor(&mut self, n: u32) { if let Ok(i) = self.anchors.binary_search_by_key(&n, |a| a.0) { self.anchors.remove(i); } }
     fn links(&self, u: u32, out: &mut Vec<Link>) {
         for (k, l) in self.range(u).enumerate() {
             out.push(Link { key: link_key(u, k), to: self.targets[l], ty: self.ltype[l], slow: self.slow[l], lval: self.lval[l], fast: self.fast[l] });

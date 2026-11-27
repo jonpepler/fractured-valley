@@ -120,9 +120,11 @@ fn a_told_fact_is_learnt_and_consolidated_on_the_runtime_form() {
     let k = s.m.store.find(sp, stream, lt::AT).unwrap();
     s.m.store.set_fast(k, 400); x.m.store.set_fast(k, 400);
     let slow0 = s.m.store.slow(k);
+    let share = s.m.keep_share();
     s.m.sleep(); x.m.sleep();
     println!("a fast trace of 400 on spring→stream: slow {slow0} → {} after a night (keeps 1/{}), fast {}", s.m.store.slow(k), s.m.cfg.sleep_keep, s.m.store.fast(k));
-    assert_eq!(s.m.store.slow(k), slow0 + 400 / s.m.cfg.sleep_keep as i16);
+    // (Round 2, 9.4: sleep keeps a share set by the day's novelty, `Mind::keep_share`.)
+    assert_eq!(s.m.store.slow(k), slow0 + (400 * share / 1000) as i16);
     assert_eq!(s.m.state_hash(), x.m.state_hash());
 }
 

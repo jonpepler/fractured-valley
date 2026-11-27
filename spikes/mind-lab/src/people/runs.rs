@@ -278,9 +278,23 @@ pub struct Fade { pub fact: Vec<i32>, pub source: Vec<i32>, pub uses: Vec<(u32, 
 
 /// Told once, never goes (not thirsty again), `nights` nights. The source link and the fact are
 /// tracked night by night; on probe nights a copy of Bryn is made thirsty to see if it would go.
-pub fn s5_fade(seed: u64, set: u32, trust: i32, warmth: i32, nights: u32, probes: &[u32], quiet: bool) -> Fade { s5_fade_with(seed, set, trust, warmth, nights, probes, quiet, STAGE3) }
+pub fn s5_fade(seed: u64, set: u32, trust: i32, warmth: i32, nights: u32, probes: &[u32], quiet: bool) -> Fade { s5_fade_with(seed, set, trust, warmth, nights, probes, quiet, ROUND2) }
 /// `s5_fade` with stage 2's or stage 3's choosing (the home-pull regression).
 #[allow(clippy::too_many_arguments)]
+/// The told-and-quiet valley (`s5_fade_with`, quiet) run to the end of day `night` + 1: where a
+/// probe would start (for traces).
+pub fn s5_valley(seed: u64, set: u32, trust: i32, warmth: i32, night: u32, c: Choosing) -> Valley {
+    let mut su = setup(seed, set);
+    su.days = night + 1;
+    su.trust[BRYN][ASH] = trust;
+    su.warmth[BRYN][ASH] = warmth;
+    let mut v = su.build();
+    set_choosing(&mut v, c);
+    v.at(3, Event::SetThirst { who: BRYN, v: 0 });
+    keep_quiet(&mut v, night);
+    v.run_until((night - 1) * DAY + DAY);
+    v
+}
 pub fn s5_fade_with(seed: u64, set: u32, trust: i32, warmth: i32, nights: u32, probes: &[u32], quiet: bool, c: Choosing) -> Fade {
     let mut su = setup(seed, set);
     su.days = nights + 1;
@@ -489,12 +503,19 @@ pub type TellRecord = Told;
 // ------------------------------------------------------------------------- stage 3: home's pull
 
 /// Stage 3's choosing settings, to compare against stage 2's: (comfort gated by need, walking cost,
-/// commitment). `STAGE2` is all off.
+/// commitment). `STAGE2` is all off. Round 2 (9.3): every one of these but `ROUND2` keeps the
+/// body's drives in choosing (`Config::needs_in_choice`), as stages 2 and 3 had them; `ROUND2` is
+/// stage 3's cost and commitment with needs acting only on spreading (no gate: the first flag is
+/// then unused).
 pub type Choosing = (bool, i32, bool);
 pub const STAGE2: Choosing = (false, 0, false);
 pub const STAGE3: Choosing = (true, crate::mind::WALK_COST, true);
+/// Round 2: a marker value of the first flag's place is not possible in a bool, so `ROUND2` is
+/// told apart by a walking cost of `-WALK_COST` (read as `WALK_COST`, with needs on spreading).
+pub const ROUND2: Choosing = (false, -crate::mind::WALK_COST, true);
 pub fn set_choosing(v: &mut Valley, c: Choosing) {
-    for p in v.folk.iter_mut() { p.m.cfg.comfort_gate = c.0; p.m.cfg.walk_cost = c.1; p.m.cfg.hold_goal = c.2; }
+    let round2 = c.1 < 0;
+    for p in v.folk.iter_mut() { p.m.cfg.comfort_gate = c.0; p.m.cfg.walk_cost = c.1.abs(); p.m.cfg.hold_goal = c.2; p.m.cfg.needs_in_choice = !round2; }
 }
 
 #[derive(Clone, Debug, Default)]

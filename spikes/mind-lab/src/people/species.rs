@@ -27,6 +27,7 @@ pub fn fade() -> [u16; lt::COUNT] {
     let mut f = [0u16; lt::COUNT];
     for t in [lt::KIND, lt::HOLDS, lt::AT, lt::ASSOC] { f[t as usize] = 15; }
     f[lt::SOURCE as usize] = 60;
+    f[lt::TOLD as usize] = 60;
     f
 }
 

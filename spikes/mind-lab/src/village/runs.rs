@@ -44,10 +44,12 @@ pub struct Setup {
     pub voice: bool,
     /// The two surprise fixes, `expect_at_edge` and `habituate` (off: an ablation).
     pub fixes: bool,
+    /// Round 2 (9.5): every mind (people and animals) thinks every this many ticks.
+    pub think_every: u32,
 }
 impl Setup {
     pub fn new(seed: u64, people: usize, days: u32) -> Setup {
-        Setup { seed, people, days, every: 1, far: 16, observer: None, foxes: 3, boar: true, deer: true, gossip: true, prune: false, voice: true, fixes: true }
+        Setup { seed, people, days, every: 1, far: 16, observer: None, foxes: 3, boar: true, deer: true, gossip: true, prune: false, voice: true, fixes: true, think_every: 1 }
     }
 }
 
@@ -155,7 +157,7 @@ pub fn build(s: &Setup) -> Valley {
         let dk = p.hunt.as_ref().unwrap().k.deer_kind;
         p.m.store.add_link(dk, sp.ids.food, crate::graph::lt::ASSOC, 500, 0);
         p.m.young_from = p.m.store.len() as u32;
-        p.village = Some(Box::new(Life { every: 1, no_gossip: !s.gossip, ..Life::default() }));
+        p.village = Some(Box::new(Life { every: 1, base_every: s.think_every.max(1), no_gossip: !s.gossip, ..Life::default() }));
         p
     }).collect();
     let mut v = Valley::new(w, folk);
@@ -176,6 +178,8 @@ pub fn build(s: &Setup) -> Valley {
         m.cfg.expect_at_edge = s.fixes; m.cfg.food_contingent = true; m.cfg.habituate = s.fixes;
         m
     }).collect();
+    // Round 2 (9.5): every mind at the setup's thinking rate, staggered.
+    for (k, m) in v.deer_minds.iter_mut().chain(v.beasts.iter_mut()).chain(v.fox_minds.iter_mut()).enumerate() { m.every = s.think_every.max(1); m.phase = k as u32; }
     v
 }
 
@@ -221,6 +225,20 @@ pub struct Record {
     /// Words heard per person per awake tick (summed), and utterances in the air (summed over ticks).
     pub heard: u64,
     pub air: u64,
+    /// Round 2: per night, after sleep, over every ordered pair: (mean trust, mean warmth, share of
+    /// warmth at or above 900, share at or below −900, dormant nodes went cold / came back in all).
+    pub feel: Vec<Feel>,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Feel { pub trust: f64, pub warmth: f64, pub hot: f64, pub cold: f64, pub went_cold: u32, pub revived: u32 }
+/// Round 2: feelings over every ordered pair of villagers, and dormancy totals.
+pub fn feel(v: &Valley) -> Feel {
+    let n = v.folk.len();
+    let (mut t, mut w, mut hot, mut cold, mut k) = (0i64, 0i64, 0, 0, 0);
+    for p in &v.folk { for j in 0..n { if j == p.i { continue; } t += p.trust(j) as i64; let x = p.warmth(j); w += x as i64; if x >= 900 { hot += 1; } if x <= -900 { cold += 1; } k += 1; } }
+    let k = k.max(1) as f64;
+    let (went_cold, revived) = v.folk.iter().fold((0, 0), |a, p| (a.0 + p.m.dormancy.0, a.1 + p.m.dormancy.1));
+    Feel { trust: t as f64 / k, warmth: w as f64 / k, hot: hot as f64 / k, cold: cold as f64 / k, went_cold, revived }
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DayRec { pub drinks: u32, pub meals: u32, pub gossip: u32, pub help: u32, pub proposals: u32, pub caught: u32, pub gored: u32, pub surprised: u32, pub said: u32, pub feast: u32 }
@@ -260,6 +278,8 @@ pub struct Storage {
     /// The people layer's records (told claims, notes, model of others) and the hunting layer.
     pub layer: usize,
     pub nodes: usize, pub links: usize, pub place_count: usize, pub source_links: usize, pub told: usize,
+    /// Round 2 (9.8): cold storage (dormant nodes), not part of `total` (the running mind).
+    pub cold: usize, pub cold_nodes: usize,
 }
 impl Storage {
     pub fn own(&self) -> usize { self.places + self.people + self.sources + self.plans + self.notes + self.other_own }
@@ -298,7 +318,10 @@ pub fn storage(p: &Person, sharers: usize) -> Storage {
     s.other_own += own.saturating_sub(counted);
     s.expect = m.expect.iter().map(|e| e.len() * 2).sum();
     s.layer = p.told.len() * std::mem::size_of::<crate::people::person::Told>() + p.notes.len() * 12 + p.lex.len() * 8 + p.pnode.len() * 8
-        + p.hunt.as_ref().map_or(0, |_| std::mem::size_of::<hunter::Hunter>()) + p.village.as_ref().map_or(0, |l| std::mem::size_of::<Life>() + l.gossiped.len() * 8 + l.buffer.len() * 64);
+        + p.hunt.as_ref().map_or(0, |_| std::mem::size_of::<hunter::Hunter>()) + p.village.as_ref().map_or(0, |_| std::mem::size_of::<Life>()) + p.heard_buf.len() * 64
+        // Round 2: the evidence behind feelings about people.
+        + p.rel.len() * std::mem::size_of::<crate::people::person::Rel>();
+    s.cold = m.cold_bytes(); s.cold_nodes = m.cold.len();
     s.nodes = st.len(); s.links = st.link_count(); s.told = p.told.len();
     s.place_count = (0..m.place_nodes.len()).filter(|&pi| m.place_learnt(pi)).count();
     s
@@ -324,7 +347,7 @@ pub fn run(s: &Setup, threads: usize, order: Option<&[usize]>) -> (Record, Valle
         let gored0: u32 = v.w.boars.iter().map(|b| b.gored).sum();
         let caught0 = v.w.deer.iter().filter(|d| d.caught.is_some()).count();
         match &pool { Some(pl) => v.step_pooled(pl, &ord), None => v.step(1, &ord) }
-        if night { rec.after.push(v.folk.iter().map(|p| storage(p, n)).collect()); }
+        if night { rec.after.push(v.folk.iter().map(|p| storage(p, n)).collect()); rec.feel.push(feel(&v)); }
         // Measures (the world as it is after the tick, and each mind's last report).
         for i in 0..n {
             let q = &v.w.people[i];

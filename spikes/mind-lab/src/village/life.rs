@@ -20,26 +20,22 @@
 
 use crate::graph::lt;
 use crate::hunt::hunter::Lead;
-use crate::mind::{Action, IGNORE_BELOW};
-use crate::people::person::{strengthen, Person};
+use crate::mind::IGNORE_BELOW;
+use crate::people::person::{strengthen, Person, EV_GOSSIP};
 use crate::people::talk::{Say, Target};
-use crate::people::world::{Deed, Kind, Utterance, World, SHOUT, SPEAK, TALK};
+use crate::people::world::{Deed, Kind, Utterance, World, SPEAK, TALK};
 use crate::rng::hash;
 use crate::store::Store;
-use crate::think::Form;
 use std::cell::Cell;
 
 /// A villager's own state for the village layer.
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub struct Life {
-    /// Think every this many ticks (1: full detail). Set by the engine (the tier), not the mind.
+    /// Think every this many ticks (1: full detail). Set by the engine (the tier), not the mind;
+    /// round 2: it sets the mind's own `Mind::every`, the rate every mind now has.
     pub every: u32,
-    /// What it chose at its last think (continued between thinks).
-    pub last: Option<Action>,
-    /// Heard since its last think (taken in at the next).
-    pub buffer: Vec<(Utterance, i32, bool)>,
-    /// Gossip told: (tick, listener, about).
-    pub gossiped: Vec<(u32, u16, u16)>,
+    /// Round 2: the rate set for all minds (`Setup::think_every`); the tier can only lower it.
+    pub base_every: u32,
     /// When it last had the idea of a hunt, and when the plan it holds was last held in mind.
     pub led_at: Option<u32>,
     pub plan_seen: u32,
@@ -60,8 +56,9 @@ pub const GOSSIP_AT: i32 = 350;
 /// How far one piece of gossip moves the hearer's feeling (× its trust in the teller / 1000);
 /// half if overheard.
 pub const GOSSIP_STEP: i32 = 60;
-/// The same piece (listener, about) is not told again within this many ticks; and a think passes
-/// it on with this chance per mille.
+/// A piece is passed on with this chance per mille a tick (round 1: a think), times its novelty
+/// to the listener (round 2: what was said to whom is remembered; round 1 instead kept each pair
+/// from repeating within `GOSSIP_GAP` ticks, a rule now gone).
 pub const GOSSIP_GAP: u32 = 301;
 pub const GOSSIP_P: i32 = 150;
 /// The idea of a hunt: hungry at least this much, and not within this many ticks of the last.
@@ -93,34 +90,20 @@ fn think_inner(p: &mut Person, w: &World) -> Deed {
     let asleep = w.people[i].asleep;
     let life = p.village.as_mut().unwrap();
     life.thought = false;
-    let every = life.every.max(1);
-    if every > 1 && !asleep && life.last.is_some() && (tick + i as u32) % every != 0 {
-        // The wake-up rules: spoken to, a shout, a creature in sight, someone coming at me.
-        let s = w.sense(i, false);
-        let woken = heard.iter().any(|(u, _, to_me)| *to_me || u.vol >= SHOUT)
-            || s.seen.iter().any(|e| p.m.kinds.get(e.kind as usize).is_some_and(|k| k.creature) || (e.approaching && crate::mind::dist(e.x, e.y, s.body.x, s.body.y) <= 2));
-        let life = p.village.as_mut().unwrap();
-        if !woken {
-            life.buffer.extend(heard);
-            life.stats.skipped += 1;
-            let a = match life.last.unwrap() {
-                a @ (Action::WalkTo { .. } | Action::Flee { .. } | Action::Charge { .. } | Action::Hold { .. } | Action::Freeze) => a,
-                _ => Action::Stay,
-            };
-            p.m.upkeep(tick);
-            return Deed { action: Some(a), ..Deed::default() };
-        }
-        life.stats.woken += 1;
-    }
-    let life = p.village.as_mut().unwrap();
-    let mut all = std::mem::take(&mut life.buffer);
-    all.extend(heard);
+    p.m.every = life.every.max(life.base_every).max(1);
+    // Round 2 (9.5): the gate is the person's own (its turn, its reflexes, being spoken to or
+    // shouted at; stage 5's wake-up rules, now for every mind at any rate).
+    let turn = p.m.every <= 1 || p.m.cont.is_none() || (tick + p.m.phase) % p.m.every == 0;
+    let all = match p.gate(w, heard) {
+        Ok(all) => all,
+        Err(d) => { p.village.as_mut().unwrap().stats.skipped += 1; return d; }
+    };
+    if !turn && !asleep { p.village.as_mut().unwrap().stats.woken += 1; }
     hear_gossip(p, &all);
     let mut deed = p.think_heard(w, all);
     let life = p.village.as_mut().unwrap();
     life.thought = true;
     life.stats.thinks += 1;
-    life.last = deed.action;
     if asleep { return deed; }
     if p.m.last.percepts.iter().any(|q| q.error >= IGNORE_BELOW) || !p.m.last.absent.is_empty() { p.village.as_mut().unwrap().stats.surprised += 1; }
     hunt_life(p, w);
@@ -132,17 +115,21 @@ fn think_inner(p: &mut Person, w: &World) -> Deed {
 fn who(p: &Person, n: u32) -> Option<usize> { p.pnode.iter().position(|&x| x == n) }
 
 /// Gossip heard: the feeling about X moves towards the teller's, by the hearer's trust in it.
-fn hear_gossip(p: &mut Person, heard: &[(Utterance, i32, bool)]) {
+pub fn hear_gossip(p: &mut Person, heard: &[(Utterance, i32, bool)]) {
     for (u, _, to_me) in heard {
         let Say::Gossip { about, good } = u.say else { continue };
         let (a, j) = (u.speaker, about as usize);
         if j == p.i || a == p.i || j >= p.pnode.len() { continue; }
-        let step = GOSSIP_STEP * p.trust(a) / 1000 / if *to_me { 1 } else { 2 };
         let n = p.pnode[j];
-        let v = p.m.store.val(n);
-        p.m.store.set_val(n, (v + if good { step } else { -step }).clamp(-1000, 1000) as i16);
-        let lv = p.trust(a) - 500;
         let an = p.pnode[a];
+        // Round 2 (9.4): gossip is evidence about X, discounted by trust in the teller (Jøsang's
+        // discounting of recommendations), halved if overheard, and worth only what is new: hearing
+        // it again from the same teller (the source link X → teller, kept from before) adds little.
+        let had = p.m.store.find(n, an, lt::SOURCE).map(|k| p.m.store.slow(k) as i32).unwrap_or(0);
+        let novelty = (1000 - had).clamp(0, 1000);
+        let ev = EV_GOSSIP * p.trust(a) / 1000 / if *to_me { 1 } else { 2 } * novelty / 1000;
+        if good { p.feel_evidence(j, 0, 0, ev, 0); } else { p.feel_evidence(j, 0, 0, 0, ev); }
+        let lv = p.trust(a) - 500;
         strengthen(&mut p.m, n, an, lt::SOURCE, 300, Some(lv));
         p.village.as_mut().unwrap().stats.gossip_heard += 1;
     }
@@ -158,13 +145,16 @@ fn gossip(p: &mut Person, w: &World) -> Option<(Say, Option<usize>, i32)> {
         .filter(|&(d, j)| d <= TALK * TALK && p.warmth(j) >= 0).min().map(|x| x.1)?;
     let about = p.m.last.ws.iter().filter_map(|&n| who(p, n)).filter(|&j| j != listener && p.warmth(j).abs() >= GOSSIP_AT)
         .max_by_key(|&j| (p.warmth(j).abs(), std::cmp::Reverse(j)))?;
-    let life = p.village.as_ref().unwrap();
-    if life.gossiped.iter().any(|g| g.1 as usize == listener && g.2 as usize == about && tick < g.0 + GOSSIP_GAP) { return None; }
-    if (hash(w.seed, tick as u64, p.i as u64, 0x9055) % 1000) as i32 >= GOSSIP_P { return None; }
     let good = p.warmth(about) > 0;
+    // Round 2 (9.4): what I said to whom is remembered (a `told` link from the listener's node to
+    // the one I spoke of, carrying the sign): saying it again is worth less, in proportion.
+    let (ln, an) = (p.pnode[listener], p.pnode[about]);
+    let said = p.m.store.find(ln, an, lt::TOLD).map(|k| { let l = p.m.store.link(k); if (l.lval > 0) == good { l.slow as i32 } else { 0 } }).unwrap_or(0);
+    let novelty = (1000 - said).clamp(0, 1000);
+    // Round 2 (9.5): the chance is per tick; a think integrates the ticks since the last.
+    if (hash(w.seed, tick as u64, p.i as u64, 0x9055) % 1000) as i32 >= crate::mind::per_ticks(GOSSIP_P, p.m.dt) * novelty / 1000 { return None; }
+    strengthen(&mut p.m, ln, an, lt::TOLD, 700, Some(if good { 500 } else { -500 }));
     let life = p.village.as_mut().unwrap();
-    life.gossiped.retain(|g| tick < g.0 + GOSSIP_GAP);
-    life.gossiped.push((tick, listener as u16, about as u16));
     life.stats.gossip_said += 1;
     Some((Say::Gossip { about: about as u8, good }, Some(listener), SPEAK))
 }

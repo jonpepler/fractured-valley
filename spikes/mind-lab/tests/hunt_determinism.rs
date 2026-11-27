@@ -11,7 +11,11 @@ use fv_mind_lab::store::Store;
 use fv_mind_lab::think::Form;
 
 /// Pinned when stage 4 was written.
-const PINNED: [u64; 4] = [0xb6f86f16e7e085e0, 0xe3741b0f04311f00, 0x87018d8fee501444, 0x79da30f17e5be554];
+// Round 2 (stage 1): re-pinned. Behaviour changed on purpose: needs act only on spreading (9.3),
+// the village's fixes are the default (9.6), sleep keeps a share set by the day's novelty (9.4),
+// dormancy and feelings by evidence (9.4, 9.8), graded choices (9.6), and the link-type table
+// grew by one (`told`). Native and wasm32 agree on every one (`tools/wasm-hashes.sh`).
+const PINNED: [u64; 4] = [0x930e288fb5ddb05e, 0x5ffbe2d8b674d752, 0x2521455a06f5bc75, 0x94eb4961c5e7db25];
 
 #[test]
 fn hunt_runs_give_identical_pinned_hashes() {
@@ -42,7 +46,7 @@ fn hunt_hash_is_not_blind() {
         match tweak {
             1 => { let m = &mut v.deer_minds[0]; let pn = m.place_nodes[0]; let x = m.store.val(pn); m.store.set_val(pn, (x + 1) as i16); }
             // (A unit of warmth can be absorbed: consolidation pulls feelings towards episodes, rounding.)
-            2 => { let p = &mut v.folk[1]; let t = p.trust(0); p.set_trust(0, t + 1); }
+            2 => { let p = &mut v.folk[1]; let t = p.trust(0); p.set_base(0, None, Some(t + 1)); }
             _ => {}
         }
         for _ in 0..HUNT_TICKS / 2 { v.step(1, &[0, 1, 2, 3]); }

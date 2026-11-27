@@ -16,7 +16,11 @@ use fv_mind_lab::store::Store;
 /// Moved in stage 4, not by behaviour: people can now see a deer, so each mind's expectation table
 /// has one more kind (two more zero entries per place). The worlds' own hashes over these runs are
 /// unchanged (checked when stage 4 was written: every world hash and log length identical).
-const PINNED: [u64; 5] = [0x374d_af67_f511_7ee3, 0xbe46_5833_ef4b_35ed, 0x4e88_ff66_bec9_0ae4, 0x1abc_4295_4e55_1c97, 0xd198_f9b2_670a_2ec8];
+// Round 2 (stage 1): re-pinned. Behaviour changed on purpose: needs act only on spreading (9.3),
+// the village's fixes are the default (9.6), sleep keeps a share set by the day's novelty (9.4),
+// dormancy and feelings by evidence (9.4, 9.8), graded choices (9.6), and the link-type table
+// grew by one (`told`). Native and wasm32 agree on every one (`tools/wasm-hashes.sh`).
+const PINNED: [u64; 5] = [0xbb94f1076603193c, 0x4d22b619d7018a66, 0xc0a5e39258f890d7, 0x8072dd63f62fb63d, 0xf688ca12b6142f74];
 
 #[test]
 fn teaching_runs_give_identical_pinned_hashes() {

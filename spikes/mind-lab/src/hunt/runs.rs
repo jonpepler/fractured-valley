@@ -195,7 +195,7 @@ pub fn build_betrayal_warmth(seed: u64, set: usize, to_dee: i32) -> Valley {
     let mut v = build_betrayal(&BCase::new(seed, set, Lean::CaiSlight));
     let p = &mut v.folk[CAI];
     let n = p.pnode[DEE];
-    p.m.store.set_val(n, to_dee as i16);
+    p.set_base(DEE, Some(to_dee), None);
     let d = p.ids.debt; if let Some(k) = p.m.store.find(n, d, lt::ASSOC) { p.m.store.set_slow(k, 0); }
     v
 }

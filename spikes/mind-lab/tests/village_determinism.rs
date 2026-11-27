@@ -10,7 +10,11 @@ use fv_mind_lab::village::runs::{run, Setup};
 /// Pinned when stage 5 was written.
 /// (Restated after review: each stage-5 setting is now hashed with a tag of its own; behaviour is
 /// unchanged, only the hash of the settings moved.)
-const PINNED: [u64; 3] = [0x0f86acaca55cc1e7, 0x0e432c21ac14aeb2, 0x214eb0e3c029db79];
+// Round 2 (stage 1): re-pinned. Behaviour changed on purpose: needs act only on spreading (9.3),
+// the village's fixes are the default (9.6), sleep keeps a share set by the day's novelty (9.4),
+// dormancy and feelings by evidence (9.4, 9.8), graded choices (9.6), and the link-type table
+// grew by one (`told`). Native and wasm32 agree on every one (`tools/wasm-hashes.sh`).
+const PINNED: [u64; 4] = [0xc9b54feb108806cb, 0x702c8714a3645c0c, 0x3c50e6e58dd1b65a, 0xc0cc1747db16d46b];
 
 #[test]
 fn village_runs_give_identical_pinned_hashes() {
@@ -57,7 +61,8 @@ fn village_hash_is_not_blind() {
     let mut cheap = Setup::new(4, 20, 1); cheap.every = 4;
     let mut no_gossip = Setup::new(4, 20, 1); no_gossip.gossip = false;
     let mut one_trust = fv_mind_lab::village::runs::build(&Setup::new(4, 20, 1));
-    let t = one_trust.folk[1].trust(0); one_trust.folk[1].set_trust(0, t + 1);
+    // (Round 2: trust is set from the evidence and a baseline (`Rel`), so the unit goes on the baseline.)
+    let t = one_trust.folk[1].trust(0); one_trust.folk[1].set_base(0, None, Some(t + 1));
     let one: Vec<usize> = (0..20).collect();
     for _ in 0..301 { one_trust.step(1, &one); }
     for (what, x) in [("seed", run(&Setup::new(5, 20, 1), 1, None).0.hash), ("people", run(&Setup::new(4, 21, 1), 1, None).0.hash), ("the cheap tier", run(&cheap, 1, None).0.hash),

@@ -25,7 +25,9 @@ fn prep(mut s: Sim, seed: u64, t: Temperament, st: Setting) -> Sim {
     let old = s.m.clone();
     s.m = if st == Setting::Original { s.fox.mind_exact(t, seed) } else { s.fox.mind(t, seed) };
     s.m.skip_sleep = old.skip_sleep; s.m.pin_arousal = old.pin_arousal; s.m.pin_mood = old.pin_mood; s.m.learn = old.learn; s.m.mods = old.mods;
-    if st == Setting::Original { s.m.params.exact = true; s.m.params.index_ties = true; s.m.cfg.stochastic_learning = false; s.m.cfg.comfort_gate = false; s.m.cfg.walk_cost = 0; s.m.cfg.hold_goal = false; }
+    if st == Setting::Original { s.m.params.exact = true; s.m.params.index_ties = true; s.m.cfg.stochastic_learning = false; s.m.cfg.comfort_gate = false; s.m.cfg.walk_cost = 0; s.m.cfg.hold_goal = false;
+        // (Round 2: the original fox had none of round 2's rules or new defaults.)
+        let c = s.m.cfg; s.m.cfg = fv_mind_lab::mind::Config { sleep_keep: c.sleep_keep, own_fade: c.own_fade, stochastic_learning: false, comfort_gate: false, walk_cost: 0, hold_goal: false, ..fv_mind_lab::mind::Config::round1() }; }
     s
 }
 

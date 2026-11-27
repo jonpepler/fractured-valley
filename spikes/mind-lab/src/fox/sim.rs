@@ -92,8 +92,7 @@ impl<S: Store> Sim<S> {
             if self.record { let (w, v) = super::viewer::snapshot(&self.m.store); self.snapshots.push((self.w.tick, w, v)); }
         }
         let s = self.w.sense(0);
-        let a = self.m.step(&s);
-        self.m.commit(&s, a);
+        let a = self.m.live(&s);
         if self.record && self.w.tick >= self.record_from {
             let r = &self.m.last;
             let dog = self.w.entity(DOG).filter(|d| d.alive).map(|d| (d.x, d.y, self.w.dog_mode));
@@ -156,7 +155,7 @@ impl Pack {
             run_minds(&mut self.minds, threads, order, |i, m| { m.night(&senses[i]); Action::Sleep });
         }
         let senses: Vec<_> = (0..self.minds.len()).map(|i| self.w.sense(i)).collect();
-        let actions = run_minds(&mut self.minds, threads, order, |i, m| { let a = m.step(&senses[i]); m.commit(&senses[i], a); a });
+        let actions = run_minds(&mut self.minds, threads, order, |i, m| m.live(&senses[i]));
         self.w.post_step(&actions);
     }
     pub fn state_hash(&self) -> u64 {

@@ -13,7 +13,11 @@ use fv_mind_lab::think::Form;
 /// a braced charge is no longer a goring).
 /// Moved in stage 4, not by behaviour: a deer kind lengthens each mind's expectation table (and the
 /// boar's). The worlds' own hashes over these runs are unchanged (checked when stage 4 was written).
-const PINNED: [u64; 3] = [0xa1c4_603c_8219_7eaa, 0x8362_b41e_023d_628d, 0xa5bb_bb57_2059_b6c0];
+// Round 2 (stage 1): re-pinned. Behaviour changed on purpose: needs act only on spreading (9.3),
+// the village's fixes are the default (9.6), sleep keeps a share set by the day's novelty (9.4),
+// dormancy and feelings by evidence (9.4, 9.8), graded choices (9.6), and the link-type table
+// grew by one (`told`). Native and wasm32 agree on every one (`tools/wasm-hashes.sh`).
+const PINNED: [u64; 3] = [0xe5ee7801f0ea0943, 0xef7eeed65908690d, 0x230494dabeaebad3];
 
 #[test]
 fn danger_runs_give_identical_pinned_hashes() {

@@ -73,7 +73,7 @@ impl Valley {
         let slept = self.w.night_now;
         if slept {
             let senses: Vec<_> = (0..self.folk.len()).map(|i| self.w.sense(i, true)).collect();
-            run(&mut self.folk, threads, order, |i, p| { p.m.night(&senses[i]); Deed::default() });
+            run(&mut self.folk, threads, order, |i, p| { p.night(&senses[i]); Deed::default() });
             let bs: Vec<_> = (0..self.beasts.len()).map(|b| self.w.sense_boar(b)).collect();
             let border: Vec<usize> = (0..self.beasts.len()).collect();
             crate::fox::sim::run_minds(&mut self.beasts, threads, &border, |b, m| { m.night(&bs[b]); Action::Sleep });
@@ -93,12 +93,12 @@ impl Valley {
         let deeds = run(&mut self.folk, threads, order, |_, p| if p.village.is_some() { crate::village::life::think(p, w) } else { p.think(w) });
         // Boars read the same start-of-tick world (in reverse order, so order is exercised too).
         let border: Vec<usize> = (0..self.beasts.len()).rev().collect();
-        let boar_acts = crate::fox::sim::run_minds(&mut self.beasts, athreads, &border, |b, m| { let s = w.sense_boar(b); let a = m.step(&s); m.commit(&s, a); a });
+        let boar_acts = crate::fox::sim::run_minds(&mut self.beasts, athreads, &border, |b, m| { let s = w.sense_boar(b); m.live(&s) });
         // Deer read the same start-of-tick world (people hidden by cover are not seen).
         let dorder: Vec<usize> = (0..self.deer_minds.len()).rev().collect();
-        let deer_acts = crate::fox::sim::run_minds(&mut self.deer_minds, athreads, &dorder, |k, m| { let s = w.sense_deer(k); let a = m.step(&s); m.commit(&s, a); a });
+        let deer_acts = crate::fox::sim::run_minds(&mut self.deer_minds, athreads, &dorder, |k, m| { let s = w.sense_deer(k); m.live(&s) });
         let forder: Vec<usize> = (0..self.fox_minds.len()).rev().collect();
-        let fox_acts = crate::fox::sim::run_minds(&mut self.fox_minds, athreads, &forder, |k, m| { let s = w.sense_fox(k); let a = m.step(&s); m.commit(&s, a); a });
+        let fox_acts = crate::fox::sim::run_minds(&mut self.fox_minds, athreads, &forder, |k, m| { let s = w.sense_fox(k); m.live(&s) });
         self.brain_ns += t0.elapsed().as_nanos() as u64;
         if let Some(r) = self.record {
             let m = &self.folk[r].m;
@@ -174,7 +174,7 @@ impl Pool {
                     // (Review: a panicking worker must fail the run, not leave it waiting.)
                     let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
                         Job::Think(w, ps) => ps.into_iter().map(|(i, mut p)| { let d = if p.village.is_some() { crate::village::life::think(&mut p, &w) } else { p.think(&w) }; (i, p, d) }).collect(),
-                        Job::Night(s, ps) => ps.into_iter().map(|(i, mut p)| { p.m.night(&s[i]); (i, p, Deed::default()) }).collect::<Vec<_>>(),
+                        Job::Night(s, ps) => ps.into_iter().map(|(i, mut p)| { p.night(&s[i]); (i, p, Deed::default()) }).collect::<Vec<_>>(),
                     }));
                     let failed = out.is_err();
                     if dtx.send((k, out.ok())).is_err() || failed { break; }
@@ -228,7 +228,7 @@ impl Valley {
         let w = std::sync::Arc::new(std::mem::replace(&mut self.w, World::valley(0)));
         let deeds = pool.run(&mut self.folk, order, |ps| Job::Think(w.clone(), ps));
         let w = std::sync::Arc::try_unwrap(w).unwrap_or_else(|_| panic!("the world is shared after the pass"));
-        let step = |m: &mut crate::mind::Mind<crate::store::Runtime>, s: crate::mind::Sense| { let a = m.step(&s); m.commit(&s, a); a };
+        let step = |m: &mut crate::mind::Mind<crate::store::Runtime>, s: crate::mind::Sense| m.live(&s);
         let boar_acts: Vec<Action> = (0..self.beasts.len()).rev().map(|b| (b, step(&mut self.beasts[b], w.sense_boar(b)))).collect::<Vec<_>>().into_iter().rev().map(|x| x.1).collect();
         let deer_acts: Vec<Action> = (0..self.deer_minds.len()).rev().map(|k| (k, step(&mut self.deer_minds[k], w.sense_deer(k)))).collect::<Vec<_>>().into_iter().rev().map(|x| x.1).collect();
         let fox_acts: Vec<Action> = (0..self.fox_minds.len()).rev().map(|k| (k, step(&mut self.fox_minds[k], w.sense_fox(k)))).collect::<Vec<_>>().into_iter().rev().map(|x| x.1).collect();

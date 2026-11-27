@@ -15,7 +15,11 @@ use fv_mind_lab::rng::hash;
 /// Moved again in stage 3: comfort gated by need, a cost of distance and commitment to a goal
 /// (behaviour), and the settings for them are hashed; then the stage-3 state (intent, alarm,
 /// response) is hashed too (the fox has none of it, so its behaviour is unchanged).
-const PINNED: [u64; 6] = [0xceac_5bc7_b1a3_920e, 0x289c_557a_2dad_76e1, 0x8538_509b_ff7e_868e, 0x0ca2_05e4_8e70_9cea, 0xe679_e147_c181_09a3, 0xb58b_f7b4_af79_e1b5];
+// Round 2 (stage 1): re-pinned. Behaviour changed on purpose: needs act only on spreading (9.3),
+// the village's fixes are the default (9.6), sleep keeps a share set by the day's novelty (9.4),
+// dormancy and feelings by evidence (9.4, 9.8), graded choices (9.6), and the link-type table
+// grew by one (`told`). Native and wasm32 agree on every one (`tools/wasm-hashes.sh`).
+const PINNED: [u64; 6] = [0xad54cd29a4662f6e, 0xbcb701685d14f855, 0x239deb6ad3d06594, 0x2e071c4ae5caca6c, 0x137b03a3aec278ff, 0x6caad114020b4490];
 
 #[test]
 fn identical_runs_give_identical_pinned_hashes() {

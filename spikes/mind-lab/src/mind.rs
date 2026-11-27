@@ -47,6 +47,24 @@ pub const HABIT_FADE: i16 = 4096;
 pub const SPENT_FADE: i64 = 120;
 pub const PRUNE_NIGHTS: u32 = 10;
 
+// ------------------------------------------------------------------- round 2: memory and time
+/// 9.4: the share of plain fast weight consolidation keeps, per mille: `KEEP_PLAIN` (nothing) on a
+/// day with no surprise, rising in proportion to the day's novelty to `KEEP_NOVEL` (1/3, stage 0's
+/// larger share) on a day with `NOVEL_DAY` of summed prediction error (twenty full surprises).
+/// Synaptic tagging and capture (U. Frey and R. Morris, *Nature* 385, 1997) and behavioural
+/// tagging (novelty lets weak learning last: D. Moncada and H. Viola, *J. Neurosci.* 27, 2007):
+/// plain strengthening that nothing new marked is downscaled away (synaptic homeostasis: G.
+/// Tononi and C. Cirelli, 2006). Replayed episodes (salient moments) are kept in full, as before.
+pub const KEEP_PLAIN: i64 = 0;
+pub const KEEP_NOVEL: i64 = 333;
+pub const NOVEL_DAY: i64 = 20_000;
+/// 9.8: a learnt link at or below this slow weight (and with no fast trace) no longer carries a
+/// thought: even from a sender at `INTENT_HOLD` it delivers less than `min_act` after a hop's decay
+/// (500 × 21 / 1000 × 550 / 1000 < 6). A node whose every learnt connection is this weak is faded.
+pub const FADED_AT: i16 = 21;
+/// 9.5: a think made `dt` ticks after the last one integrates at most this many ticks.
+pub const MAX_DT: u32 = 64;
+
 /// Prediction errors below this are ignored.
 pub const IGNORE_BELOW: i32 = 400;
 /// A matched percept still gets this much activation: seen, not attended.
@@ -248,6 +266,31 @@ pub struct Config {
     /// valley or a neighbour met away from where they were last seen stops surprising. Off: only
     /// a place's own expectations (and, for people, tracking) predict.
     pub habituate: bool,
+    /// Round 2 (9.3): **needs act only on spreading.** Off (the default): choosing reads what is
+    /// on the mind. A place's look-ahead (`felt`) counts what it holds that answers a need (food,
+    /// rest, comfort) by how strongly that thing is on the mind now (its activation against the
+    /// strongest on the mind), and needs raise that activation only by modulating spreading
+    /// (`think::Gain`). On: the old rule, where the body's drives multiplied a place's score at
+    /// choice time (food by hunger, rest by fatigue, comfort by `comfort_gate`'s need).
+    pub needs_in_choice: bool,
+    /// Round 2 (9.3): courage from company is a **modulator on spreading** (`Mods::courage`): flows
+    /// into what "someone who stands with me" links to (holding, fighting, going to help) are
+    /// strengthened, by last tick's activation of that concept. Off: stage 3's multiplier on the
+    /// response scores in `respond`.
+    pub courage_spread: bool,
+    /// Round 2 (9.4): **sleep keeps more of a novel day.** The share of plain fast weight kept in
+    /// consolidation runs from 1/8 on a day with no surprise to 1/3 on a day of
+    /// `NOVEL_DAY` worth of prediction error (`Mind::day_novelty`). Off: the fixed `sleep_keep`.
+    pub novelty_keep: bool,
+    /// Round 2 (9.8): **dormant memories.** A node learnt in the mind's life whose every
+    /// connection has faded goes to cold storage (`Mind::cold`): kept, but out of the running
+    /// graph. A cue at its place (revisiting it, being told of it, reading of it) brings it back
+    /// with what was attached (`Mind::revive`). Off: faded nodes stay in the graph, linkless.
+    pub dormancy: bool,
+    /// Round 2 (9.4): feelings about people (a person node's valence and its links to the
+    /// concepts in `Mind::rel_to`) are not moved by day learning or consolidation, only by the
+    /// people layer's episodes. Off: the old rule (they drift with co-activation).
+    pub protect_social: bool,
 }
 // Hashed field by field, as the derive did; stage 4's setting only when on (so minds that don't
 // use it keep their pinned hashes).
@@ -261,9 +304,21 @@ impl std::hash::Hash for Config {
         for (on, tag) in [(self.prune_places, 0x51u8), (self.expect_at_edge, 0x52), (self.food_contingent, 0x53), (self.felt_without_sources, 0x54), (self.habituate, 0x55)] {
             if on { tag.hash(h); }
         }
+        // Round 2's settings, each with a tag of its own when it differs from the old rule.
+        for (on, tag) in [(self.needs_in_choice, 0x61u8), (!self.courage_spread, 0x62), (!self.novelty_keep, 0x63), (!self.dormancy, 0x64), (!self.protect_social, 0x65)] {
+            if on { tag.hash(h); }
+        }
     }
 }
-impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true, focus: true, flee_from_all: false, prune_places: false, expect_at_edge: false, food_contingent: false, felt_without_sources: false, habituate: false } } }
+/// Round 2 (9.6): the village's bug fix (`expect_at_edge`) is the default, and its model fixes
+/// (`food_contingent`, `felt_without_sources`, `habituate`) are the default provisionally.
+impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true, focus: true, flee_from_all: false, prune_places: false, expect_at_edge: true, food_contingent: true, felt_without_sources: true, habituate: true,
+    needs_in_choice: false, courage_spread: true, novelty_keep: true, dormancy: true, protect_social: true } } }
+impl Config {
+    /// Round 1's rules (stage 5's village settings off, choice-time gating, stage 3's courage, the
+    /// fixed sleep share, no dormancy, feelings consolidated): an ablation for comparisons.
+    pub fn round1() -> Config { Config { expect_at_edge: false, food_contingent: false, felt_without_sources: false, habituate: false, needs_in_choice: true, courage_spread: false, novelty_keep: false, dormancy: false, protect_social: false, ..Config::default() } }
+}
 
 /// Default `Config::walk_cost`: a place this many cells away counts half.
 pub const WALK_COST: i32 = 120;
@@ -283,6 +338,13 @@ impl Temperament {
     pub fn stress_gain(&self) -> i32 { 200 + self.reactivity * 6 / 5 }
     pub fn stress_cut(&self) -> i32 { 250 + self.reactivity * 7 / 10 }
 }
+
+/// Round 2 (9.6): a graded choice instead of a switch: the chance (per mille) of taking it at a
+/// `margin` past its bar, rising linearly from 0 at `-span` through 500 at the bar to 1000 at
+/// `+span`. Rolled from the mind's own hash.
+pub fn graded(margin: i32, span: i32) -> i32 { (500 + margin as i64 * 500 / span.max(1) as i64).clamp(0, 1000) as i32 }
+/// Round 2 (9.5): a chance `p` (per mille) per tick, as a chance over `dt` ticks: 1 − (1 − p)^dt.
+pub fn per_ticks(p: i32, dt: u32) -> i32 { let mut q: i64 = 1_000_000; for _ in 0..dt { q = q * (1000 - p.clamp(0, 1000) as i64) / 1000; } (1000 - (q + 500) / 1000) as i32 }
 
 /// The think parameters under stress: fewer hops and a smaller frontier.
 pub fn stressed_params(base: &Params, stress: i32, t: &Temperament) -> Params {
@@ -513,6 +575,54 @@ pub struct Mind<S: Store = Runtime> {
     pub place_seen: Vec<u32>,
     /// Stage 5: places retired and links removed by pruning, in total.
     pub pruned: (u32, u32),
+    /// Round 2 (9.5): think every this many ticks (1: every tick). Between thinks the body goes on
+    /// with what was chosen, the reflexes run (`Mind::reflex`), senses are buffered, and the mind
+    /// does only its upkeep. `phase` staggers minds; `last_think` dates the last think, so a think
+    /// integrates the ticks since (`dt`).
+    pub every: u32,
+    pub phase: u32,
+    pub last_think: Option<u32>,
+    /// What was sensed on the ticks since the last think (taken in at the next).
+    pub buffered: Vec<Sense>,
+    /// The action chosen at the last think, which the body goes on with between thinks.
+    pub cont: Option<Action>,
+    /// Ticks this step integrates (1 when thinking every tick). Transient, not hashed.
+    pub dt: u32,
+    /// Round 2 (9.4): summed prediction error since the last sleep (sets the share sleep keeps).
+    pub day_novelty: i64,
+    /// Round 2 (9.4): nodes that stand for other individuals (sorted), and the concepts whose links
+    /// from them are feelings about them (trust, a debt, an ally). With `Config::protect_social`,
+    /// day learning and consolidation leave these alone.
+    pub social: Vec<u32>,
+    pub rel_to: Vec<u32>,
+    /// Round 2 (9.8): dormant nodes (cold storage), and how many went cold and came back in total.
+    pub cold: Vec<Dormant>,
+    pub dormancy: (u32, u32),
+    /// Round 2 (9.8): nodes the mind has a word for (a person's landmarks), sorted: they never go
+    /// dormant (the word keeps them).
+    pub named: Vec<u32>,
+}
+
+/// Round 2 (9.8): a node in cold storage: everything that tied it into the graph, kept so a cue
+/// can bring it back. It costs storage and no runtime: no links, no anchor, nothing to perceive.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Dormant {
+    pub node: u32,
+    pub anchor: Option<Anchor>,
+    pub val: i16,
+    /// Its place index and expectations, if it is a place.
+    pub place: Option<u32>,
+    pub expect: Vec<i16>,
+    /// Its entity record (id, kind), if it stood for a thing.
+    pub entity: Option<(u32, u8)>,
+    /// Links from it and links into it: (other node, type, slow weight, link valence).
+    pub out: Vec<(u32, u8, i16, i16)>,
+    pub inl: Vec<(u32, u8, i16, i16)>,
+    /// The night it went cold.
+    pub since: u32,
+}
+impl Dormant {
+    pub fn bytes(&self) -> usize { 4 + 12 + 2 + 4 + self.expect.len() * 2 + 5 + (self.out.len() + self.inl.len()) * 9 + 4 }
 }
 
 impl<S: Store> Hash for Mind<S> {
@@ -527,6 +637,14 @@ impl<S: Store> Hash for Mind<S> {
         if self.cfg.habituate { self.familiar.hash(h); }
         if !self.spent.is_empty() { self.spent.hash(h); }
         if self.cfg.prune_places { self.place_seen.hash(h); self.pruned.hash(h); }
+        // Round 2's state, where it is in use.
+        if self.every > 1 { self.every.hash(h); self.phase.hash(h); self.last_think.hash(h); self.cont.hash(h); }
+        if !self.buffered.is_empty() { self.buffered.hash(h); }
+        if self.cfg.novelty_keep { self.day_novelty.hash(h); }
+        if !self.social.is_empty() { self.social.hash(h); self.rel_to.hash(h); }
+        if !self.cold.is_empty() || self.dormancy != (0, 0) { self.cold.hash(h); self.dormancy.hash(h); }
+        if !self.named.is_empty() { self.named.hash(h); }
+        if self.cfg.dormancy && self.place_seen.len() > 0 && !self.cfg.prune_places { self.place_seen.hash(h); }
     }
 }
 
@@ -566,6 +684,7 @@ impl<S: Store> Mind<S> {
             trace: false, last: Report::default(), learn: true, pin_arousal: None, pin_mood: None, skip_sleep: false, temperament,
             idle_consolidation: true, consol: Consol::default(), puzzle: None, search_wp: None, search_n: 0, napping: false, volatility: vec![0; nk],
             feelings: sp.feelings.clone(), young_from: 0, nights: 0, held: Held::default(), charges: false, plan: PlanState::default(), food2: vec![], familiar: vec![0; nk], spent: vec![], place_seen: vec![], pruned: (0, 0),
+            every: 1, phase: 0, last_think: None, buffered: vec![], cont: None, dt: 1, day_novelty: 0, social: vec![], rel_to: vec![], cold: vec![], dormancy: (0, 0), named: vec![],
         };
         m.young_from = m.store.len() as u32;
         for &(pi, k) in &sp.expect { m.expect[pi][key(k, false)] = 900; }
@@ -576,6 +695,11 @@ impl<S: Store> Mind<S> {
     fn habituate(&mut self, percepts: &[Percept]) {
         if self.familiar.len() < self.kinds.len() { self.familiar.resize(self.kinds.len(), 0); }
         for f in self.familiar.iter_mut() { *f -= *f / HABIT_FADE; }
+        self.habituate_grow(percepts);
+    }
+    /// The growth half of `habituate` (round 2: also for senses buffered between thinks).
+    fn habituate_grow(&mut self, percepts: &[Percept]) {
+        if self.familiar.len() < self.kinds.len() { self.familiar.resize(self.kinds.len(), 0); }
         let mut ks: Vec<u8> = percepts.iter().filter(|p| !self.kinds[p.kind as usize].landmark).map(|p| p.kind).collect();
         ks.sort_unstable(); ks.dedup();
         for k in ks { let f = &mut self.familiar[k as usize]; *f += (1000 - *f) / HABIT_RATE; }
@@ -587,7 +711,8 @@ impl<S: Store> Mind<S> {
             entity_kinds: self.entity_kinds.clone(), expect: self.expect.clone(), episodes: self.episodes.clone(), goal: self.goal, flee_left: self.flee_left, flee_from: self.flee_from,
             prev_pain: self.prev_pain, trace: self.trace, last: self.last.clone(), learn: self.learn, pin_arousal: self.pin_arousal, pin_mood: self.pin_mood, skip_sleep: self.skip_sleep,
             temperament: self.temperament, idle_consolidation: self.idle_consolidation, consol: self.consol, puzzle: self.puzzle, search_wp: self.search_wp, search_n: self.search_n,
-            napping: self.napping, volatility: self.volatility.clone(), feelings: self.feelings.clone(), young_from: self.young_from, nights: self.nights, held: self.held.clone(), charges: self.charges, plan: self.plan.clone(), food2: self.food2.clone(), familiar: self.familiar.clone(), spent: self.spent.clone(), place_seen: self.place_seen.clone(), pruned: self.pruned }
+            napping: self.napping, volatility: self.volatility.clone(), feelings: self.feelings.clone(), young_from: self.young_from, nights: self.nights, held: self.held.clone(), charges: self.charges, plan: self.plan.clone(), food2: self.food2.clone(), familiar: self.familiar.clone(), spent: self.spent.clone(), place_seen: self.place_seen.clone(), pruned: self.pruned,
+            every: self.every, phase: self.phase, last_think: self.last_think, buffered: self.buffered.clone(), cont: self.cont, dt: self.dt, day_novelty: self.day_novelty, social: self.social.clone(), rel_to: self.rel_to.clone(), cold: self.cold.clone(), dormancy: self.dormancy, named: self.named.clone() }
     }
 
     /// A hash of everything the mind holds (form-independent).
@@ -606,9 +731,13 @@ impl<S: Store> Mind<S> {
             // Stage 3: intent, alarm, the response under way and its last scores.
             + std::mem::size_of::<Held>() + self.held.last_scores.len() * 8
             // Stage 4: a plan's predictions and the breaches noticed (only when in use).
-            + if self.plan != PlanState::default() { std::mem::size_of::<PlanState>() + self.plan.expects.len() * std::mem::size_of::<Expect>() + self.plan.breaches.len() * 16 } else { 0 };
+            + if self.plan != PlanState::default() { std::mem::size_of::<PlanState>() + self.plan.expects.len() * std::mem::size_of::<Expect>() + self.plan.breaches.len() * 16 } else { 0 }
+            // Round 2: senses buffered between thinks.
+            + self.buffered.iter().map(|b| 32 + b.seen.len() * std::mem::size_of::<Seen>()).sum::<usize>();
         (b.shared, b.own, b.fast, state)
     }
+    /// Round 2 (9.8): bytes in cold storage (not counted in `bytes`).
+    pub fn cold_bytes(&self) -> usize { self.cold.iter().map(|d| d.bytes()).sum() }
 
     /// The appetite that sets `Mods::hunger`: the body's hunger, or the larger of its two
     /// appetites when the species has a second (stage 5).
@@ -616,6 +745,12 @@ impl<S: Store> Mind<S> {
     /// Stage 5: the drive a food-tagged node answers: the second appetite for the second food (its
     /// concept, and the things the mind knows as instances of it), the first for everything else.
     fn food_drive(&self, n: u32, m: &Mods) -> i32 { if self.roles.food2 != u32::MAX && (n == self.roles.food2 || self.food2.binary_search(&n).is_ok()) { m.hunger2 } else { m.hunger } }
+    /// Round 2: this mind's own chance, 0..1000, from `hash(who, tick, salt)`.
+    pub fn roll(&self, tick: u32, salt: u64) -> i32 { (hash(self.who, tick as u64, 0x9a7e, salt) % 1000) as i32 }
+    /// Round 2 (9.4): is `n` a node standing for another individual?
+    #[inline] pub fn is_social(&self, n: u32) -> bool { !self.social.is_empty() && self.social.binary_search(&n).is_ok() }
+    /// Is u → v a feeling about someone (from their node to trust, a debt, an ally)?
+    #[inline] pub fn is_rel(&self, u: u32, v: u32) -> bool { self.is_social(u) && self.rel_to.contains(&v) }
     fn calm_factor(&self, k: u8) -> i32 { 1000 - self.volatility[k as usize] as i32 * 7 / 10 }
     fn volatile_event(&mut self, k: u8) { let v = &mut self.volatility[k as usize]; *v += (1000 - *v) / 4; }
     fn concept(&self, k: u8) -> u32 { self.kinds[k as usize].concept }
@@ -644,8 +779,13 @@ impl<S: Store> Mind<S> {
     /// Where the mind believes home is: the learnt place that feels best to a tired, calm mind.
     pub fn home(&self) -> u32 {
         let tired = Mods { fatigue: 1000, ..Mods::default() };
-        (0..self.place_nodes.len()).filter(|&pi| self.place_learnt(pi)).map(|pi| self.place_nodes[pi])
-            .max_by_key(|&p| (self.felt_with(&self.store, p, &tired), std::cmp::Reverse(self.tk(p)))).unwrap()
+        let places = (0..self.place_nodes.len()).filter(|&pi| self.place_learnt(pi)).map(|pi| self.place_nodes[pi]);
+        if self.cfg.needs_in_choice { return places.max_by_key(|&p| (self.felt_with(&self.store, p, &tired), std::cmp::Reverse(self.tk(p)))).unwrap(); }
+        // Round 2 (9.3): what a tired mind thinks of: imagine full tiredness (fatigue cued as a step
+        // would inject it), and weigh places by what then comes to mind.
+        let (ws, act, _) = self.imagine(&[(self.roles.fatigue, 333)], &tired, 3);
+        let top = ws.first().map(|&n| act[n as usize]).unwrap_or(1).max(1);
+        places.max_by_key(|&p| (self.felt_in(&self.store, p, &tired, &|n| act[n as usize], top), std::cmp::Reverse(self.tk(p)))).unwrap()
     }
     pub fn home_xy(&self) -> (i32, i32) { self.store.anchor(self.home()).unwrap().xy() }
 
@@ -690,6 +830,9 @@ impl<S: Store> Mind<S> {
     /// (`near_weight`) to the learnt places listed in `near`, or to every learnt place if `None`.
     /// Returns its place index.
     pub fn add_place(&mut self, name: &str, x: i32, y: i32, near: Option<&[usize]>) -> usize {
+        // Round 2 (9.8): a dormant place here comes back instead (being told of it, reading of it,
+        // planning around it, or seeing a landmark there is a cue to it).
+        if let Some(pi) = self.revive_place_at(x, y) { return pi; }
         let pn = self.store.add_node(name, 0, tag::PLACE, Some(Anchor::Place { x: x as i16, y: y as i16 }), self.who);
         for c in self.feelings.clone() { self.store.add_link(pn, c, lt::FEELS, 0, 0); self.store.add_link(c, pn, lt::FEELS, 0, 0); }
         let pi = self.place_nodes.len();
@@ -858,13 +1001,57 @@ impl<S: Store> Mind<S> {
         if self.learn {
             if tick % FAST_FADE_EVERY == 0 { self.store.map_fast(&mut |f| f - (f / 128 + f.signum())); }
             if tick % 8 == 0 { for v in self.volatility.iter_mut() { *v -= *v / 256; } }
+            // Round 2 (9.5): familiarity fades per tick, thinking or not.
+            if self.cfg.habituate && self.every > 1 { for f in self.familiar.iter_mut() { *f -= *f / HABIT_FADE; } }
         }
         self.mods.arousal -= self.mods.arousal / 10;
         self.mods.stress -= self.mods.stress / 40 + (self.mods.stress > 0) as i32;
         if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
     }
 
-    fn step_with(&mut self, s: &Sense, st: &mut Activation) -> Action {
+    /// Round 2 (9.5): one tick of a mind at its thinking rate. If a think is due (`due`), it thinks
+    /// (`step`) and the action is committed; otherwise the tick is idle (`idle`).
+    pub fn live(&mut self, s: &Sense) -> Action {
+        if self.due(s) { let a = self.step(s); self.commit(s, a); a } else { self.idle(s) }
+    }
+    /// Is a think due this tick: thinking every tick, asleep, nothing chosen yet, this mind's turn
+    /// (`(tick + phase) % every == 0`), or a reflex interrupts (`reflex`).
+    pub fn due(&self, s: &Sense) -> bool {
+        self.every <= 1 || s.body.asleep || self.cont.is_none() || (s.tick + self.phase) % self.every == 0 || self.reflex(s)
+    }
+    /// Round 2 (9.5): the reflexes, checked every tick from the senses alone (no thought): pain
+    /// rising, a creature in sight, or anything coming at the body from within 2 cells. Any of
+    /// them interrupts and makes the mind think now (stage 5's wake-up rules, for every mind).
+    pub fn reflex(&self, s: &Sense) -> bool {
+        if s.body.asleep { return false; }
+        s.body.pain > self.prev_pain || s.seen.iter().any(|e| self.kinds.get(e.kind as usize).is_some_and(|k| k.creature) || (e.approaching && dist(e.x, e.y, s.body.x, s.body.y) <= 2))
+    }
+    /// Round 2 (9.5): a tick without a think: the senses are buffered for the next think, the
+    /// mind's upkeep runs, and the body goes on with what was last chosen (walking, running,
+    /// charging, holding, keeping still, a nap), or stays.
+    pub fn idle(&mut self, s: &Sense) -> Action {
+        if !s.body.asleep && !s.seen.is_empty() { let mut b = s.clone(); b.cues.clear(); b.alarms.clear(); self.buffered.push(b); }
+        self.upkeep(s.tick);
+        match self.cont {
+            Some(a @ (Action::WalkTo { .. } | Action::Flee { .. } | Action::Charge { .. } | Action::Hold { .. } | Action::Freeze)) => a,
+            Some(Action::Sleep) if self.napping => Action::Sleep,
+            _ => Action::Stay,
+        }
+    }
+
+    fn step_with(&mut self, s0: &Sense, st: &mut Activation) -> Action {
+        // Round 2 (9.5): a think integrates the ticks since the last one (`dt`, 1 when thinking
+        // every tick), and takes in what was sensed meanwhile.
+        let dt = if self.every > 1 { self.last_think.map_or(1, |t| s0.tick.saturating_sub(t)).clamp(1, MAX_DT) } else { 1 };
+        self.dt = dt; self.last_think = Some(s0.tick);
+        let buffered = std::mem::take(&mut self.buffered);
+        let merged;
+        let s: &Sense = if buffered.is_empty() || s0.body.asleep { s0 } else {
+            // Things seen since the last think and not in sight now are perceived where last seen.
+            let mut m = s0.clone();
+            for b in buffered.iter().rev() { for e in &b.seen { if !m.seen.iter().any(|x| x.id == e.id) { m.seen.push(Seen { approaching: false, available: false, ..*e }); } } }
+            merged = m; &merged
+        };
         let fx = s.body;
         self.mods.hunger = fx.hunger;
         if self.roles.hunger2 != u32::MAX {
@@ -880,11 +1067,13 @@ impl<S: Store> Mind<S> {
         let pr = if self.consol.forced > 0 { self.pressure() } else { (b * 1000 / BACKLOG_CAP).clamp(0, 1000) as i32 };
         self.mods.fatigue = pr.max(fx.drowsy);
         if fx.asleep { rep.action = Some(Action::Sleep); rep.why = "asleep".into(); rep.backlog = self.backlog(); self.last = rep; return Action::Sleep; }
+        // Round 2 (9.8): standing somewhere it knows no place, at a dormant place: revisiting is a cue.
+        if self.learn && !self.cold.is_empty() && self.place_index_at(fx.x, fx.y).is_none() { self.revive_place_at(fx.x, fx.y); }
         if self.napping {
             let woken = self.perceive(s).iter().any(|p| p.error >= IGNORE_BELOW) || fx.pain > self.prev_pain || self.appetite(&fx) >= WAKE_HUNGER;
             if woken || self.mods.fatigue < WAKE_AT { self.napping = false; } else {
                 self.consol.last_units = 0;
-                self.consolidate(SLEEP_BUDGET, true);
+                self.consolidate(SLEEP_BUDGET * dt as i64, true);
                 self.mods.fatigue = self.pressure().max(fx.drowsy);
                 self.mods.arousal -= self.mods.arousal / 10; self.mods.stress -= self.mods.stress / 20;
                 st.damp(900);
@@ -972,14 +1161,16 @@ impl<S: Store> Mind<S> {
             max_error = max_error.max(e);
             let fresh = self.puzzle.is_none_or(|pz| pz.place != pi || pz.kind != k);
             if fresh { self.volatile_event(k); }
-            let gain = e / 8 * (1000 + self.volatility[k as usize] as i32 * 2) / 1000;
+            let gain = e / 8 * (1000 + self.volatility[k as usize] as i32 * 2) / 1000 * dt as i32;
             let pz = self.puzzle.get_or_insert(Puzzle { place: pi, kind: k, strength: 0, since: s.tick });
             if pz.place != pi || pz.kind != k { *pz = Puzzle { place: pi, kind: k, strength: pz.strength / 2, since: s.tick }; }
             pz.strength = (pz.strength + gain).min(1000);
         }
+        // Round 2 (9.4): the day's novelty is its summed prediction error.
+        self.day_novelty = (self.day_novelty + percepts.iter().filter(|p| p.error >= IGNORE_BELOW).map(|p| p.error as i64).sum::<i64>() + absent.iter().map(|x| x.2 as i64).sum::<i64>()).min(1 << 40);
         if let Some(pz) = &mut self.puzzle {
             if percepts.iter().any(|p| p.kind == pz.kind && p.place != Some(pz.place)) { pz.strength -= pz.strength / 8 + 20; }
-            pz.strength -= pz.strength / 400 + 1;
+            for _ in 0..dt { pz.strength -= pz.strength / 400 + 1; }
             if pz.strength <= 0 { self.puzzle = None; self.search_wp = None; self.search_n = 0; }
         }
         let absent_now = absent.clone();
@@ -1024,15 +1215,24 @@ impl<S: Store> Mind<S> {
             self.mods.focus = if self.cfg.focus { (a0 as i64 * FOCUS_GAIN as i64 / 1000).clamp(0, 1000) as i32 } else { 0 };
         }
 
+        // Round 2 (9.3): courage from company acts on spreading: last tick's activation of "someone
+        // who stands with me" strengthens flows into what it links to.
+        self.mods.courage = 0; self.mods.ally = 0;
+        if self.cfg.courage_spread { if let Some(r) = self.roles.resp.filter(|r| r.ally != u32::MAX) {
+            self.mods.ally = r.ally;
+            self.mods.courage = (st.act[r.ally as usize] as i64 * COURAGE as i64 / 1000).clamp(0, 1000) as i32;
+        } }
         let tg = self.temperament.stress_gain() as i64 * (1000 + self.mods.fatigue as i64 / 2) / 1000;
         // Stage 3: companions linked to "ally" buffer the stress a tick adds (social buffering).
         let buffer = self.roles.resp.filter(|r| r.ally != u32::MAX).map_or(0, |r| st.act[r.ally as usize] as i64 * BUFFER as i64 / 1000);
-        let stressor = (pain_rise as i64 + surprise as i64 / 2 + st.act[self.roles.danger as usize] as i64 / 16 - buffer).max(0);
+        let stressor = (pain_rise as i64 + surprise as i64 / 2 + st.act[self.roles.danger as usize] as i64 / 16 * dt as i64 - buffer).max(0);
         self.mods.stress = (self.mods.stress as i64 + stressor * tg / 1000).min(1000) as i32;
         if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
 
         // 3. Think, as deep as stress allows, in what budget compaction left.
         let mut p = stressed_params(&self.params, self.mods.stress, &self.temperament);
+        // Round 2 (9.5): what is carried into this think has faded for the ticks since the last.
+        for _ in 1..dt { p.persist = (p.persist as i64 * self.params.persist as i64 / 1000) as i32; }
         if self.consol.forced > 0 {
             let left = (THINK_BUDGET - self.consol.forced).max(THINK_BUDGET / 10);
             p.frontier = (p.frontier as i64 * left / THINK_BUDGET).max(6) as usize;
@@ -1045,7 +1245,7 @@ impl<S: Store> Mind<S> {
         if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
         // Stage 3: an intent out of the workspace for long enough is dropped.
         if let Some(i) = self.held.intent {
-            if ws.contains(&i) { self.held.lapse = 0; } else { self.held.lapse += 1; }
+            if ws.contains(&i) { self.held.lapse = 0; } else { self.held.lapse += dt; }
             if self.held.lapse >= INTENT_LAPSE { self.held.dropped = Some((s.tick, i)); self.held.intent = None; self.held.lapse = 0; }
         }
 
@@ -1053,34 +1253,41 @@ impl<S: Store> Mind<S> {
         let (mut sa, mut sv) = (0i64, 0i64);
         for &n in &ws { let a = st.act[n as usize] as i64; sa += a; sv += a * self.store.val(n) as i64; }
         let wv = if sa > 0 { (sv / sa) as i32 } else { 0 };
-        self.mods.mood += (wv - self.mods.mood) / 32;
+        for _ in 0..dt { self.mods.mood += (wv - self.mods.mood) / 32; }
         let m = &mut self.mods;
-        m.arousal = (m.arousal + st.act[self.roles.danger as usize] / 64).min(1000);
+        m.arousal = (m.arousal + st.act[self.roles.danger as usize] / 64 * dt as i32).min(1000);
         m.arousal -= m.arousal / 10;
         if let Some(a) = self.pin_arousal { m.arousal = a; }
         if let Some(md) = self.pin_mood { m.mood = md; }
 
         // 5. Learn by day.
         if self.learn {
+            // Round 2 (9.5): what was seen on the ticks between thinks teaches expectations and
+            // familiarity as it would have tick by tick.
+            for b in &buffered {
+                let ps = self.perceive(b);
+                self.learn_expectations(b, &ps);
+                if self.cfg.habituate { self.habituate_grow(&ps); }
+            }
             if self.cfg.habituate { self.habituate(&percepts); }
             self.learn_expectations(s, &percepts);
             // Stage 5: which foods are in sight at the place the body is at (for `food_contingent`).
             let food_here: Vec<u32> = if self.cfg.food_contingent { percepts.iter().filter(|p| p.place == here && here.is_some() && self.kinds[p.kind as usize].edible).flat_map(|p| [p.node, self.concept(p.kind)]).collect() } else { vec![] };
-            self.hebbian(st, &ws, here.map(|pi| self.place_nodes[pi]), s.tick, &food_here);
+            self.hebbian(st, &ws, here.map(|pi| self.place_nodes[pi]), s.tick, &food_here, dt);
             for &(pi, k, e) in &absent_now {
                 let (pn, n, c) = (self.place_nodes[pi], self.missing_node(pi, k), self.concept(k));
                 for (a, b) in [(pn, n), (n, pn), (pn, c), (c, pn)] {
                     for l in self.store.links_vec(a) { if l.to == b {
                         let floor = -(l.slow as i32);
                         let f = self.store.fast(l.key) as i32;
-                        self.store.set_fast(l.key, (f - e / EXTINCT_RATE).max(floor) as i16);
+                        self.store.set_fast(l.key, (f - e / EXTINCT_RATE * dt as i32).max(floor) as i16);
                     } }
                 }
                 if self.store.val(n) > 0 {
                     for (a, b) in [(pn, self.roles.loss), (self.roles.loss, pn)] {
                         if let Some(l) = self.store.find(a, b, lt::FEELS) {
                             let x = self.store.link(l);
-                            self.store.set_fast(l, (x.fast as i32 + e / EXTINCT_RATE).min(1000 - x.slow as i32) as i16);
+                            self.store.set_fast(l, (x.fast as i32 + e / EXTINCT_RATE * dt as i32).min(1000 - x.slow as i32) as i16);
                         }
                     }
                 }
@@ -1096,7 +1303,9 @@ impl<S: Store> Mind<S> {
         // 6. Act: first the danger responses (stage 3), if this species has them and danger is about.
         let resp = self.roles.resp.and_then(|rs| self.respond(&rs, st, s, &ws, &percepts));
         self.held.response = resp.as_ref().map(|r| r.2);
-        self.held.calling = resp.is_some() && self.roles.resp.is_some_and(|rs| rs.call != u32::MAX && st.act[rs.call as usize] >= OPTION_AT);
+        // Round 2 (9.6): crying out is a graded choice, a hashed roll weighted by how far the call
+        // node is past `OPTION_AT` (certain at twice it, never at 0), not a switch at the bar.
+        self.held.calling = resp.is_some() && self.roles.resp.is_some_and(|rs| rs.call != u32::MAX && self.roll(s.tick, 0xca11) < graded(st.act[rs.call as usize] - OPTION_AT, OPTION_AT));
         self.held.last_scores = resp.as_ref().map(|r| r.3.clone()).unwrap_or_default();
         let (action, why, scores) = match resp { Some((a, w, _, _)) => (a, w, vec![]), None => self.choose(st, s, &ws, &percepts, &surprised) };
         if let Action::Flee { from_x, from_y, .. } = action { if self.flee_left == 0 && self.roles.resp.is_none() { self.flee_left = 4; } self.flee_from = (from_x, from_y); }
@@ -1118,7 +1327,7 @@ impl<S: Store> Mind<S> {
         let settled = max_error < IGNORE_BELOW && pain_rise == 0 && self.flee_left == 0 && self.mods.stress < 400
             && !matches!(action, Action::Flee { .. } | Action::Snap { .. } | Action::Hold { .. } | Action::Freeze | Action::Call | Action::Charge { .. });
         if self.learn && self.idle_consolidation && settled {
-            let units = THINK_BUDGET - st.visits as i64 - self.consol.forced;
+            let units = THINK_BUDGET * dt as i64 - st.visits as i64 - self.consol.forced;
             if units > 0 { self.consolidate(units, false); self.consol.idle_ticks += 1; }
         }
         rep.searching = why.starts_with("search");
@@ -1148,13 +1357,14 @@ impl<S: Store> Mind<S> {
             let mut dirty = self.store.fast_entries();
             dirty.sort_by_key(|&(k, f)| (std::cmp::Reverse(f.unsigned_abs()), k));
             let keep = self.cfg.sleep_keep;
+            let share = self.keep_share();
             for (k, f) in dirty {
                 let t = (f.unsigned_abs() as i64).min(units / TRANSFER_COST);
                 if t <= 0 { break; }
                 let sg = f.signum() as i64;
                 self.store.set_fast(k, f - (sg * t) as i16);
                 let slow = self.store.slow(k) as i64;
-                self.write_slow(k, slow + sg * t / keep);
+                if self.cfg.novelty_keep { self.write_slow(k, slow + sg * t * share / 1000); } else { self.write_slow(k, slow + sg * t / keep); }
                 units -= t * TRANSFER_COST;
                 self.consol.moved += t;
             }
@@ -1164,6 +1374,10 @@ impl<S: Store> Mind<S> {
         self.consol.total_units += spent;
         spent
     }
+
+    /// Round 2 (9.4): the share (per mille) of plain fast weight that consolidation keeps today: 1/8
+    /// on a day with no surprise, rising with the day's novelty to 1/3 (`Config::novelty_keep`).
+    pub fn keep_share(&self) -> i64 { if self.cfg.novelty_keep { KEEP_PLAIN + (KEEP_NOVEL - KEEP_PLAIN) * self.day_novelty.min(NOVEL_DAY) / NOVEL_DAY } else { 1000 / self.cfg.sleep_keep.max(1) } }
 
     /// Replay one episode into the slow links between its nodes and the feelings of its anchored
     /// places and things.
@@ -1179,6 +1393,8 @@ impl<S: Store> Mind<S> {
                 // Stage 5 (`food_contingent`): replay doesn't teach a place a food either; only
                 // seeing the food there does (through the day's fast weights).
                 if self.cfg.food_contingent && { let (tu, tv) = (self.store.tags(u), self.store.tags(l.to)); (tu & tag::PLACE != 0 && tv & tag::FOOD != 0) || (tv & tag::PLACE != 0 && tu & tag::FOOD != 0) } { continue; }
+                // Round 2 (9.4): replay doesn't move feelings about people either.
+                if self.cfg.protect_social && (self.is_rel(u, l.to) || self.is_social(l.to)) { continue; }
                 if l.fast < 0 {
                     let t = (-(l.fast as i64)).min(s / 2);
                     self.store.set_fast(l.key, l.fast + t as i16);
@@ -1191,7 +1407,7 @@ impl<S: Store> Mind<S> {
                     self.store.set_lval(l.key, (lv + (ep.valence as i64 - lv) * s / 1000 / 4) as i16);
                 }
             }
-            if anch_u {
+            if anch_u && !(self.cfg.protect_social && self.is_social(u)) {
                 let sh = au as i64 * 1000 / top;
                 let v = self.store.val(u) as i64;
                 self.store.set_val(u, (v + (ep.valence as i64 - v) * s / 1000 * sh / 1000 / 3) as i16);
@@ -1214,13 +1430,37 @@ impl<S: Store> Mind<S> {
     /// How a place feels right now: a one-hop look-ahead over what it holds and what's attached
     /// to it, each feeling scaled by the drives and modulators (a somatic marker).
     pub fn felt<F: Form + ?Sized>(&self, f: &F, p: u32) -> i32 { self.felt_with(f, p, &self.mods) }
+    /// `felt` under given modulators, with what is on the mind as it was left after the last think.
     pub fn felt_with<F: Form + ?Sized>(&self, f: &F, p: u32, m: &Mods) -> i32 {
+        let top = self.st.act.iter().map(|x| x.1).max().unwrap_or(0).max(1);
+        self.felt_in(f, p, m, &|n| self.st.get(n), top)
+    }
+    /// Round 2 (9.3): **salience**, 0..1000: how strongly a node is on the mind, against the
+    /// strongest thing on it (`top`). Needs reach choosing only through this: they modulate
+    /// spreading, which sets what is on the mind. Being relative, it also carries the stick: when
+    /// thirst is uppermost, home's comfort is not, so home feels less worth staying at. (Tried and
+    /// dropped: salience against a fixed `NEED_FULL`; food then outweighed fear, and the fox went
+    /// back to the dog at the henhouse 65 times in a day, `outcomes.rs` o4.)
+    #[inline] pub fn salience(a: i32, top: i32) -> i64 { (a.clamp(0, top.max(1)) as i64 * 1000) / top.max(1) as i64 }
+    /// How a place feels right now: a one-hop look-ahead over what it holds and what's attached to
+    /// it (a somatic marker). Round 2 (9.3): what answers a need (food, rest, comfort) counts by its
+    /// salience (`act`, against `top`); stage 3's version (`Config::needs_in_choice`) multiplied it
+    /// by the body's drive instead (food by hunger, rest by fatigue, comfort by the need for it).
+    pub fn felt_in<F: Form + ?Sized>(&self, f: &F, p: u32, m: &Mods, act: &dyn Fn(u32) -> i32, top: i32) -> i32 {
         let neg_mood = (-m.mood).max(0) as i64;
         let (a, h, fa) = (m.arousal as i64, m.hunger as i64, m.fatigue as i64);
         // What comfort is worth now: tiredness, stress or a low mood (stage 3).
         let need = fa.max(m.stress as i64).max(neg_mood).min(1000);
-        let comfort = if self.cfg.comfort_gate { self.roles.comfort } else { u32::MAX };
+        let comfort = if self.cfg.comfort_gate || !self.cfg.needs_in_choice { self.roles.comfort } else { u32::MAX };
+        let old = self.cfg.needs_in_choice;
         let good = |val: i64, tags: u8, n: u32| -> i64 {
+            if !old {
+                // What answers a need counts by how much it, or what it is (its kind: the water a
+                // stream is, the food a bush is), is on the mind: a thirsty mind has "water"
+                // uppermost, and any place holding water answers it.
+                let sal = || { let mut a = act(n); let mut ks = vec![]; f.edges(n, &mut ks); for k in ks.iter().filter(|k| k.ty == lt::KIND && f.tags(k.to) & (tag::FOOD | tag::REST) != 0) { a = a.max(act(k.to)); } Self::salience(a, top) };
+                return if tags & tag::FOOD != 0 || tags & tag::REST != 0 { val * 2 * sal() / 1000 } else if n == comfort { val * sal() / 1000 } else { val * (300 + a) / 1000 };
+            }
             if tags & tag::FOOD != 0 { val * 2 * if self.roles.food2 == u32::MAX { h } else { self.food_drive(n, m) as i64 } / 1000 } else if tags & tag::REST != 0 { val * 2 * fa / 1000 } else if n == comfort { val * need / 1000 } else { val * (300 + a) / 1000 }
         };
         let mut edges = vec![];
@@ -1235,6 +1475,21 @@ impl<S: Store> Mind<S> {
             let val = (f.val(e.to) + e.val).clamp(-1000, 1000) as i64;
             if f.tags(e.to) & tag::PLACE != 0 { v += e.w as i64 * val / 2000; continue; }
             v += if val < 0 { e.w as i64 * val / 1000 * (1000 + 2 * a + neg_mood) / 1000 } else { e.w as i64 * good(val, f.tags(e.to), e.to) / 1000 };
+        }
+        // Round 2 (9.3), **the stick**: a place that holds nothing answering a need whose object is
+        // on the mind (water to a thirsty mind) is felt to lack it: the need's own feeling (its body
+        // node's valence, negative) counts against the place, by the salience of what it wants.
+        if !old && f.tags(p) & tag::PLACE != 0 {
+            let r = &self.roles;
+            for (body, want) in [(r.hunger, r.food), (r.hunger2, r.food2), (r.fatigue, r.rest)] {
+                if body == u32::MAX || want == u32::MAX || f.val(body) >= 0 { continue; }
+                let s = Self::salience(act(want), top);
+                if s == 0 { continue; }
+                let mut held = vec![];
+                f.edges(p, &mut held);
+                let answers = held.iter().any(|e| e.to == want || { let mut k = vec![]; f.edges(e.to, &mut k); k.iter().any(|x| x.ty == lt::KIND && x.to == want) });
+                if !answers { v += f.val(body) as i64 * s / 1000; }
+            }
         }
         v as i32
     }
@@ -1266,7 +1521,15 @@ impl<S: Store> Mind<S> {
             return (Action::Flee { from_x: self.flee_from.0, from_y: self.flee_from.1, speed }, "still fleeing".into(), vec![]);
         }
         if (ws.contains(&self.roles.danger) && danger >= flee_at) || (ws.contains(&self.roles.anger) && anger >= flee_at) {
-            let src = surprised.iter().filter(|x| ws.contains(&x.0) && f.val(x.0) < 0).max_by_key(|x| (act(x.0), std::cmp::Reverse(self.tk(x.0))));
+            let mut src = surprised.iter().filter(|x| ws.contains(&x.0) && f.val(x.0) < 0).max_by_key(|x| (act(x.0), std::cmp::Reverse(self.tk(x.0)))).copied();
+            // Round 2 (a fix that habituation, now the default, needs): a familiar creature no
+            // longer surprises, so it was never fled from: a fox stood snapping at a dog it knew
+            // while it was bitten again and again. Flee from a creature in sight that is on the
+            // mind and feels bad, surprising or not (as `respond` already does for people).
+            if src.is_none() && self.cfg.habituate {
+                src = percepts.iter().filter(|p| self.kinds[p.kind as usize].creature && ws.contains(&p.node) && f.val(p.node) < 0).max_by_key(|p| (act(p.node), std::cmp::Reverse(self.tk(p.node)))).map(|p| (p.node, p.x, p.y));
+            }
+            let src = src.as_ref();
             if let Some(&(n, x, y)) = src {
                 return (Action::Flee { from_x: x, from_y: y, speed }, format!("danger {danger} on my mind (bar {flee_at}), from {}", name(n)), vec![]);
             }
@@ -1291,7 +1554,11 @@ impl<S: Store> Mind<S> {
             let t = f.tags(n);
             if t & tag::PLACE != 0 { cands.push(n) } else if t & tag::ANCHORED != 0 { if let Some(p) = self.place_of(n) { cands.push(p) } }
         }
-        let drive = |n: u32| if f.tags(n) & tag::REST != 0 { self.mods.fatigue } else if f.tags(n) & tag::FOOD != 0 { self.food_drive(n, &self.mods) } else { 0 };
+        let top = ws.first().map(|&n| act(n)).unwrap_or(1).max(1);
+        let old = self.cfg.needs_in_choice;
+        // (Round 2, 9.3: a seen thing that answers a need pulls by how much it is on the mind, not
+        // by the drive; stage 3's rule is kept as `Config::needs_in_choice`.)
+        let drive = |n: u32| if !old { if f.tags(n) & (tag::REST | tag::FOOD) != 0 { Self::salience(act(n), top) as i32 } else { 0 } } else if f.tags(n) & tag::REST != 0 { self.mods.fatigue } else if f.tags(n) & tag::FOOD != 0 { self.food_drive(n, &self.mods) } else { 0 };
         let mut seen_pull: Vec<(u32, i32)> = vec![];
         let mut novel_pull: Vec<(u32, i32)> = vec![];
         for p in percepts {
@@ -1304,9 +1571,9 @@ impl<S: Store> Mind<S> {
         for &p in &cands {
             let mut a = act(p) + seen_pull.iter().filter(|x| x.0 == p).map(|x| x.1).max().unwrap_or(0);
             for &n in ws { if n != p && f.tags(n) & tag::ANCHORED != 0 && f.tags(n) & tag::PLACE == 0 && f.val(n) > 0 && self.place_of(n) == Some(p) {
-                a += if f.tags(n) & tag::REST != 0 { act(n) * self.mods.fatigue / 1000 } else { act(n) };
+                a += if f.tags(n) & tag::REST != 0 { act(n) * if old { self.mods.fatigue } else { Self::salience(act(n), top) as i32 } / 1000 } else { act(n) };
             } }
-            scores.push((p, a, self.felt(f, p)));
+            scores.push((p, a, self.felt_in(f, p, &self.mods, &|n| act(n), top)));
         }
         let nov = |p: u32| novel_pull.iter().filter(|x| x.0 == p).map(|x| x.1).max().unwrap_or(0);
         // The cost of distance (stage 3): a place's worth is discounted by how far it is to walk.
@@ -1392,8 +1659,10 @@ impl<S: Store> Mind<S> {
             if can && act(n) >= OPTION_AT { sc.push((r, act(n))); }
         }
         // Company (sensed, through the mind's own learnt links to "ally") emboldens.
-        let courage = if rs.ally == u32::MAX { 0 } else { (act(rs.ally) as i64 * COURAGE as i64 / 1000).min(1000) as i32 };
-        for x in sc.iter_mut() { match x.0 { R_FLEE => x.1 = x.1 * (1000 - courage / 2) / 1000, R_HOLD | R_FIGHT | R_AID => x.1 = x.1 * (1000 + courage) / 1000, _ => {} } }
+        let courage = if self.cfg.courage_spread { self.mods.courage } else if rs.ally == u32::MAX { 0 } else { (act(rs.ally) as i64 * COURAGE as i64 / 1000).min(1000) as i32 };
+        // (Round 2: with `Config::courage_spread` courage has already acted on spreading; stage 3's
+        // multiplier on the scores is the ablation.)
+        if !self.cfg.courage_spread { for x in sc.iter_mut() { match x.0 { R_FLEE => x.1 = x.1 * (1000 - courage / 2) / 1000, R_HOLD | R_FIGHT | R_AID => x.1 = x.1 * (1000 + courage) / 1000, _ => {} } } }
         if let Some(r) = self.held.response { for x in sc.iter_mut() { if x.0 == r { x.1 = x.1 * (1000 + SWITCH_MARGIN) / 1000; } } }
         let best = sc.iter().filter(|x| x.1 > 0).max_by_key(|x| (x.1, std::cmp::Reverse(x.0))).copied()?;
         let list: Vec<String> = sc.iter().map(|x| format!("{} {}", R_NAMES[x.0 as usize], x.1)).collect();
@@ -1437,6 +1706,8 @@ impl<S: Store> Mind<S> {
 
     /// Track the action the world actually received (so commitment survives).
     pub fn commit(&mut self, s: &Sense, a: Action) {
+        // (Round 2: what the body goes on with between thinks.)
+        self.cont = Some(a);
         if self.last.searching {
             if let Action::WalkTo { x, y } = a { if self.search_wp != Some((x, y)) { self.search_wp = Some((x, y)); self.search_n += 1; } }
         }
@@ -1465,7 +1736,7 @@ impl<S: Store> Mind<S> {
             // grew, so it surprised the mind on every tick it was in view (found in the village).
             let here = percepts.iter().any(|p| p.place == Some(pi));
             if d > sight * sight && !(self.cfg.expect_at_edge && here) { continue; }
-            if self.cfg.prune_places { if self.place_seen.len() <= pi { self.place_seen.resize(pi + 1, self.nights); } self.place_seen[pi] = self.nights; }
+            if self.cfg.prune_places || self.cfg.dormancy { if self.place_seen.len() <= pi { self.place_seen.resize(pi + 1, self.nights); } self.place_seen[pi] = self.nights; }
             // (Stage 5: the same rule as before, without visiting every kind for every percept.)
             seen.clear();
             seen.extend(percepts.iter().filter(|p| p.place == Some(pi)).map(|p| key(p.kind, p.approaching)));
@@ -1478,8 +1749,8 @@ impl<S: Store> Mind<S> {
 
     /// Fast weights: links between co-active workspace nodes strengthen, scaled by arousal. Links
     /// touching a place learn only while the body is at that place.
-    fn hebbian(&mut self, st: &Activation, ws: &[u32], here: Option<u32>, tick: u32, food_here: &[u32]) {
-        let a = self.mods.arousal as i64 + BASE_ENCODE;
+    fn hebbian(&mut self, st: &Activation, ws: &[u32], here: Option<u32>, tick: u32, food_here: &[u32], dt: u32) {
+        let a = (self.mods.arousal as i64 + BASE_ENCODE) * dt as i64;
         let mut ls: Vec<Link> = vec![];
         for &u in ws {
             ls.clear(); self.store.links(u, &mut ls);
@@ -1487,6 +1758,8 @@ impl<S: Store> Mind<S> {
                 let v = l.to;
                 if v == u || !ws.contains(&v) || u == self.roles.loss || v == self.roles.loss { continue; }
                 if l.fast < 0 { continue; }
+                // Round 2 (9.4): feelings about people are moved only by episodes, not by co-activation.
+                if self.cfg.protect_social && self.is_rel(u, v) { continue; }
                 let place = |n: u32| self.store.tags(n) & tag::PLACE != 0;
                 if (place(u) && Some(u) != here) || (place(v) && Some(v) != here) { continue; }
                 // Stage 5 (`food_contingent`): a place learns a link to a food only while that food
@@ -1522,9 +1795,11 @@ impl<S: Store> Mind<S> {
     pub fn sleep(&mut self) {
         self.consol.last_units = 0;
         self.consolidate(NIGHT_TICKS as i64 * SLEEP_BUDGET, true);
+        self.day_novelty = 0;
         self.fade_own();
         if !self.spent.is_empty() { self.fade_spent(); }
         if self.cfg.prune_places { self.prune_places(); }
+        if self.cfg.dormancy { self.fade_expectations(); self.go_dormant(); }
         self.nights += 1;
         self.st.clear();
         self.mods.arousal = 0;
@@ -1601,6 +1876,112 @@ impl<S: Store> Mind<S> {
         (retire.len() as u32, n)
     }
 
+    /// Round 2 (9.8): **going dormant.** Each night, a node learnt in the mind's life whose every
+    /// connection has faded moves to cold storage (`Dormant`): kept, but out of the running graph.
+    /// A connection has faded when its slow weight is at most `FADED_AT` and it has no fast trace;
+    /// distance links and empty feeling slots are not connections. Never: a node standing for
+    /// someone (`social`), a node the mind has a word for (`named`), the intent held, a node seen or
+    /// on the mind on the last tick, or a node with a fast trace. A place must also have been out
+    /// of sight for `PRUNE_NIGHTS` nights and hold no expectation of `IGNORE_BELOW` or more (it is
+    /// no landmark's place). Returns how many went cold.
+    pub fn go_dormant(&mut self) -> u32 {
+        let (yf, n) = (self.young_from, self.store.len() as u32);
+        if yf >= n { return 0; }
+        if self.place_seen.len() < self.place_nodes.len() { self.place_seen.resize(self.place_nodes.len(), self.nights); }
+        let mut live = vec![false; (n - yf) as usize];
+        let idle = |l: &Link| l.ty == lt::NEAR || (l.ty == lt::FEELS && l.slow == 0 && l.fast == 0);
+        for u in self.store.own_sources() {
+            let bd = self.store.base_degree(u);
+            for l in self.store.links_vec(u).into_iter().skip(bd) {
+                let alive = l.fast != 0 || (!idle(&l) && l.slow > FADED_AT);
+                if alive { if u >= yf { live[(u - yf) as usize] = true; } if l.to >= yf { live[(l.to - yf) as usize] = true; } }
+            }
+        }
+        let mut cold_now = 0;
+        for x in yf..n {
+            if live[(x - yf) as usize] || self.cold.iter().any(|d| d.node == x) || self.is_social(x) || self.named.binary_search(&x).is_ok() || self.held.intent == Some(x) { continue; }
+            if self.last.ws.contains(&x) || self.last.percepts.iter().any(|p| p.node == x) || self.plan.expects.iter().any(|e| e.node == x || e.intent == x) { continue; }
+            if let Some(pi) = self.place_nodes.iter().position(|&p| p == x) {
+                if !self.place_learnt(pi) || self.nights < self.place_seen[pi] + PRUNE_NIGHTS || self.expect[pi].iter().any(|&e| e as i32 >= IGNORE_BELOW) { continue; }
+            }
+            self.freeze(x);
+            cold_now += 1;
+        }
+        cold_now
+    }
+    /// Round 2 (9.8): what a place learnt in the mind's life is expected to hold fades, on nights
+    /// after a day it was not in sight, at the rate its told facts fade (`own_fade` for `AT`). An
+    /// expectation is a connection like a link; round 1 never faded them away from the place, so a
+    /// told water place stayed "a landmark's place" for ever.
+    pub fn fade_expectations(&mut self) {
+        let r = self.cfg.own_fade[lt::AT as usize] as i32;
+        if r == 0 { return; }
+        if self.place_seen.len() < self.place_nodes.len() { self.place_seen.resize(self.place_nodes.len(), self.nights); }
+        for pi in 0..self.place_nodes.len() {
+            if self.place_nodes[pi] < self.young_from || self.place_seen[pi] >= self.nights { continue; }
+            for e in self.expect[pi].iter_mut() { if *e > 0 { *e -= ((*e as i32 * r + 999) / 1000) as i16; } }
+        }
+    }
+    /// Move one node to cold storage (see `go_dormant`).
+    fn freeze(&mut self, x: u32) {
+        let mut keys = vec![];
+        let (mut out, mut inl) = (vec![], vec![]);
+        let bd = self.store.base_degree(x);
+        for l in self.store.links_vec(x).into_iter().skip(bd) { out.push((l.to, l.ty, l.slow, l.lval)); keys.push(l.key); }
+        for u in self.store.own_sources() {
+            if u == x { continue; }
+            let bd = self.store.base_degree(u);
+            for l in self.store.links_vec(u).into_iter().skip(bd) { if l.to == x { inl.push((u, l.ty, l.slow, l.lval)); keys.push(l.key); } }
+        }
+        keys.sort_unstable(); keys.dedup();
+        for k in keys.into_iter().rev() { self.store.remove_link(k); }
+        let anchor = self.store.anchor(x);
+        let place = self.place_nodes.iter().position(|&p| p == x);
+        let mut expect = vec![];
+        match place {
+            Some(pi) => { expect = std::mem::replace(&mut self.expect[pi], vec![0; self.kinds.len() * 2]); self.store.set_anchor(x, Anchor::Place { x: self.unlearnt, y: self.unlearnt }); }
+            None => self.store.remove_anchor(x),
+        }
+        let entity = self.entity_nodes.iter().position(|e| e.1 == x).map(|k| { let id = self.entity_nodes.remove(k).0; (id, self.entity_kinds.remove(k)) });
+        let val = self.store.val(x) as i16;
+        self.store.set_val(x, 0);
+        self.spent.retain(|&s| s != x);
+        let d = Dormant { node: x, anchor, val, place: place.map(|p| p as u32), expect, entity, out, inl, since: self.nights };
+        let at = self.cold.partition_point(|c| c.node < x);
+        self.cold.insert(at, d);
+        self.dormancy.0 += 1;
+    }
+    /// Is this node in cold storage?
+    pub fn is_cold(&self, x: u32) -> bool { !self.cold.is_empty() && self.cold.binary_search_by_key(&x, |d| d.node).is_ok() }
+    /// Round 2 (9.8): bring a dormant node back, with everything that was attached to it (a
+    /// dormant node it was linked to comes back too). Its links return at the weights they had
+    /// faded to, so a cue that strengthens them relearns from there (savings). Returns whether it
+    /// was dormant.
+    pub fn revive(&mut self, x: u32) -> bool {
+        let Ok(i) = self.cold.binary_search_by_key(&x, |d| d.node) else { return false };
+        let d = self.cold.remove(i);
+        self.dormancy.1 += 1;
+        self.store.set_val(x, d.val);
+        match (d.place, d.anchor) {
+            (Some(pi), Some(a)) => { self.store.set_anchor(x, a); self.expect[pi as usize] = d.expect.clone(); self.place_seen.resize(self.place_nodes.len().max(self.place_seen.len()), self.nights); self.place_seen[pi as usize] = self.nights; }
+            (None, Some(a)) => self.store.set_anchor(x, a),
+            _ => {}
+        }
+        if let Some((id, k)) = d.entity { self.entity_nodes.push((id, x)); self.entity_kinds.push(k); }
+        for &(o, ..) in d.out.iter().chain(d.inl.iter()) { if self.is_cold(o) { self.revive(o); } }
+        for &(to, ty, w, lv) in &d.out { self.store.add_link(x, to, ty, w as i32, lv as i32); }
+        for &(src, ty, w, lv) in &d.inl { self.store.add_link(src, x, ty, w as i32, lv as i32); }
+        true
+    }
+    /// A dormant place within the place radius of a cell, revived: its place index.
+    pub fn revive_place_at(&mut self, x: i32, y: i32) -> Option<usize> {
+        if self.cold.is_empty() { return None; }
+        let r2 = self.geo.place_radius * self.geo.place_radius;
+        let n = self.cold.iter().filter(|d| d.place.is_some()).filter_map(|d| d.anchor.map(|a| { let (ax, ay) = a.xy(); (d2(x, y, ax, ay), d.node) })).filter(|&(dd, _)| dd <= r2).min()?.1;
+        self.revive(n);
+        self.place_nodes.iter().position(|&p| p == n)
+    }
+
     /// Nightly forgetting of the links the mind learnt in its life (see `Config::own_fade`).
     /// Returns (links faded, links removed).
     pub fn fade_own(&mut self) -> (u32, u32) {
@@ -1609,7 +1990,9 @@ impl<S: Store> Mind<S> {
         for u in self.store.own_sources() {
             let bd = self.store.base_degree(u);
             for l in self.store.links_vec(u).into_iter().skip(bd) {
-                if u < self.young_from && l.to < self.young_from { continue; }
+                // (Round 2: a source or told link is never founding knowledge, even between two
+                // founded nodes. Round 1 exempted those, so gossip's source links never faded.)
+                if u < self.young_from && l.to < self.young_from && !(l.ty == lt::SOURCE || l.ty == lt::TOLD) { continue; }
                 let r = self.cfg.own_fade[l.ty as usize] as i64;
                 if r == 0 || l.slow <= 0 { if l.slow < PRUNE_BELOW && l.fast == 0 && r > 0 { gone.push(l.key); } continue; }
                 let num = l.slow as i64 * r;

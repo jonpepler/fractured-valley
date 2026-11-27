@@ -116,7 +116,10 @@ pub fn village_runs() -> Vec<(&'static str, u64)> {
     use crate::village::runs::{run, Setup};
     let mut cheap = Setup::new(2, 30, 2); cheap.every = 4;
     let mut big = Setup::new(3, 50, 1); big.prune = true;
+    // Round 2: every mind thinking every 4 ticks (the per-tick rates, buffered senses, reflexes).
+    let mut slow = Setup::new(9, 20, 2); slow.think_every = 4;
     vec![
+        ("village: 20 people, 2 days, every mind thinking every 4 ticks (seed 9)", run(&slow, 1, None).0.hash),
         ("village: 30 people, 2 days (seed 1)", run(&Setup::new(1, 30, 2), 1, None).0.hash),
         ("village: 30 people, 2 days, the cheap tier (seed 2)", run(&cheap, 1, None).0.hash),
         ("village: 50 people, a day, pruning on (seed 3)", run(&big, 1, None).0.hash),

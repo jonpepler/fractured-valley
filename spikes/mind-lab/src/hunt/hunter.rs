@@ -139,6 +139,10 @@ pub struct Hunter {
 pub const ACCEPT_AT: i32 = 0;
 /// A target I feel this much better about than the proposer, I warn instead.
 pub const LOYAL: i32 = 100;
+/// Round 2 (9.6): the spans of the graded choices: joining is certain `JOIN_SPAN` above
+/// `ACCEPT_AT` and never as far below; warning likewise around `LOYAL`.
+pub const JOIN_SPAN: i32 = 100;
+pub const LOYAL_SPAN: i32 = 100;
 /// The driver's spot: this many cells beyond the quarry from the cover.
 pub const DRIVE_D: i32 = 8;
 /// Cover counts if it is this far from the quarry (cells).
@@ -353,7 +357,7 @@ impl Person {
                 Say::Caught => {
                     // The hunt worked: trust and warmth towards whoever proposed the plan I held rise.
                     if let Some(by) = self.hunter().plan.as_ref().filter(|hp| !hp.solo && hp.target == Target::Deer).map(|hp| hp.by) {
-                        if by != self.i { let t = self.trust(by); self.set_trust(by, t + (1000 - t) / 10); let n = self.pnode[by]; let v = self.m.store.val(n); self.m.store.set_val(n, (v + (1000 - v) / 16) as i16); }
+                        if by != self.i { self.feel_evidence(by, crate::people::person::EV_FED_T, 0, crate::people::person::EV_FED_W, 0); }
                     }
                 }
                 Say::Warn(p) => {
@@ -382,7 +386,9 @@ impl Person {
             if self.hunter().warn.as_ref().is_some_and(|w| w.0 == r) { return; }
             if r != self.i {
                 let (fr, fp) = (self.m.felt(&self.m.store, self.pnode[r]), self.m.felt(&self.m.store, self.pnode[a]));
-                if fr > 0 && fr > fp + LOYAL {
+                // (Round 2, 9.6: a graded choice, a hashed roll weighted by the margin, not a switch
+                // at `LOYAL`: even odds at the margin, certain `LOYAL_SPAN` past it, never as far short.)
+                if fr > 0 && self.m.roll(tick, 0xbe7a) < crate::mind::graded(fr - fp - LOYAL, LOYAL_SPAN) {
                     // The betrayal: a counter-intent of my own, to tell the target. Outwardly I
                     // agree if I'm not honest, and say nothing if I am.
                     let who = self.m.who;
@@ -401,13 +407,18 @@ impl Person {
             }
         }
         let score = self.plan_score(hp.node);
-        let accept = score >= ACCEPT_AT;
+        // (Round 2, 9.6: joining is a hashed roll weighted by how far the plan's score is past
+        // `ACCEPT_AT`, not a switch there.)
+        let accept = self.m.roll(tick, 0x701e) < crate::mind::graded(score - ACCEPT_AT, JOIN_SPAN);
         let warm = self.warmth(a) >= 0;
         let said = if accept { if warm { 1 } else { 0 } } else if warm { 2 } else { 0 };
         let vol = if whispered { WHISPER } else { SPEAK };
         let h = self.hunt.as_mut().unwrap();
         h.log.decisions.push((tick, p.rev, accept, score, said));
         match said { 1 => h.out.push((Say::Agree(p.rev), Some(a), vol)), 2 => h.out.push((Say::Decline(p.rev), Some(a), vol)), _ => {} }
+        // (Round 2: a plan I don't join is over for me: its node is spent and fades as a spent
+        // plan does. Round 1 kept every declined plan's node and links, fading only as facts do.)
+        if !accept && !self.m.spent.contains(&hp.node) { self.m.spent.push(hp.node); }
         if accept {
             h.log.events.push((tick, format!("joins plan #{} from {} as {} (score {score})", p.rev, name(a as usize), crate::people::talk::ROLE_WORDS[hp.role.i()])));
             let mut hp = hp;
@@ -764,8 +775,7 @@ impl Person {
         if top.0 >= 500 && top.0 >= second + 200 {
             if self.hunter().verdict != Some(top.1) {
                 let j = top.1;
-                let t = self.trust(j); self.set_trust(j, t * 3 / 10);
-                let n = self.pnode[j]; let v = self.m.store.val(n) as i32; self.m.store.set_val(n, (v - 300).max(-1000) as i16);
+                self.feel_evidence(j, 0, crate::people::person::EV_LIE, 0, crate::people::person::EV_BLAME);
                 let h = self.hunt.as_mut().unwrap();
                 h.verdict = Some(j); h.blamed = true;
                 h.log.events.push((tick, format!("concludes {} told", name(j as usize))));

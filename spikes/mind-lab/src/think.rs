@@ -41,6 +41,10 @@ pub struct Mods {
     /// Stage 5: a second appetite (the village's hunger; `Roles::hunger2`), 0..1000. Spreading's
     /// gain for food-ward links uses the larger of the two; choosing weighs each food by its own.
     pub hunger2: i32,
+    /// Round 2 (9.3): **courage**, 0..1000, a social modulator like focus: flows into what the node
+    /// `ally` ("someone who stands with me") links to are multiplied by `(1000 + courage) / 1000`.
+    pub courage: i32,
+    pub ally: u32,
 }
 // Hashed field by field as the derive did; stage 5's field only when non-zero (so every earlier
 // mind keeps its pinned hash).
@@ -48,6 +52,7 @@ impl std::hash::Hash for Mods {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
         self.hunger.hash(h); self.arousal.hash(h); self.mood.hash(h); self.fatigue.hash(h); self.stress.hash(h); self.focus.hash(h); self.intent.hash(h);
         if self.hunger2 != 0 { self.hunger2.hash(h); }
+        if self.courage != 0 { self.courage.hash(h); self.ally.hash(h); }
     }
 }
 
@@ -114,7 +119,7 @@ pub fn tie<F: Form + ?Sized>(f: &F, p: &Params, n: u32) -> u64 {
 }
 
 /// Base gain per link type, per mille.
-pub const TYPE_GAIN: [i32; lt::COUNT] = [1000, 1000, 1000, 1000, 700, 600, 1000, 900, 900];
+pub const TYPE_GAIN: [i32; lt::COUNT] = [1000, 1000, 1000, 1000, 700, 600, 1000, 900, 900, 900];
 
 /// The target's tags that matter to the gain: food, rest, anger.
 #[inline]
@@ -136,7 +141,7 @@ impl Gain {
             for tc in 0..8usize {
                 let mut x = TYPE_GAIN[ty] as i64;
                 let t = ty as u8;
-                if t == lt::NEAR || t == lt::LIKE || t == lt::ASSOC || t == lt::SOURCE { x = x * (1000 - a / 2) / 1000 * (1000 - s / 2) / 1000; }
+                if t == lt::NEAR || t == lt::LIKE || t == lt::ASSOC || t == lt::SOURCE || t == lt::TOLD { x = x * (1000 - a / 2) / 1000 * (1000 - s / 2) / 1000; }
                 // Stress favours anger; so does fatigue (a tired mind is irritable).
                 if tc & 4 != 0 { x += x * s * 2 / 1000 + x * f / 1000; }
                 if tc & 1 != 0 { x += x * h / 1000; }
@@ -329,12 +334,20 @@ fn think_inner<F: Form + ?Sized>(f: &F, st: &mut Activation, m: &Mods, inject: &
         v.push(m.intent); v.sort_unstable(); v.dedup(); edges.clear(); v
     } else { vec![] };
     let fgain = 1000 + m.focus.clamp(0, 1000) as i64;
+    // Courage (round 2): what the ally concept links to, sorted, if there is courage.
+    let courage_set: Vec<u32> = if m.courage > 0 && (m.ally as usize) < f.len() {
+        edges.clear();
+        f.edges(m.ally, &mut edges);
+        let mut v: Vec<u32> = edges.iter().map(|e| e.to).collect();
+        v.sort_unstable(); v.dedup(); edges.clear(); v
+    } else { vec![] };
+    let cgain = 1000 + m.courage.clamp(0, 1000) as i64;
     let dk = p.hop_decay as i64;
     let stop = if p.exact { STOP_OFF } else { EARLY_STOP.load(std::sync::atomic::Ordering::Relaxed) };
     // Per link type, the largest gain × decay (× focus, if any flow can be focused): a link whose
     // `(w × kf) >> 24` part times this is below `min_act` × 10^6 (× 1000 with focus) cannot flow.
     let mut gmax = [0i64; crate::graph::lt::COUNT];
-    if stop != STOP_OFF { for (ty, g) in gmax.iter_mut().enumerate() { *g = table.max_fixed(ty) * dk * if focus_set.is_empty() { 1000 } else { fgain }; } }
+    if stop != STOP_OFF { for (ty, g) in gmax.iter_mut().enumerate() { *g = table.max_fixed(ty) * dk * if focus_set.is_empty() { 1000 } else { fgain } * if courage_set.is_empty() { 1000 } else { cgain } / 1000; } }
     let floor = p.min_act as i64 * 1_000_000_000;
     let gall = gmax.iter().copied().max().unwrap_or(0);
     let mut evaluated = 0u64;
@@ -368,7 +381,8 @@ fn think_inner<F: Form + ?Sized>(f: &F, st: &mut Activation, m: &Mods, inject: &
                 let tv = f.tags(e.to);
                 let g = table.get(e.ty as usize * 8 + tagclass(tv), f.val(e.to) + e.val, p.exact);
                 let flow = if p.exact { src as i64 * e.w as i64 / out_sum * g / 1000 * dk / 1000 } else { ((e.w as i64 * kf) >> 24) * g * dk / 1_000_000 };
-                let flow = if !focus_set.is_empty() && focus_set.binary_search(&e.to).is_ok() { flow * fgain / 1000 } else { flow } as i32;
+                let flow = if !focus_set.is_empty() && focus_set.binary_search(&e.to).is_ok() { flow * fgain / 1000 } else { flow };
+                let flow = if !courage_set.is_empty() && courage_set.binary_search(&e.to).is_ok() { flow * cgain / 1000 } else { flow } as i32;
                 if flow < p.min_act { continue; }
                 let slot = &mut st.inc[e.to as usize];
                 if *slot == 0 { st.touched.push(e.to); }
