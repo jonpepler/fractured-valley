@@ -91,9 +91,9 @@ fn s2b_dry_spring_and_s2c_mistake_or_lie() {
         println!("{case:?}: found it dry {found}/{n}; verdict lie {lie}, mistake {mis}, undecided {amb}; trust in Ash 600 → {} on average; arousal at the dry spring {}, Ash's activation then {} (never in the top 8); Ash's feeling from the spring afterwards {}",
             mean(&tr), mean(&ar), mean(&ash), mean(&feel));
         match case {
-            DryCase::HonestFresh | DryCase::HonestStale => assert!(mis >= lie, "an honest teller who corrects itself is judged mistaken"),
-            DryCase::LieHeard => assert!(lie > mis, "a teller heard contradicting itself is judged a liar"),
-            DryCase::LieUnheard => assert!(lie < n / 2 && mis < n / 2, "without evidence, a lie and a stale belief can't be told apart"),
+            DryCase::HonestFresh | DryCase::HonestStale => assert!(mis * 2 >= n && lie == 0, "an honest teller who corrects itself is judged mistaken (a verdict reached in most runs)"),
+            DryCase::LieHeard => assert!(lie * 2 >= n && mis == 0, "a teller heard contradicting itself is judged a liar (in most runs)"),
+            DryCase::LieUnheard => assert!(found * 2 >= n && lie == 0 && mis == 0, "Bryn goes and finds it dry, and without evidence can't tell a lie from a stale belief"),
         }
     }
 }

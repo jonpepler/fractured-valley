@@ -300,6 +300,9 @@ impl Person {
                     self.told[idx].self_contradiction = true;
                     strengthen(&mut self.m, s, ids.lie, lt::ASSOC, 700, None);
                     let tr = self.trust(a); self.set_trust(a, tr * 6 / 10);
+                    // Caught out: blamed as for a lie found at the spring (warmth falls once).
+                    self.told[idx].blamed = true;
+                    let n = self.pnode[a]; let v = self.m.store.val(n) as i32; self.m.store.set_val(n, (v - 300).max(-1000) as i16);
                 }
             }
             strengthen(&mut self.m, s, ids.water, lt::KIND, tf, None);
