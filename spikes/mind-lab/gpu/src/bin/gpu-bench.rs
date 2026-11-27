@@ -80,17 +80,17 @@ fn main() {
         for t in 0..ticks { for c in 0..m { want.push(cpu_think(&stores[c], &mut st, pick(c, t), true)); } }
         let v2_1 = steps as f64 / t0.elapsed().as_secs_f64();
         let s = think2::take_stats();
-        // CPU, all threads (copies split between threads; each tick a barrier, as a sim would have).
+        // CPU, all threads: copies split between threads that live for the whole run; a barrier
+        // after each tick, as a sim would have.
         let t0 = std::time::Instant::now();
-        for t in 0..ticks {
-            std::thread::scope(|sc| {
-                let chunk = m.div_ceil(threads);
-                for k in 0..threads {
-                    let (stores, pick) = (&stores, &pick);
-                    sc.spawn(move || { let mut st = Activation::default(); for c in k * chunk..((k + 1) * chunk).min(m) { std::hint::black_box(cpu_think(&stores[c], &mut st, pick(c, t), true)); } });
-                }
-            });
-        }
+        let bar = std::sync::Barrier::new(threads);
+        std::thread::scope(|sc| {
+            let chunk = m.div_ceil(threads);
+            for k in 0..threads {
+                let (stores, pick, bar) = (&stores, &pick, &bar);
+                sc.spawn(move || { let mut st = Activation::default(); for t in 0..ticks { for c in k * chunk..((k + 1) * chunk).min(m) { std::hint::black_box(cpu_think(&stores[c], &mut st, pick(c, t), true)); } bar.wait(); } });
+            }
+        });
         let v2_n = steps as f64 / t0.elapsed().as_secs_f64();
         // GPU: bases and every copy's mind resident; one dispatch per tick.
         let mut bw = vec![]; let mut base_at = std::collections::HashMap::new();
