@@ -180,10 +180,20 @@ impl World {
         self.tallies = tallies;
     }
 
-    /// A hash of the whole state, for comparing peers and runs.
+    /// A hash of the whole state, for comparing peers and runs: each brick's
+    /// hash (see [`World::brick_hash`]), chained in brick order. A brick's
+    /// hash depends only on its own cells, so any thread, peer or GPU can
+    /// work them out in parallel, and a mismatch says which brick differs.
     pub fn hash(&self) -> u64 {
         let mut h = crate::rng::Hasher::new(self.seed ^ self.tick);
-        for c in &self.cells { h.cell(c) }
+        for b in self.brick_ids() { h.u64(self.brick_hash(b)) }
+        h.finish()
+    }
+
+    /// One brick's hash: its cells in order, from a seed of its index.
+    pub fn brick_hash(&self, b: usize) -> u64 {
+        let mut h = crate::rng::Hasher::new(b as u64);
+        for c in &self.cells[b * BRICK_CELLS..(b + 1) * BRICK_CELLS] { h.cell(c) }
         h.finish()
     }
 }
