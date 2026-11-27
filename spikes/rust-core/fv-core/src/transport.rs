@@ -319,25 +319,11 @@ pub fn tally_edge(t: &mut Tally, f: &Flux, sign: i64) {
     for k in 0..GASES { t.gas_in[k] += f.gas[k].0 * sign }
 }
 
-/// Every cell's face-side summary, computed in parallel by brick.
+/// Every cell's face-side summary, computed in parallel.
 pub fn sides(world: &World) -> Vec<Side> {
-    let mut out = vec![Side::default(); world.cells.len()];
-    let subs = &world.subs;
-    let amb = world.ambient;
-    let cells = &world.cells;
+    let (subs, amb) = (&world.subs, world.ambient);
     let lit = crate::chem::flame_reach(world);
-    #[cfg(feature = "parallel")]
-    {
-        use rayon::prelude::*;
-        if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
-            out.par_chunks_mut(BRICK_CELLS).zip(cells.par_chunks(BRICK_CELLS)).zip(lit.par_chunks(BRICK_CELLS)).for_each(|((o, c), l)| {
-                for i in 0..BRICK_CELLS { o[i] = side_lit(&c[i], subs, amb, l[i]) }
-            });
-            return out;
-        }
-    }
-    for ((o, c), &l) in out.iter_mut().zip(cells).zip(&lit) { *o = side_lit(c, subs, amb, l) }
-    out
+    world.map_cells(|_, _, _, i| side_lit(&world.cells[i], subs, amb, lit[i]))
 }
 
 /// One per million: a face's gas flows at full strength.
@@ -377,25 +363,7 @@ impl Faces {
                 Neighbour::Mirror => None,
             }
         };
-        let mut plus = vec![[None; 3]; w.cells.len()];
-        let one = |b: usize, out: &mut [[Option<Flux>; 3]]| {
-            let (ox, oy, oz) = w.brick_origin(b);
-            for l in 0..BRICK_CELLS {
-                let (lx, ly, lz) = World::local_xyz(l);
-                let (x, y, z) = (ox + lx, oy + ly, oz + lz);
-                for axis in 0..3 { out[l][axis] = flux(b * BRICK_CELLS + l, x, y, z, axis, 1) }
-            }
-        };
-        let mut done = false;
-        #[cfg(feature = "parallel")]
-        {
-            use rayon::prelude::*;
-            if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
-                plus.par_chunks_mut(BRICK_CELLS).enumerate().for_each(|(b, o)| one(b, o));
-                done = true;
-            }
-        }
-        if !done { for (b, o) in plus.chunks_mut(BRICK_CELLS).enumerate() { one(b, o) } }
+        let plus = w.map_cells(|x, y, z, i| [flux(i, x, y, z, 0, 1), flux(i, x, y, z, 1, 1), flux(i, x, y, z, 2, 1)]);
         let (nx, ny, nz) = (w.nx, w.ny, w.nz);
         let lower = [
             (0..ny * nz).map(|k| { let (y, z) = (k % ny, k / ny); flux(w.idx(0, y, z), 0, y, z, 0, -1) }).collect(),
@@ -434,39 +402,22 @@ impl Faces {
 /// smaller of its two cells' factors, so both sides still agree exactly.
 /// Almost every cell gets the full factor and is untouched.
 pub fn gas_limits(w: &World, faces: &Faces) -> Vec<i64> {
-    let one = |b: usize, out: &mut [i64]| {
-        let (ox, oy, oz) = w.brick_origin(b);
-        for l in 0..BRICK_CELLS {
-            let (lx, ly, lz) = World::local_xyz(l);
-            let (x, y, z) = (ox + lx, oy + ly, oz + lz);
-            let i = b * BRICK_CELLS + l;
-            let mut leaving = [0i64; GASES];
-            for axis in 0..3 { for dir in [-1i64, 1] {
-                if let Some((f, _)) = faces.get(w, i, x, y, z, axis, dir) {
-                    for k in 0..GASES { let change = f.gas[k].0 * -dir; if change < 0 { leaving[k] -= change } }
-                }
-            }}
-            let c = &w.cells[i];
-            let mut ppm = FULL;
-            for k in 0..GASES {
-                // Keep an eighth back: never empty a cell in one step.
-                let can = c.gas[k].0.max(0) * 7 / 8;
-                if leaving[k] > can { ppm = ppm.min(mul_div(can, FULL, leaving[k]) as i64) }
+    w.map_cells(|x, y, z, i| {
+        let mut leaving = [0i64; GASES];
+        for axis in 0..3 { for dir in [-1i64, 1] {
+            if let Some((f, _)) = faces.get(w, i, x, y, z, axis, dir) {
+                for k in 0..GASES { let change = f.gas[k].0 * -dir; if change < 0 { leaving[k] -= change } }
             }
-            out[l] = ppm;
+        }}
+        let c = &w.cells[i];
+        let mut ppm = FULL;
+        for k in 0..GASES {
+            // Keep an eighth back: never empty a cell in one step.
+            let can = c.gas[k].0.max(0) * 7 / 8;
+            if leaving[k] > can { ppm = ppm.min(mul_div(can, FULL, leaving[k]) as i64) }
         }
-    };
-    let mut out = vec![FULL; w.cells.len()];
-    #[cfg(feature = "parallel")]
-    {
-        use rayon::prelude::*;
-        if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
-            out.par_chunks_mut(BRICK_CELLS).enumerate().for_each(|(b, o)| one(b, o));
-            return out;
-        }
-    }
-    for (b, o) in out.chunks_mut(BRICK_CELLS).enumerate() { one(b, o) }
-    out
+        ppm
+    })
 }
 
 /// Air speed across faces, supplied by the flow (see `flow`): the velocity
@@ -598,25 +549,7 @@ pub struct CellVelocity<'a> {
 
 impl<'a> CellVelocity<'a> {
     pub fn new(w: &World, src: &'a dyn FaceVelocity) -> CellVelocity<'a> {
-        let mut plus = vec![[0i64; 3]; w.cells.len()];
-        let one = |b: usize, out: &mut [[i64; 3]]| {
-            let (ox, oy, oz) = w.brick_origin(b);
-            for l in 0..BRICK_CELLS {
-                let (lx, ly, lz) = World::local_xyz(l);
-                let (x, y, z) = ((ox + lx) as i64, (oy + ly) as i64, (oz + lz) as i64);
-                out[l] = [src.face(x, y, z, 0), src.face(x, y, z, 1), src.face(x, y, z, 2)];
-            }
-        };
-        let mut done = false;
-        #[cfg(feature = "parallel")]
-        {
-            use rayon::prelude::*;
-            if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
-                plus.par_chunks_mut(BRICK_CELLS).enumerate().for_each(|(b, o)| one(b, o));
-                done = true;
-            }
-        }
-        if !done { for (b, o) in plus.chunks_mut(BRICK_CELLS).enumerate() { one(b, o) } }
+        let plus = w.map_cells(|x, y, z, _| { let (x, y, z) = (x as i64, y as i64, z as i64); [src.face(x, y, z, 0), src.face(x, y, z, 1), src.face(x, y, z, 2)] });
         let (nx, ny, nz) = (w.nx, w.ny, w.nz);
         let lower = [
             (0..ny * nz).map(|k| src.face(-1, (k % ny) as i64, (k / ny) as i64, 0)).collect(),
@@ -646,28 +579,6 @@ impl FaceVelocity for CellVelocity<'_> {
     }
 }
 
-/// `f(x, y, z, i)` for every cell, in cell index order (by brick, in parallel).
-fn per_cell<T: Send + Copy + Default>(w: &World, f: impl Fn(usize, usize, usize, usize) -> T + Sync) -> Vec<T> {
-    let mut out = vec![T::default(); w.cells.len()];
-    let one = |b: usize, o: &mut [T]| {
-        let (ox, oy, oz) = w.brick_origin(b);
-        for l in 0..BRICK_CELLS {
-            let (lx, ly, lz) = World::local_xyz(l);
-            o[l] = f(ox + lx, oy + ly, oz + lz, b * BRICK_CELLS + l);
-        }
-    };
-    #[cfg(feature = "parallel")]
-    {
-        use rayon::prelude::*;
-        if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
-            out.par_chunks_mut(BRICK_CELLS).enumerate().for_each(|(b, o)| one(b, o));
-            return out;
-        }
-    }
-    for (b, o) in out.chunks_mut(BRICK_CELLS).enumerate() { one(b, o) }
-    out
-}
-
 /// What carrying needs of a cell: its gas's temperature (what leaving gas
 /// takes with it) and whether air passes through it.
 #[derive(Copy, Clone, Default)]
@@ -679,9 +590,9 @@ struct Air { t: Temperature, permeable: bool }
 pub fn advect(world: &mut World, vel: &dyn FaceVelocity, steps: i64) {
     let vel = CellVelocity::new(world, vel);
     // Each cell's total outflow share: the flow is the same for every sub-step.
-    let total = per_cell(world, |x, y, z, _| outflow_share(&vel, steps, x, y, z));
+    let total = world.map_cells(|x, y, z, _| outflow_share(&vel, steps, x, y, z));
     for _ in 0..steps {
-        let air = { let w: &World = world; per_cell(w, |_, _, _, i| { let c = &w.cells[i]; Air { t: c.gas_temperature(), permeable: c.permeable(&w.subs) } }) };
+        let air = { let w: &World = world; w.map_cells(|_, _, _, i| { let c = &w.cells[i]; Air { t: c.gas_temperature(), permeable: c.permeable(&w.subs) } }) };
         let outside_t = world.outside_air.gas_temperature();
         world.run_phase(|w, b, out, tally| {
             let (ox, oy, oz) = w.brick_origin(b);

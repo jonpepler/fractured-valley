@@ -143,6 +143,25 @@ impl World {
     /// Every brick's index, in order.
     pub fn brick_ids(&self) -> core::ops::Range<usize> { 0..self.bricks() }
 
+    /// `f(x, y, z, i)` for every cell `i` at (x, y, z), collected in cell
+    /// index order. Built on worker threads with the `parallel` feature (the
+    /// vector is filled in place, with no serial pass to clear it first).
+    pub fn map_cells<T: Send>(&self, f: impl Fn(usize, usize, usize, usize) -> T + Sync) -> Vec<T> {
+        let at = |i: usize| {
+            let (ox, oy, oz) = self.brick_origin(i / BRICK_CELLS);
+            let (lx, ly, lz) = World::local_xyz(i % BRICK_CELLS);
+            f(ox + lx, oy + ly, oz + lz, i)
+        };
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            if THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
+                return (0..self.cells.len()).into_par_iter().with_min_len(BRICK_CELLS).map(at).collect();
+            }
+        }
+        (0..self.cells.len()).map(at).collect()
+    }
+
     /// Run a phase: `f(world, brick, out)` fills one brick of `next` (and its
     /// tally) from `cells`. Then `next` becomes the state. Bricks may run on
     /// any thread in any order; the result is the same.
