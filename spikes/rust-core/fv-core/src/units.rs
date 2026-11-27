@@ -24,6 +24,30 @@
 
 use core::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
+/// `n / d` for 128-bit integers, rounding toward zero: exactly what `n / d`
+/// gives, but done in 64 bits when both fit, as they almost always do.
+/// (A 128-bit division is a slow library call, above all in WebAssembly.)
+#[inline]
+pub fn div_i128(n: i128, d: i128) -> i128 {
+    if let (Ok(a), Ok(b)) = (i64::try_from(n), i64::try_from(d)) {
+        if b != 0 && !(a == i64::MIN && b == -1) { return (a / b) as i128 }
+    }
+    n / d
+}
+
+/// The unsigned twin of [`div_i128`].
+#[inline]
+pub fn div_u128(n: u128, d: u128) -> u128 {
+    if let (Ok(a), Ok(b)) = (u64::try_from(n), u64::try_from(d)) {
+        if b != 0 { return (a / b) as u128 }
+    }
+    n / d
+}
+
+/// `a × b / d` through 128 bits (no overflow), rounding toward zero.
+#[inline]
+pub fn mul_div(a: i64, b: i64, d: i64) -> i128 { div_i128(a as i128 * b as i128, d as i128) }
+
 macro_rules! quantity {
     ($(#[$m:meta])* $name:ident, $unit:literal) => {
         $(#[$m])*
@@ -151,13 +175,13 @@ impl Mul<SpecificEnergy> for Mass {
 /// (nJ/K × mK = 10⁻¹² J = 10⁻⁶ µJ.) Rounds toward zero.
 impl Mul<Temperature> for HeatCapacity {
     type Output = Energy;
-    fn mul(self, t: Temperature) -> Energy { Energy(i64::try_from(self.0 as i128 * t.0 as i128 / 1_000_000).expect("energy overflow")) }
+    fn mul(self, t: Temperature) -> Energy { Energy(i64::try_from(mul_div(self.0, t.0, 1_000_000)).expect("energy overflow")) }
 }
 
 /// heat capacity × temperature difference = energy.
 impl Mul<TempDelta> for HeatCapacity {
     type Output = Energy;
-    fn mul(self, t: TempDelta) -> Energy { Energy(i64::try_from(self.0 as i128 * t.0 as i128 / 1_000_000).expect("energy overflow")) }
+    fn mul(self, t: TempDelta) -> Energy { Energy(i64::try_from(mul_div(self.0, t.0, 1_000_000)).expect("energy overflow")) }
 }
 
 /// energy ÷ heat capacity = temperature above absolute zero.
@@ -165,7 +189,7 @@ impl Div<HeatCapacity> for Energy {
     type Output = Temperature;
     fn div(self, c: HeatCapacity) -> Temperature {
         if c.0 <= 0 { return Temperature(0) }
-        Temperature(i64::try_from(self.0 as i128 * 1_000_000 / c.0 as i128).expect("temperature overflow"))
+        Temperature(i64::try_from(mul_div(self.0, 1_000_000, c.0)).expect("temperature overflow"))
     }
 }
 
@@ -173,13 +197,13 @@ impl Div<HeatCapacity> for Energy {
 /// by dividing by 1000).
 impl Mul<TempDelta> for Conductance {
     type Output = Power;
-    fn mul(self, d: TempDelta) -> Power { Power(i64::try_from(self.0 as i128 * d.0 as i128 / 1_000).expect("power overflow")) }
+    fn mul(self, d: TempDelta) -> Power { Power(i64::try_from(mul_div(self.0, d.0, 1_000)).expect("power overflow")) }
 }
 
 /// power × duration = energy (µW × ms = 10⁻⁹ J = 10⁻³ µJ). Rounds toward zero.
 impl Mul<Duration> for Power {
     type Output = Energy;
-    fn mul(self, t: Duration) -> Energy { Energy(i64::try_from(self.0 as i128 * t.0 as i128 / 1_000).expect("energy overflow")) }
+    fn mul(self, t: Duration) -> Energy { Energy(i64::try_from(mul_div(self.0, t.0, 1_000)).expect("energy overflow")) }
 }
 
 /// speed × duration = length (mm/s × ms = µm; kept in mm, rounding toward zero).

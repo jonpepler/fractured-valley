@@ -76,7 +76,7 @@ impl Cell {
     /// water held in a solid.
     pub fn water_depth_q16(&self) -> i64 {
         if !self.open_water() { return 0 }
-        ((self.water.0 as i128 * 65_536) / WATER_PER_CELL.0 as i128).min(65_536) as i64
+        div_i128(self.water.0 as i128 * 65_536, WATER_PER_CELL.0 as i128).min(65_536) as i64
     }
 
     pub fn gas_capacity(&self) -> HeatCapacity {
@@ -165,7 +165,7 @@ impl Cell {
         if s.full_mass.0 == 0 { return Fraction::ZERO }
         // The solid fills (1 − porosity) of the cell when complete; burning away shrinks it.
         let filled = (Fraction::ONE.0 - s.porosity.0) as i128;
-        let share = filled * self.solid_mass().0.max(0) as i128 / s.full_mass.0 as i128;
+        let share = div_i128(filled * self.solid_mass().0.max(0) as i128, s.full_mass.0 as i128);
         Fraction(share.clamp(0, Fraction::ONE.0 as i128) as u64)
     }
 

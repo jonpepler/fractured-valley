@@ -96,7 +96,7 @@ impl Flow {
                 cnt += 1;
                 // Gas beyond what fits at this temperature, as millilitres of fresh air.
                 let ml = c.gas_volume_ml(&w.subs);
-                let fits = (fresh as i128 * ml as i128 * w.ambient.0 as i128 / (crate::substance::CELL_VOLUME_ML as i128 * t as i128)) as i64;
+                let fits = crate::units::div_i128(fresh as i128 * ml as i128 * w.ambient.0 as i128, crate::substance::CELL_VOLUME_ML as i128 * t as i128) as i64;
                 over += (c.gas_mass().0 - fits) * crate::substance::CELL_VOLUME_ML / fresh.max(1);
             }
             let i = self.ci(x, y, z);

@@ -29,7 +29,7 @@
 use crate::cell::Cell;
 use crate::substance::*;
 use crate::units::*;
-use crate::world::{Neighbour, Tally, World, BRICK_CELLS, TICK};
+use crate::world::{Neighbour, Tally, World, B, BRICK_CELLS, TICK};
 
 /// Everything a face needs to know about one side, worked out once per cell.
 #[derive(Copy, Clone, Debug, Default)]
@@ -136,13 +136,13 @@ pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool)
     // is the water's µg over the face's mm² (1 mm over 1 mm² is 1 mg).
     let water_g = if wet {
         let half_um = (c.water.0 / (2 * FACE_MM2)).max(500);
-        (WATER_CONDUCTIVITY as i128 * FACE_MM2 as i128 * 1_000 / half_um as i128) as i64
+        div_i128(WATER_CONDUCTIVITY as i128 * FACE_MM2 as i128 * 1_000, half_um as i128) as i64
     } else { 0 };
     let t_skin = c.surface_temperature(subs);
     let gas_ml = c.gas_volume_ml(subs);
     let fresh: i64 = FRESH_AIR.iter().map(|m| m.0).sum();
     // What fits at this temperature (ideal gas at constant pressure).
-    let fits = if t.0 > 0 { (fresh as i128 * gas_ml as i128 * ambient.0 as i128 / (CELL_VOLUME_ML as i128 * t.0 as i128)) as i64 } else { i64::MAX };
+    let fits = if t.0 > 0 { div_i128(fresh as i128 * gas_ml as i128 * ambient.0 as i128, CELL_VOLUME_ML as i128 * t.0 as i128) as i64 } else { i64::MAX };
     let volatile = c.solid[crate::cell::VOLATILE].0 > 0;
     let flaming = volatile && t_skin >= crate::chem::IGNITION && t >= crate::chem::IGNITION;
     // What touches the fuel is the flame itself, not the cell's average gas:
@@ -164,7 +164,7 @@ pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool)
         let area = if c.permeable(subs) { c.inner_surface_mm2(subs) } else { FACE_MM2 };
         // h [mW/(m²·K)] × A [mm²] = 10⁻⁹ W/K = 10⁻³ µW/K
         let h = if c.permeable(subs) { crate::chem::surface_h(sigma, t, ambient) * sigma } else { FLAME_ON_FACE };
-        (h as i128 * area as i128 / 1_000) as i64
+        mul_div(h, area, 1_000) as i64
     } else { 0 };
     Side {
         flame_t, flame_heat, flame_fill, fuel_g, wet, water_g,
@@ -188,7 +188,7 @@ pub fn buoyant_churn(t: Temperature, ambient: Temperature) -> i64 {
     let dt = (t.0 - ambient.0).max(0) as i128;
     if dt == 0 { return 0 }
     // g·l = 9 807 mm/s² × l [mm] (980 700 mm²/s² at 10 cm) ... ×ΔT/T
-    let v2 = 9_807i128 * CELL_MM as i128 * dt / ambient.0.max(1) as i128;
+    let v2 = div_i128(9_807i128 * CELL_MM as i128 * dt, ambient.0.max(1) as i128);
     (v2 as f64).sqrt() as i64
 }
 
@@ -267,8 +267,8 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: 
         if !(a.permeable && b.permeable) { ul = ul / SEEP_DIVISOR / q * q }
         let ul = ul.min(a.gas_ml.min(b.gas_ml) * 1_000 / 8 / q * q) as i128;
         for k in 0..GASES {
-            let out_a = Mass((lo.gas[k].0 as i128 * ul / (a.gas_ml as i128 * 1_000)) as i64);
-            let out_b = Mass((hi.gas[k].0 as i128 * ul / (b.gas_ml as i128 * 1_000)) as i64);
+            let out_a = Mass(div_i128(lo.gas[k].0 as i128 * ul, a.gas_ml as i128 * 1_000) as i64);
+            let out_b = Mass(div_i128(hi.gas[k].0 as i128 * ul, b.gas_ml as i128 * 1_000) as i64);
             f.gas[k] += out_a - out_b;
             f.carried += carried(k, out_a, a.t) - carried(k, out_b, b.t);
         }
@@ -281,14 +281,14 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: 
     if both_gas && (a.excess.0 > 0 || b.excess.0 > 0) {
         let both_solid = !a.permeable && !b.permeable;
         let vol = a.gas_ml.min(b.gas_ml) as i128;
-        let over = a.excess.0 as i128 * vol / a.gas_ml as i128 - b.excess.0 as i128 * vol / b.gas_ml as i128;
-        let push = (over / if both_solid { 8 * SEEP_DIVISOR as i128 } else { 8 }) as i64;
+        let over = div_i128(a.excess.0 as i128 * vol, a.gas_ml as i128) - div_i128(b.excess.0 as i128 * vol, b.gas_ml as i128);
+        let push = div_i128(over, if both_solid { 8 * SEEP_DIVISOR as i128 } else { 8 }) as i64;
         let (from, from_side, sign) = if push >= 0 { (lo, a, 1) } else { (hi, b, -1) };
         let total = from.gas_mass().0;
         if total > 0 && push != 0 {
             let push = push.abs().min(total / 8);
             for k in 0..GASES {
-                let m = Mass((push as i128 * from.gas[k].0 as i128 / total as i128) as i64);
+                let m = Mass(mul_div(push, from.gas[k].0, total) as i64);
                 f.gas[k] += Mass(m.0 * sign);
                 f.carried += Energy(carried(k, m, from_side.t).0 * sign);
             }
@@ -346,23 +346,82 @@ const FULL: i64 = 1_000_000;
 /// Scales a face's gas flow (and the heat it carries) by `ppm` per million.
 fn scale_gas(f: &mut Flux, ppm: i64) {
     if ppm >= FULL { return }
-    for k in 0..GASES { f.gas[k] = Mass((f.gas[k].0 as i128 * ppm as i128 / FULL as i128) as i64) }
-    f.carried = Energy((f.carried.0 as i128 * ppm as i128 / FULL as i128) as i64);
+    for k in 0..GASES { f.gas[k] = Mass(mul_div(f.gas[k].0, ppm, FULL) as i64) }
+    f.carried = Energy(mul_div(f.carried.0, ppm, FULL) as i64);
 }
 
-/// The raw flux across one face of cell (x, y, z), as `diffuse_brick` sees it.
-fn face_flux(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVelocity, i: usize, x: usize, y: usize, z: usize, axis: usize, dir: i64) -> Option<(Flux, usize)> {
-    let me = &w.cells[i];
-    let my = &sides[i];
-    let speed = face_speed(w, vel, x, y, z, axis, dir);
-    match w.neighbour(x, y, z, axis, dir) {
-        Neighbour::Inside(n) => {
-            let ni = neighbour_index(w, x, y, z, axis, dir);
-            let ns = &sides[ni];
-            Some((if dir > 0 { diffuse_face(me, my, n, ns, speed, axis) } else { diffuse_face(n, ns, me, my, speed, axis) }, ni))
+/// Every face's raw flux (before the limiter), each worked out once and read
+/// by the cells on both sides. `diffuse_face` is a pure function of the two
+/// cells' previous state, so this is exactly what each side would compute
+/// for itself.
+pub struct Faces {
+    /// The + face of each cell along x, y and z (`None`: a mirrored edge,
+    /// nothing crosses).
+    plus: Vec<[Option<Flux>; 3]>,
+    /// The − faces on the box's lower edges, per axis: x = 0 indexed by
+    /// (y, z), y = 0 by (x, z), z = 0 by (x, y).
+    lower: [Vec<Option<Flux>>; 3],
+}
+
+impl Faces {
+    pub fn new(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVelocity) -> Faces {
+        let flux = |i: usize, x: usize, y: usize, z: usize, axis: usize, dir: i64| -> Option<Flux> {
+            let (me, my) = (&w.cells[i], &sides[i]);
+            let speed = face_speed(w, vel, x, y, z, axis, dir);
+            match w.neighbour(x, y, z, axis, dir) {
+                Neighbour::Inside(n) => {
+                    let ns = &sides[neighbour_index(w, x, y, z, axis, dir)];
+                    Some(if dir > 0 { diffuse_face(me, my, n, ns, speed, axis) } else { diffuse_face(n, ns, me, my, speed, axis) })
+                }
+                Neighbour::Outside(o) => Some(if dir > 0 { diffuse_face(me, my, o, outside, speed, axis) } else { diffuse_face(o, outside, me, my, speed, axis) }),
+                Neighbour::Mirror => None,
+            }
+        };
+        let mut plus = vec![[None; 3]; w.cells.len()];
+        let one = |b: usize, out: &mut [[Option<Flux>; 3]]| {
+            let (ox, oy, oz) = w.brick_origin(b);
+            for l in 0..BRICK_CELLS {
+                let (lx, ly, lz) = World::local_xyz(l);
+                let (x, y, z) = (ox + lx, oy + ly, oz + lz);
+                for axis in 0..3 { out[l][axis] = flux(b * BRICK_CELLS + l, x, y, z, axis, 1) }
+            }
+        };
+        let mut done = false;
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
+                plus.par_chunks_mut(BRICK_CELLS).enumerate().for_each(|(b, o)| one(b, o));
+                done = true;
+            }
         }
-        Neighbour::Outside(o) => Some((if dir > 0 { diffuse_face(me, my, o, outside, speed, axis) } else { diffuse_face(o, outside, me, my, speed, axis) }, usize::MAX)),
-        Neighbour::Mirror => None,
+        if !done { for (b, o) in plus.chunks_mut(BRICK_CELLS).enumerate() { one(b, o) } }
+        let (nx, ny, nz) = (w.nx, w.ny, w.nz);
+        let lower = [
+            (0..ny * nz).map(|k| { let (y, z) = (k % ny, k / ny); flux(w.idx(0, y, z), 0, y, z, 0, -1) }).collect(),
+            (0..nx * nz).map(|k| { let (x, z) = (k % nx, k / nx); flux(w.idx(x, 0, z), x, 0, z, 1, -1) }).collect(),
+            (0..nx * ny).map(|k| { let (x, y) = (k % nx, k / nx); flux(w.idx(x, y, 0), x, y, 0, 2, -1) }).collect(),
+        ];
+        Faces { plus, lower }
+    }
+
+    /// The raw flux across one face of cell `i` at (x, y, z), and the cell
+    /// on the other side (`usize::MAX` outside the box); `None` where
+    /// nothing crosses.
+    #[inline]
+    fn get(&self, w: &World, i: usize, x: usize, y: usize, z: usize, axis: usize, dir: i64) -> Option<(Flux, usize)> {
+        let p = [x, y, z];
+        if dir > 0 {
+            let f = self.plus[i][axis]?;
+            let n = [w.nx, w.ny, w.nz];
+            return Some((f, if p[axis] + 1 < n[axis] { neighbour_index(w, x, y, z, axis, dir) } else { usize::MAX }));
+        }
+        if p[axis] > 0 {
+            let ni = neighbour_index(w, x, y, z, axis, dir);
+            return self.plus[ni][axis].map(|f| (f, ni));
+        }
+        let k = match axis { 0 => z * w.ny + y, 1 => z * w.nx + x, _ => y * w.nx + x };
+        self.lower[axis][k].map(|f| (f, usize::MAX))
     }
 }
 
@@ -374,7 +433,7 @@ fn face_flux(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVelocity, 
 /// every thread and peer gets the same numbers; a face then flows at the
 /// smaller of its two cells' factors, so both sides still agree exactly.
 /// Almost every cell gets the full factor and is untouched.
-pub fn gas_limits(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVelocity) -> Vec<i64> {
+pub fn gas_limits(w: &World, faces: &Faces) -> Vec<i64> {
     let one = |b: usize, out: &mut [i64]| {
         let (ox, oy, oz) = w.brick_origin(b);
         for l in 0..BRICK_CELLS {
@@ -383,7 +442,7 @@ pub fn gas_limits(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVeloc
             let i = b * BRICK_CELLS + l;
             let mut leaving = [0i64; GASES];
             for axis in 0..3 { for dir in [-1i64, 1] {
-                if let Some((f, _)) = face_flux(w, sides, outside, vel, i, x, y, z, axis, dir) {
+                if let Some((f, _)) = faces.get(w, i, x, y, z, axis, dir) {
                     for k in 0..GASES { let change = f.gas[k].0 * -dir; if change < 0 { leaving[k] -= change } }
                 }
             }}
@@ -392,7 +451,7 @@ pub fn gas_limits(w: &World, sides: &[Side], outside: &Side, vel: &dyn FaceVeloc
             for k in 0..GASES {
                 // Keep an eighth back: never empty a cell in one step.
                 let can = c.gas[k].0.max(0) * 7 / 8;
-                if leaving[k] > can { ppm = ppm.min((can as i128 * FULL as i128 / leaving[k] as i128) as i64) }
+                if leaving[k] > can { ppm = ppm.min(mul_div(can, FULL, leaving[k]) as i64) }
             }
             out[l] = ppm;
         }
@@ -426,17 +485,30 @@ impl FaceVelocity for Still { fn face(&self, _: i64, _: i64, _: i64, _: usize) -
 pub struct Uniform(pub [i64; 3]);
 impl FaceVelocity for Uniform { fn face(&self, _: i64, _: i64, _: i64, axis: usize) -> i64 { self.0[axis] } }
 
-/// The diffusion phase: conduction, mixing and pressure on every face.
-pub fn diffuse(world: &mut World, vel: &dyn FaceVelocity) {
+/// Everything the diffusion phase works out from the previous state before
+/// any brick is computed: each cell's side, each face's flux and each
+/// cell's limiter.
+pub struct Prepared { pub sides: Vec<Side>, pub faces: Faces, pub limits: Vec<i64> }
+
+pub fn prepare(world: &World, vel: &dyn FaceVelocity) -> Prepared {
     let sides = sides(world);
     let outside = side(&world.outside_air, &world.subs, world.ambient);
-    let limits = gas_limits(world, &sides, &outside, vel);
-    world.run_phase(|w, b, out, tally| diffuse_brick(w, &sides, &limits, &outside, vel, b, out, tally));
+    let vel = CellVelocity::new(world, vel);
+    let faces = Faces::new(world, &sides, &outside, &vel);
+    let limits = gas_limits(world, &faces);
+    Prepared { sides, faces, limits }
+}
+
+/// The diffusion phase: conduction, mixing and pressure on every face.
+pub fn diffuse(world: &mut World, vel: &dyn FaceVelocity) {
+    let p = prepare(world, vel);
+    world.run_phase(|w, b, out, tally| diffuse_brick(w, &p, b, out, tally));
 }
 
 /// One brick of the diffusion phase, from the previous state only. Any peer
 /// or thread computing brick `b` gets exactly these cells and this tally.
-pub fn diffuse_brick(w: &World, sides: &[Side], limits: &[i64], outside: &Side, vel: &dyn FaceVelocity, b: usize, out: &mut [Cell], tally: &mut Tally) {
+pub fn diffuse_brick(w: &World, p: &Prepared, b: usize, out: &mut [Cell], tally: &mut Tally) {
+    let (sides, limits) = (&p.sides, &p.limits);
     let (ox, oy, oz) = w.brick_origin(b);
     let base = b * BRICK_CELLS;
     for l in 0..BRICK_CELLS {
@@ -447,22 +519,14 @@ pub fn diffuse_brick(w: &World, sides: &[Side], limits: &[i64], outside: &Side, 
         let mut next = *me;
         for axis in 0..3 {
             for dir in [-1i64, 1] {
-                let speed = face_speed(w, vel, x, y, z, axis, dir);
-                match w.neighbour(x, y, z, axis, dir) {
-                    Neighbour::Inside(n) => {
-                        let ni = neighbour_index(w, x, y, z, axis, dir);
-                        let ns = &sides[ni];
-                        let mut flux = if dir > 0 { diffuse_face(me, my, n, ns, speed, axis) } else { diffuse_face(n, ns, me, my, speed, axis) };
-                        scale_gas(&mut flux, limits[base + l].min(limits[ni]));
-                        apply(&mut next, my, &flux, -dir);
-                    }
-                    Neighbour::Outside(o) => {
-                        let mut flux = if dir > 0 { diffuse_face(me, my, o, outside, speed, axis) } else { diffuse_face(o, outside, me, my, speed, axis) };
-                        scale_gas(&mut flux, limits[base + l]);
-                        apply(&mut next, my, &flux, -dir);
-                        tally_edge(tally, &flux, -dir);
-                    }
-                    Neighbour::Mirror => {}
+                let Some((mut flux, ni)) = p.faces.get(w, base + l, x, y, z, axis, dir) else { continue };
+                if ni != usize::MAX {
+                    scale_gas(&mut flux, limits[base + l].min(limits[ni]));
+                    apply(&mut next, my, &flux, -dir);
+                } else {
+                    scale_gas(&mut flux, limits[base + l]);
+                    apply(&mut next, my, &flux, -dir);
+                    tally_edge(tally, &flux, -dir);
                 }
             }
         }
@@ -495,13 +559,11 @@ pub struct BrickResult { pub brick: usize, pub cells: Vec<Cell>, pub tally: Tall
 
 /// Computes only the given bricks of the diffusion phase (one peer's share).
 pub fn diffuse_part(w: &World, vel: &dyn FaceVelocity, bricks: &[usize]) -> Vec<BrickResult> {
-    let sides = sides(w);
-    let outside = side(&w.outside_air, &w.subs, w.ambient);
-    let limits = gas_limits(w, &sides, &outside, vel);
+    let p = prepare(w, vel);
     bricks.iter().map(|&b| {
         let mut cells = vec![Cell::default(); BRICK_CELLS];
         let mut tally = Tally::default();
-        diffuse_brick(w, &sides, &limits, &outside, vel, b, &mut cells, &mut tally);
+        diffuse_brick(w, &p, b, &mut cells, &mut tally);
         BrickResult { brick: b, cells, tally }
     }).collect()
 }
@@ -518,39 +580,146 @@ pub fn apply_parts(w: &mut World, parts: &[BrickResult]) {
     w.next = next;
 }
 
+/// The flow's velocity on every cell face, looked up once (a [`Flow`]
+/// interpolates between its blocks on every call). Gives exactly what the
+/// flow it was made from gives.
+///
+/// [`Flow`]: crate::flow::Flow
+pub struct CellVelocity<'a> {
+    src: &'a dyn FaceVelocity,
+    n: [usize; 3],
+    bricks: [usize; 2],
+    /// The + face of each cell (in cell index order).
+    plus: Vec<[i64; 3]>,
+    /// The faces on the box's lower edges (cell −1 along the axis), indexed
+    /// as in [`Faces`].
+    lower: [Vec<i64>; 3],
+}
+
+impl<'a> CellVelocity<'a> {
+    pub fn new(w: &World, src: &'a dyn FaceVelocity) -> CellVelocity<'a> {
+        let mut plus = vec![[0i64; 3]; w.cells.len()];
+        let one = |b: usize, out: &mut [[i64; 3]]| {
+            let (ox, oy, oz) = w.brick_origin(b);
+            for l in 0..BRICK_CELLS {
+                let (lx, ly, lz) = World::local_xyz(l);
+                let (x, y, z) = ((ox + lx) as i64, (oy + ly) as i64, (oz + lz) as i64);
+                out[l] = [src.face(x, y, z, 0), src.face(x, y, z, 1), src.face(x, y, z, 2)];
+            }
+        };
+        let mut done = false;
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
+                plus.par_chunks_mut(BRICK_CELLS).enumerate().for_each(|(b, o)| one(b, o));
+                done = true;
+            }
+        }
+        if !done { for (b, o) in plus.chunks_mut(BRICK_CELLS).enumerate() { one(b, o) } }
+        let (nx, ny, nz) = (w.nx, w.ny, w.nz);
+        let lower = [
+            (0..ny * nz).map(|k| src.face(-1, (k % ny) as i64, (k / ny) as i64, 0)).collect(),
+            (0..nx * nz).map(|k| src.face((k % nx) as i64, -1, (k / nx) as i64, 1)).collect(),
+            (0..nx * ny).map(|k| src.face((k % nx) as i64, (k / nx) as i64, -1, 2)).collect(),
+        ];
+        CellVelocity { src, n: [nx, ny, nz], bricks: [w.bx, w.by], plus, lower }
+    }
+}
+
+impl FaceVelocity for CellVelocity<'_> {
+    #[inline]
+    fn face(&self, x: i64, y: i64, z: i64, axis: usize) -> i64 {
+        let p = [x, y, z];
+        let inside = |k: usize| p[k] >= 0 && (p[k] as usize) < self.n[k];
+        if inside(0) && inside(1) && inside(2) {
+            let (x, y, z) = (x as usize, y as usize, z as usize);
+            let b = ((z / B) * self.bricks[1] + y / B) * self.bricks[0] + x / B;
+            return self.plus[b * BRICK_CELLS + ((z % B) * B + y % B) * B + x % B][axis];
+        }
+        if p[axis] == -1 && (0..3).all(|k| k == axis || inside(k)) {
+            let (x, y, z) = (x as usize, y as usize, z as usize);
+            let k = match axis { 0 => z * self.n[1] + y, 1 => z * self.n[0] + x, _ => y * self.n[0] + x };
+            return self.lower[axis][k];
+        }
+        self.src.face(x, y, z, axis)
+    }
+}
+
+/// `f(x, y, z, i)` for every cell, in cell index order (by brick, in parallel).
+fn per_cell<T: Send + Copy + Default>(w: &World, f: impl Fn(usize, usize, usize, usize) -> T + Sync) -> Vec<T> {
+    let mut out = vec![T::default(); w.cells.len()];
+    let one = |b: usize, o: &mut [T]| {
+        let (ox, oy, oz) = w.brick_origin(b);
+        for l in 0..BRICK_CELLS {
+            let (lx, ly, lz) = World::local_xyz(l);
+            o[l] = f(ox + lx, oy + ly, oz + lz, b * BRICK_CELLS + l);
+        }
+    };
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
+            out.par_chunks_mut(BRICK_CELLS).enumerate().for_each(|(b, o)| one(b, o));
+            return out;
+        }
+    }
+    for (b, o) in out.chunks_mut(BRICK_CELLS).enumerate() { one(b, o) }
+    out
+}
+
+/// What carrying needs of a cell: its gas's temperature (what leaving gas
+/// takes with it) and whether air passes through it.
+#[derive(Copy, Clone, Default)]
+struct Air { t: Temperature, permeable: bool }
+
 /// Air carried by the flow, as `steps` sub-steps (each moves at most one
 /// cell's worth). A cell sends `speed·dt/dx` of its gas out through each face
 /// the air leaves by, scaled down if that would add up to more than all of it.
 pub fn advect(world: &mut World, vel: &dyn FaceVelocity, steps: i64) {
+    let vel = CellVelocity::new(world, vel);
+    // Each cell's total outflow share: the flow is the same for every sub-step.
+    let total = per_cell(world, |x, y, z, _| outflow_share(&vel, steps, x, y, z));
     for _ in 0..steps {
-        let sides = sides(world);
-        let outside = side(&world.outside_air, &world.subs, world.ambient);
+        let air = { let w: &World = world; per_cell(w, |_, _, _, i| { let c = &w.cells[i]; Air { t: c.gas_temperature(), permeable: c.permeable(&w.subs) } }) };
+        let outside_t = world.outside_air.gas_temperature();
         world.run_phase(|w, b, out, tally| {
             let (ox, oy, oz) = w.brick_origin(b);
             let base = b * BRICK_CELLS;
             for l in 0..BRICK_CELLS {
                 let (lx, ly, lz) = World::local_xyz(l);
                 let (x, y, z) = (ox + lx, oy + ly, oz + lz);
-                let me = &w.cells[base + l];
-                let my = &sides[base + l];
+                let i = base + l;
+                let me = &w.cells[i];
+                let my = air[i];
                 let mut next = *me;
-                for axis in 0..3 {
-                    for dir in [-1i64, 1] {
-                        let u = signed_face_velocity(w, vel, x, y, z, axis, dir);
-                        if u == 0 { continue }
-                        match w.neighbour(x, y, z, axis, dir) {
-                            Neighbour::Inside(n) => {
-                                let ni = neighbour_index(w, x, y, z, axis, dir);
-                                let (nx, ny, nz) = step_xyz(x, y, z, axis, dir);
-                                let flux = carry_face(w, vel, steps, (me, my, x, y, z), (n, &sides[ni], nx, ny, nz), axis, dir, u);
-                                apply(&mut next, my, &flux, -dir);
+                // Nothing is carried into or out of a cell air can't pass through.
+                if my.permeable {
+                    for axis in 0..3 {
+                        for dir in [-1i64, 1] {
+                            let u = signed_face_velocity(w, &vel, x, y, z, axis, dir);
+                            if u == 0 { continue }
+                            match w.neighbour(x, y, z, axis, dir) {
+                                Neighbour::Inside(n) => {
+                                    let ni = neighbour_index(w, x, y, z, axis, dir);
+                                    if !air[ni].permeable { continue }
+                                    // Lower and upper cell along the axis; u > 0 flows lower → upper.
+                                    let ((lo, lo_i), (hi, hi_i)) = if dir > 0 { ((me, i), (n, ni)) } else { ((n, ni), (me, i)) };
+                                    let flux = if u > 0 { carry_from(lo, air[lo_i].t, face_share(total[lo_i], steps, u), 1) }
+                                        else { carry_from(hi, air[hi_i].t, face_share(total[hi_i], steps, u), -1) };
+                                    carry_apply(&mut next, &flux, -dir);
+                                }
+                                Neighbour::Outside(o) => {
+                                    // Outside air coming in: the outside is a large reservoir, so its share is
+                                    // simply speed·dt/dx of a fresh cell.
+                                    let leaving = (u > 0) == (dir > 0);
+                                    let flux = if leaving { carry_from(me, my.t, face_share(total[i], steps, u), if dir > 0 { 1 } else { -1 }) }
+                                        else { carry_from(o, outside_t, Fraction(share_of_speed(u.abs(), steps).min(Fraction::ONE.0)), if dir > 0 { -1 } else { 1 }) };
+                                    carry_apply(&mut next, &flux, -dir);
+                                    tally_edge(tally, &flux, -dir);
+                                }
+                                Neighbour::Mirror => {}
                             }
-                            Neighbour::Outside(o) => {
-                                let flux = carry_face_outside(w, vel, steps, (me, my, x, y, z), o, &outside, axis, dir, u);
-                                apply(&mut next, my, &flux, -dir);
-                                tally_edge(tally, &flux, -dir);
-                            }
-                            Neighbour::Mirror => {}
                         }
                     }
                 }
@@ -588,11 +757,13 @@ fn face_speed(w: &World, vel: &dyn FaceVelocity, x: usize, y: usize, z: usize, a
 
 /// Share (of 2³²) of a cell's gas that leaves through all its outflow faces
 /// in one sub-step, before scaling: Σ |u|·dt/dx over faces the air leaves by.
-fn outflow_share(w: &World, vel: &dyn FaceVelocity, steps: i64, x: usize, y: usize, z: usize) -> u64 {
+fn outflow_share(vel: &dyn FaceVelocity, steps: i64, x: usize, y: usize, z: usize) -> u64 {
     let mut total: u64 = 0;
     for axis in 0..3 {
-        let plus = signed_face_velocity(w, vel, x, y, z, axis, 1);
-        let minus = signed_face_velocity(w, vel, x, y, z, axis, -1);
+        let plus = vel.face(x as i64, y as i64, z as i64, axis);
+        let mut p = [x as i64, y as i64, z as i64];
+        p[axis] -= 1;
+        let minus = vel.face(p[0], p[1], p[2], axis);
         if plus > 0 { total += share_of_speed(plus, steps) }
         if minus < 0 { total += share_of_speed(-minus, steps) }
     }
@@ -602,53 +773,33 @@ fn outflow_share(w: &World, vel: &dyn FaceVelocity, steps: i64, x: usize, y: usi
 /// |u|·dt/dx as a share of 2³²: dx = 100 mm, dt = 50 ms / steps.
 #[inline]
 fn share_of_speed(u: i64, steps: i64) -> u64 {
-    ((u as u128 * TICK.0 as u128 * (1u128 << 32)) / (100u128 * 1_000 * steps as u128)) as u64
+    div_u128(u as u128 * TICK.0 as u128 * (1u128 << 32), 100u128 * 1_000 * steps as u128) as u64
 }
 
-/// The share actually sent through one face, after scaling so the cell never
-/// sends more than it has.
-fn face_share(w: &World, vel: &dyn FaceVelocity, steps: i64, donor: (usize, usize, usize), u: i64) -> Fraction {
+/// The share actually sent through one face, after scaling so the donor
+/// (whose outflow shares add up to `total`) never sends more than it has.
+#[inline]
+fn face_share(total: u64, steps: i64, u: i64) -> Fraction {
     let s = share_of_speed(u.abs(), steps);
-    let total = outflow_share(w, vel, steps, donor.0, donor.1, donor.2);
     if total <= Fraction::ONE.0 { return Fraction(s) }
-    Fraction((s as u128 * Fraction::ONE.0 as u128 / total as u128) as u64)
+    Fraction(div_u128(s as u128 * Fraction::ONE.0 as u128, total as u128) as u64)
 }
 
-type SideRef<'a> = (&'a Cell, &'a Side, usize, usize, usize);
-
-fn carry_from(donor: &Cell, ds: &Side, share: Fraction, sign: i64) -> Flux {
+/// What air carries across a face: `share` of the donor's gas at its
+/// temperature `t`, with `sign` +1 from the lower cell to the upper.
+fn carry_from(donor: &Cell, t: Temperature, share: Fraction, sign: i64) -> Flux {
     let mut f = Flux::default();
     for k in 0..GASES {
         let m = share.of_mass(donor.gas[k]);
         f.gas[k] = Mass(m.0 * sign);
-        f.carried += Energy(carried(k, m, ds.t).0 * sign);
+        f.carried += Energy(carried(k, m, t).0 * sign);
     }
     f
 }
 
-fn carry_face(w: &World, vel: &dyn FaceVelocity, steps: i64, me: SideRef, n: SideRef, axis: usize, dir: i64, u: i64) -> Flux {
-    if !me.1.permeable || !n.1.permeable { return Flux::default() }
-    // Lower and upper cell along the axis; u > 0 flows lower → upper.
-    let (lo, hi) = if dir > 0 { (me, n) } else { (n, me) };
-    let _ = axis;
-    if u > 0 {
-        let share = face_share(w, vel, steps, (lo.2, lo.3, lo.4), u);
-        carry_from(lo.0, lo.1, share, 1)
-    } else {
-        let share = face_share(w, vel, steps, (hi.2, hi.3, hi.4), u);
-        carry_from(hi.0, hi.1, share, -1)
-    }
-}
-
-fn carry_face_outside(w: &World, vel: &dyn FaceVelocity, steps: i64, me: SideRef, o: &Cell, os: &Side, _axis: usize, dir: i64, u: i64) -> Flux {
-    if !me.1.permeable { return Flux::default() }
-    // Outside air coming in: the outside is a large reservoir, so its share is
-    // simply speed·dt/dx of a fresh cell.
-    let leaving = (u > 0) == (dir > 0);
-    if leaving {
-        let share = face_share(w, vel, steps, (me.2, me.3, me.4), u);
-        return carry_from(me.0, me.1, share, if dir > 0 { 1 } else { -1 });
-    }
-    let share = Fraction(share_of_speed(u.abs(), steps).min(Fraction::ONE.0));
-    carry_from(o, os, share, if dir > 0 { -1 } else { 1 })
+/// [`apply`] for a carried flux (gas and the heat it holds, nothing conducted).
+#[inline]
+fn carry_apply(out: &mut Cell, f: &Flux, sign: i64) {
+    out.energy += Energy(f.carried.0 * sign);
+    for k in 0..GASES { out.gas[k] += Mass(f.gas[k].0 * sign) }
 }

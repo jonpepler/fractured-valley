@@ -266,8 +266,8 @@ pub(crate) fn water_tau(c: &Cell, band: usize, z0: i64, dz: i64, len: i64) -> i6
     if h == 0 || band >= 4 { return 0 }
     let (lo, hi) = (z0.min(z0 + dz), z0.max(z0 + dz));
     if lo >= h { return 0 }
-    let in_water = if hi <= h { len as i128 } else { len as i128 * (h - lo) as i128 / (hi - lo).max(1) as i128 };
-    (water_kappa(band) as i128 * in_water / ONE as i128 * CELL_MM as i128 / 1_000).min(i64::MAX as i128 / 2) as i64
+    let in_water = if hi <= h { len as i128 } else { div_i128(len as i128 * (h - lo) as i128, (hi - lo).max(1) as i128) };
+    div_i128(div_i128(water_kappa(band) as i128 * in_water, ONE as i128) * CELL_MM as i128, 1_000).min(i64::MAX as i128 / 2) as i64
 }
 
 impl Emitter {
@@ -282,7 +282,7 @@ impl Emitter {
         let full = tables().sigma_t4[k_index(self.t.0)] as i128;
         if full <= 0 { return 0 }
         // Blackbody power over this area (µW): µW/m² × faces × face area.
-        let mut power = full * self.area_q16 / ONE as i128 * FACE_MM2 as i128 / 1_000_000;
+        let mut power = div_i128(div_i128(full * self.area_q16, ONE as i128) * FACE_MM2 as i128, 1_000_000);
         if self.soot { power = power * soot_planck_mean(self.t) as i128 >> 32 }
         (Power(power as i64) * TICK).0.min(self.most)
     }
@@ -344,15 +344,15 @@ pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temper
         out.push(Emitter { area_q16: ONE as i128, t, albedo, from_gas: false, most: solid_most / 2, soot: false, water: -1 });
     } else if c.has_solid() {
         // 4κV = σ·share·L³ = σ·share·L faces (L in m: 0.1 at 10 cm).
-        out.push(Emitter { area_q16: (s.surface_per_volume as i128 * share / one * ONE as i128 * CELL_MM as i128 / 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water: 0 });
+        out.push(Emitter { area_q16: div_i128(div_i128(s.surface_per_volume as i128 * share, one) * ONE as i128 * CELL_MM as i128, 1_000).min(cap), t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water: 0 });
     }
     let tg = c.gas_temperature();
     // Soot: 4κV = 4 × (1 per m per mg/L) × mg/V × V = 0.004 m² per mg,
     // whatever the cell: 0.4 faces of 0.01 m² per mg = µg/2500 at 10 cm.
-    let soot = c.gas[Gas::Soot as usize].0 as i128 * ONE as i128 / (2_500 * FACE_MM2 as i128 / 10_000);
+    let soot = div_i128(c.gas[Gas::Soot as usize].0 as i128 * ONE as i128, 2_500 * FACE_MM2 as i128 / 10_000);
     if soot > 0 { out.push(Emitter { area_q16: soot.min(cap), t: tg, albedo: [0; 4], from_gas: true, most: gas_most, soot: true, water: 0 }) }
     // Drops: 4 × 0.15 per m per mg/L: 0.0006 m² per mg = µg/16 667 faces at 10 cm.
-    let drops = c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128 / (16_667 * FACE_MM2 as i128 / 10_000);
+    let drops = div_i128(c.gas[Gas::Droplets as usize].0 as i128 * ONE as i128, 16_667 * FACE_MM2 as i128 / 10_000);
     if drops > 0 { out.push(Emitter { area_q16: drops.min(cap), t: tg, albedo: [0, 1, 2, 3].map(drop_albedo), from_gas: true, most: gas_most, soot: false, water: 0 }) }
     out
 }
@@ -555,7 +555,7 @@ fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
             water_tau(c, p.band as usize, p.pos[2] - cell[2] * ONE, p.dir[2] * t_exit / ONE, t_exit)
         } else { 0 };
         if k > 0 || tau_water > 0 {
-            let tau_volume = (k as i128 * t_exit as i128 / ONE as i128 * CELL_MM as i128 / 1_000) as i64; // κ (Q16 /m) × length (cells × edge in m)
+            let tau_volume = div_i128(div_i128(k as i128 * t_exit as i128, ONE as i128) * CELL_MM as i128, 1_000) as i64; // κ (Q16 /m) × length (cells × edge in m)
             let tau = tau_volume.saturating_add(tau_water);
             let prob = tab[((tau >> 8) as usize).min(4095)];
             if tau_water > 0 && p.stream.below(tau as u64) < tau_water as u64 {
