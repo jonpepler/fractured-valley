@@ -34,7 +34,7 @@ ax.set_xscale("log"); ax.set_xticks(rates); ax.set_xticklabels([str(r) for r in 
 ax.set_xlabel("every mind thinks every N ticks (20 = once a second)"); ax.set_ylabel("measures that differ from every tick\n(Holm-corrected sign test, 0.05)")
 for x, y in zip(rates, vs): ax.annotate(str(y), (x, y), textcoords="offset points", xytext=(0, 8), ha="center", color=TEXT, fontsize=9)
 for x, y in zip(rates, ss): ax.annotate(str(y), (x, y), textcoords="offset points", xytext=(0, -15), ha="center", color=TEXT, fontsize=9)
-ax.legend(frameon=False, loc="upper left"); ax.set_ylim(bottom=-1)
+ax.legend(frameon=False, loc="lower right"); ax.set_ylim(-1.5, 14)
 ax.set_title("Thinking less often: how many outcomes move", color=TEXT, loc="left")
 fig.tight_layout(); fig.savefig(f"{outd}/rate-faithfulness.png", dpi=150); plt.close(fig)
 # 2. Change in key village measures by rate.
@@ -49,7 +49,7 @@ for k, col, lab in [("meals", BLUE, "meals"), ("drinks", AQUA, "drinks"), ("goss
 ax.axhline(0, color=TEXT2, linewidth=1)
 ax.set_xscale("log"); ax.set_xticks(rates); ax.set_xticklabels([str(r) for r in rates]); ax.set_xlim(0.9, 40)
 ax.set_xlabel("every mind thinks every N ticks"); ax.set_ylabel("change against every tick (%)")
-ax.legend(frameon=False, ncol=3, loc="upper left", fontsize=8)
+ax.legend(frameon=False, ncol=5, loc="upper left", fontsize=8, handlelength=1.2); ax.set_ylim(-18, 68)
 ax.set_title("Village measures over 200 paired valleys × 30 days", color=TEXT, loc="left")
 fig.tight_layout(); fig.savefig(f"{outd}/rate-village-measures.png", dpi=150); plt.close(fig)
 # 3. Hunts: deer caught by rate.

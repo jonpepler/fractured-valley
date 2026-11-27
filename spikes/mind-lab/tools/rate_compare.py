@@ -31,6 +31,7 @@ for m in modes:
     seeds = sorted(set(by[base]) & set(by.get(m, {})))
     stats = []
     for k in KEYS + EXTRA:
+        if any(not by[base][s].get(k) or not by[m][s].get(k) for s in seeds): continue
         x = [float(by[base][s][k]) for s in seeds]; y = [float(by[m][s][k]) for s in seeds]
         ma, mb = sum(x) / len(x), sum(y) / len(y)
         up, dn, p = sign(x, y)

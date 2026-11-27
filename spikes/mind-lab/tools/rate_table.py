@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Round 2, stage 3: one markdown table from a rate_compare.py --csv file: each measure's every-tick
 mean, then per mode its change, d_z, and whether it differs (Holm-corrected sign test, 0.05: **bold**).
-python3 tools/rate_table.py <compare.csv> <mode,mode,...> [labels]"""
+python3 tools/rate_table.py <compare.csv> <mode,mode,...> [label;label;...]"""
 import csv, sys
 rows = list(csv.DictReader(open(sys.argv[1]))); modes = sys.argv[2].split(',')
-labels = sys.argv[3].split(',') if len(sys.argv) > 3 else modes
+labels = sys.argv[3].split(';') if len(sys.argv) > 3 else modes
 NAMES = {"meals": "Meals", "drinks": "Drinks", "gossip": "Gossip", "help": "Cries for help", "proposals": "Hunts proposed", "caught": "Deer caught", "gored": "Gorings",
  "surprised": "Mind-ticks surprised", "said": "Utterances", "heard_per_tick": "Words heard a person-tick", "trust1": "Mean trust at the end", "warmth1": "Mean warmth at the end",
  "warm_sat": "Feelings at the ceiling", "total_b": "Bytes a mind on day 30", "places": "Places known", "danger_ticks": "Ticks in a danger response", "surprised_per_1000_thinks": "Surprised per 1,000 thinks",

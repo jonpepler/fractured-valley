@@ -1050,12 +1050,13 @@ impl<S: Store> Mind<S> {
         if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
     }
 
-    /// Stage 3 of round 2: the weight (per mille) a think now would give an input present
-    /// throughout the ticks since the last think (Σ persist^k over them; 1000 when thinking every
-    /// tick or with `Config::integrate_window` off), for layers that add sustained cues.
-    pub fn window_gain(&self, tick: u32) -> i64 {
+    /// Stage 3 of round 2: the weight (per mille) a think now would give an input present since
+    /// tick `since`, over at most the ticks since the last think (Σ persist^k over them; 1000 when
+    /// thinking every tick or with `Config::integrate_window` off), for layers adding lasting cues.
+    pub fn window_gain(&self, tick: u32, since: u32) -> i64 {
         if self.every <= 1 || !self.cfg.integrate_window { return 1000; }
-        let dt = self.last_think.map_or(1, |t| tick.saturating_sub(t)).clamp(1, MAX_DT);
+        // (Review: only the ticks of the window the input was present, from `since`.)
+        let dt = self.last_think.map_or(1, |t| tick.saturating_sub(t)).clamp(1, MAX_DT).min(tick.saturating_sub(since) + 1);
         let (mut x, mut g) = (1000i64, 0i64);
         for _ in 0..dt { g += x; x = x * self.params.persist as i64 / 1000; }
         g
@@ -1106,7 +1107,8 @@ impl<S: Store> Mind<S> {
             let ls = self.store.links_vec(i);
             return s.seen.iter().any(|e| {
                 let c = self.kinds.get(e.kind as usize).map_or(u32::MAX, |k| k.concept);
-                ls.iter().any(|l| l.to == c || self.entity_nodes.iter().zip(&self.entity_kinds).any(|(&(_, n), &k)| k == e.kind && n == l.to))
+                // (Review: the thing itself, by the id its entity record holds, not any of its kind.)
+                ls.iter().any(|l| l.to == c || self.entity_nodes.iter().any(|&(id, n)| id == e.id && n == l.to))
             });
         }
         false

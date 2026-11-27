@@ -572,7 +572,7 @@ impl Person {
         self.check(&s, w.tick);
         self.correct_map(&s);
         // (Stage 3 of round 2: dusk lasts, so its cue is integrated over a slow think's window.)
-        if w.dusk { let g = self.m.window_gain(w.tick); cues.push((self.ids.rest, (600 * g / 1000) as i32)); cues.push((self.ids.fatigue, (300 * g / 1000) as i32)); }
+        if w.dusk { let g = self.m.window_gain(w.tick, w.dusk_at); cues.push((self.ids.rest, (600 * g / 1000) as i32)); cues.push((self.ids.fatigue, (300 * g / 1000) as i32)); }
         if self.hunt.is_some() { self.hunt_hear(w, &s, &heard, &mut cues); }
         s.cues = cues;
         s.alarms = alarms;

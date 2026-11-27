@@ -20,7 +20,8 @@ with open(out + '.csv', 'w', newline='') as fo:
 from collections import Counter
 drows = []; dh = None; dseen = set()
 for f in files:
-    df = split(f)[0].replace('/runs', '/days')
+    rf = split(f)[0]
+    df = rf.replace('/runs', '/days') if '/runs' in rf else rf[:-4] + '-days.csv'
     for r in csv.DictReader(open(df)):
         k = (r['seed'], r['mode'], r['day'])
         if (r['seed'], r['mode']) not in seen or k in dseen: continue

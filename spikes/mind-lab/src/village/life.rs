@@ -175,7 +175,7 @@ fn hunt_life(p: &mut Person, w: &World) {
     let life = p.village.as_ref().unwrap();
     if life.led_at.is_some_and(|t| tick < t + HUNT_GAP) { return; }
     let hungry = w.village.as_ref().map_or(0, |v| v.hunger[p.i]) >= HUNT_HUNGER;
-    let deer_seen = p.m.last.percepts.iter().any(|q| q.kind == Kind::Deer.k());
+    let deer_seen = p.m.last.percepts.iter().any(|q| q.kind == Kind::Deer.k() && p.m.last.now(q));
     let on_mind = p.m.last.ws.contains(&k.deer) || p.m.last.ws.contains(&k.deer_kind);
     let company = p.m.last.percepts.iter().any(|q| p.m.last.now(q) && who(p, q.node).is_some() && crate::mind::dist(q.x, q.y, w.people[p.i].x, w.people[p.i].y) <= TALK + 4);
     if hungry && deer_seen && on_mind && company {

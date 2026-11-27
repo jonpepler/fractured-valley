@@ -509,7 +509,8 @@ impl Person {
         let target = self.hunter().lead?;
         // Who is with me: the people I see (my percepts) within talking distance, not the target.
         let mut with: Vec<(i32, usize)> = (0..self.pnode.len()).filter(|&j| j != self.i && Target::Person(j as u8) != target && !exclude.contains(&j))
-            .filter(|&j| self.m.last.percepts.iter().any(|p| p.node == self.pnode[j] && dist(p.x, p.y, s.body.x, s.body.y) <= TALK + 4))
+            // (Round 2, stage 3: in sight now, not merged in from the ticks between thinks.)
+            .filter(|&j| self.m.last.percepts.iter().any(|p| p.node == self.pnode[j] && self.m.last.now(p) && dist(p.x, p.y, s.body.x, s.body.y) <= TALK + 4))
             .map(|j| (-self.warmth(j), j)).collect();
         with.sort();
         if with.is_empty() { return None; }
@@ -566,9 +567,9 @@ impl Person {
         // within `caution` cells in my sight.
         if let Some((r, wn, plan)) = self.hunter().warn.clone() {
             if self.hunter().log.warned_at.is_none() && self.m.held.intent == Some(wn) {
-                let near_r = self.m.last.percepts.iter().any(|p| p.node == self.pnode[r] && dist(p.x, p.y, s.body.x, s.body.y) <= 1);
+                let near_r = self.m.last.percepts.iter().any(|p| p.node == self.pnode[r] && self.m.last.now(p) && dist(p.x, p.y, s.body.x, s.body.y) <= 1);
                 let caution = self.hunter().caution;
-                let watched = self.m.last.percepts.iter().any(|p| (0..self.pnode.len()).any(|j| j != r && j != self.i && self.pnode[j] == p.node) && dist(p.x, p.y, s.body.x, s.body.y) <= caution);
+                let watched = self.m.last.percepts.iter().any(|p| self.m.last.now(p) && (0..self.pnode.len()).any(|j| j != r && j != self.i && self.pnode[j] == p.node) && dist(p.x, p.y, s.body.x, s.body.y) <= caution);
                 if near_r && !watched {
                     let h = self.hunt.as_mut().unwrap();
                     h.log.warned_at = Some(tick);
@@ -617,8 +618,8 @@ impl Person {
                 // The counter-plan (I am the target of theirs): when my partner has agreed and we
                 // are both at our spots; the group's plan: when the target comes into sight.
                 Target::Person(_) if self.hunter().against_me.is_some() => hp.members.iter().filter(|m| m.0 != self.i).all(|m|
-                    book.agreed.contains(&m.0) && self.m.last.percepts.iter().any(|p| p.node == self.pnode[m.0] && dist(p.x, p.y, m.2, m.3) <= 2)),
-                Target::Person(r) => self.m.last.percepts.iter().any(|p| p.node == self.pnode[r as usize]),
+                    book.agreed.contains(&m.0) && self.m.last.percepts.iter().any(|p| p.node == self.pnode[m.0] && self.m.last.now(p) && dist(p.x, p.y, m.2, m.3) <= 2)),
+                Target::Person(r) => self.m.last.percepts.iter().any(|p| p.node == self.pnode[r as usize] && self.m.last.now(p)),
             };
             if here && ready { return self.signal(hp, tick, "everyone should be in place"); }
         }
