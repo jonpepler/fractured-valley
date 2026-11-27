@@ -14,6 +14,9 @@ struct Params {
     slots: u32, in_copy: u32, out_copy: u32, copy_words: u32,
     heat_base: u32, vlow: u32, outside: u32, ambient_lo: u32,
     ambient_hi: u32, tiles_x: u32, compact: u32, flag: u32,
+    // Carrying: sub-steps per tick, the outside air's gas temperature, and
+    // whether this sub-step adds to the tallies (else it starts them).
+    steps: u32, outside_t_lo: u32, outside_t_hi: u32, accumulate: u32,
 }
 @group(0) @binding(0) var<uniform> P: Params;
 // Two copies of the state; in each, the gas group (7 fields × 512 cells per
@@ -482,6 +485,252 @@ fn apply_scratch(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_in
     if (t == 0u && w < P.slots * 8u) {
         var s: array<I, 8>;
         for (var j = 0u; j < 8u; j++) { s[j] = I(0u, 0u); }
+        for (var i = 0u; i < 64u; i++) { for (var j = 0u; j < 8u; j++) { s[j] = add(s[j], wtally[i][j]); } }
+        for (var j = 0u; j < 8u; j++) { tallies[w * 16u + 2u * j] = s[j].x; tallies[w * 16u + 2u * j + 1u] = s[j].y; }
+    }
+}
+
+// ── carrying (transport::advect), one sub-step ─────────────────────────────
+// Air moving through a face takes a share of the donor's gas, and the heat
+// it holds, across it. Only cells air passes through take part (the
+// permeable flag the CPU worked out with the sides: carrying changes no
+// solid). Every share is from the sub-step's starting state.
+// `limits` holds each cell's gas temperature for the sub-step, and the first
+// words of `faces` each cell's total outflow share (both free during carrying).
+
+const ONE_HI: u32 = 1u; // Fraction::ONE = 2³² is I(0, 1)
+
+fn gas_temperature(c: u32) -> I {
+    var cap = I(0u, 0u);
+    for (var k = 0u; k < 7u; k++) { cap = add(cap, muli(gas(c, k), C_GAS_SH[k])); }
+    if (!gt0(cap)) { return I(0u, 0u); }
+    let e = sub(heat_at(P.in_copy, c, 0u), muli(gas(c, C_VAPOUR), C_LATENT));
+    return mul_div(e, i_(1000000), cap);
+}
+// |u|·dt/dx as a share of 2³²: u × 50 ms × 2³² / (100 mm × 1000 × steps),
+// the divisor as 400 × 250 × steps (all below 2¹⁶; nested floors are exact).
+fn share_of_speed(u: u32) -> I {
+    let n = I(0u, u * u32(C_TICK));
+    return udiv64_small(udiv64_small(udiv64_small(n, 400u), 250u), P.steps);
+}
+fn outflow_total(c: u32) -> I {
+    var t = I(0u, 0u);
+    for (var axis = 0u; axis < 3u; axis++) {
+        let plus = vplus(c, axis);
+        let dn = step(c, axis, false, true);
+        let minus = vminus(c, axis, dn);
+        if (plus > 0) { t = add(t, share_of_speed(u32(plus))); }
+        if (minus < 0) { t = add(t, share_of_speed(u32(-minus))); }
+    }
+    return t;
+}
+fn face_share(total: I, u: i32) -> I {
+    let s = share_of_speed(u32(abs(u)));
+    if (!ult(I(0u, ONE_HI), total)) { return s; }
+    return udivw(W(0u, s.x, s.y, 0u), W(total.x, total.y, 0u, 0u)).xy;
+}
+fn temp_of(c: u32) -> I {
+    if (c == OUT) { return I(P.outside_t_lo, P.outside_t_hi); }
+    return I(limits[2u * c], limits[2u * c + 1u]);
+}
+fn total_of(c: u32) -> I { return I(faces[2u * c], faces[2u * c + 1u]); }
+fn permeable_of(c: u32) -> bool { return (sides[c * SS + 24u] & 1u) != 0u; }
+
+@compute @workgroup_size(64)
+fn carry_prepare(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    let t = gas_temperature(c);
+    limits[2u * c] = t.x; limits[2u * c + 1u] = t.y;
+    let tot = outflow_total(c);
+    faces[2u * c] = tot.x; faces[2u * c + 1u] = tot.y;
+}
+
+// share × a mass, rounding down (Fraction::of_mass: (m × share) >> 32).
+fn of_mass(m: I, share: I) -> I { let w = mulw(m, share); return I(w.y, w.z); }
+
+@compute @workgroup_size(64)
+fn carry_apply(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+    let c = cell_of(id);
+    let live = c < P.slots * 512u;
+    var t_e = I(0u, 0u);
+    var t_g: array<I, 7>;
+    for (var k = 0u; k < 7u; k++) { t_g[k] = I(0u, 0u); }
+    if (live) {
+        var g: array<I, 7>;
+        for (var k = 0u; k < 7u; k++) { g[k] = gas(c, k); }
+        var energy = heat_at(P.in_copy, c, 0u);
+        if (permeable_of(c)) {
+            for (var axis = 0u; axis < 3u; axis++) {
+                for (var d = 0u; d < 2u; d++) {
+                    let up = d == 1u;
+                    let n = step(c, axis, up, true);
+                    let u = select(vminus(c, axis, n), vplus(c, axis), up);
+                    if (u == 0 || n == NONE) { continue; }
+                    // The donor, its share, and the sign of the flux (+1: lower to upper).
+                    var donor = c; var share = I(0u, 0u); var sign_up = true;
+                    if (n != OUT) {
+                        if (!permeable_of(n)) { continue; }
+                        let lo = select(n, c, up); let hi = select(c, n, up);
+                        donor = select(hi, lo, u > 0);
+                        sign_up = u > 0;
+                        share = face_share(total_of(donor), u);
+                    } else {
+                        let leaving = (u > 0) == up;
+                        if (leaving) { donor = c; share = face_share(total_of(c), u); sign_up = up; }
+                        else { donor = OUT; share = mn(share_of_speed(u32(abs(u))), I(0u, ONE_HI)); sign_up = !up; }
+                    }
+                    let td = temp_of(donor);
+                    // Applied with sign −dir: the lower cell gives what flows up.
+                    let gives = sign_up == up;
+                    for (var k = 0u; k < 7u; k++) {
+                        let m = of_mass(gas(donor, k), share);
+                        let e = carried(k, m, td);
+                        if (gives) { g[k] = sub(g[k], m); energy = sub(energy, e); } else { g[k] = add(g[k], m); energy = add(energy, e); }
+                        if (n == OUT) {
+                            if (gives) { t_g[k] = sub(t_g[k], m); t_e = sub(t_e, e); } else { t_g[k] = add(t_g[k], m); t_e = add(t_e, e); }
+                        }
+                    }
+                }
+            }
+        }
+        for (var k = 0u; k < 7u; k++) { put_gas(P.out_copy, c, k, g[k]); }
+        let slot = c / 512u; let l = c % 512u;
+        let ob = P.out_copy * P.copy_words + P.heat_base;
+        let ib = P.in_copy * P.copy_words + P.heat_base;
+        for (var f = 0u; f < 3u; f++) {
+            let o = 2u * ((slot * 3u + f) * 512u + l);
+            if (f == 0u) { state[ob + o] = energy.x; state[ob + o + 1u] = energy.y; }
+            else { state[ob + o] = state[ib + o]; state[ob + o + 1u] = state[ib + o + 1u]; }
+        }
+    }
+    wtally[t][0] = t_e;
+    for (var k = 0u; k < 7u; k++) { wtally[t][1u + k] = t_g[k]; }
+    workgroupBarrier();
+    let w = wg.x + wg.y * P.tiles_x;
+    if (t == 0u && w < P.slots * 8u) {
+        var s: array<I, 8>;
+        for (var j = 0u; j < 8u; j++) { s[j] = I(0u, 0u); }
+        if (P.accumulate != 0u) { for (var j = 0u; j < 8u; j++) { s[j] = I(tallies[w * 16u + 2u * j], tallies[w * 16u + 2u * j + 1u]); } }
+        for (var i = 0u; i < 64u; i++) { for (var j = 0u; j < 8u; j++) { s[j] = add(s[j], wtally[i][j]); } }
+        for (var j = 0u; j < 8u; j++) { tallies[w * 16u + 2u * j] = s[j].x; tallies[w * 16u + 2u * j + 1u] = s[j].y; }
+    }
+}
+
+// ── carrying with each face worked out once ─────────────────────────────────
+// The same sub-step, in two passes: every face's carried flux into the face
+// scratch (16 words: 7 gases and the heat they hold, + from the lower cell
+// to the upper; zero where nothing is carried), then each cell adds its six.
+// Each face is a pure function of the sub-step's starting state, so this is
+// exactly what each side would compute for itself. The outflow totals sit
+// past the faces in the same scratch.
+const CF: u32 = 16u;
+fn total_slot(c: u32) -> u32 { return P.slots * FACES_PER_SLOT * CF + 2u * c; }
+fn total2(c: u32) -> I { let o = total_slot(c); return I(faces[o], faces[o + 1u]); }
+
+@compute @workgroup_size(64)
+fn carry_prepare2(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    let t = gas_temperature(c);
+    limits[2u * c] = t.x; limits[2u * c + 1u] = t.y;
+    let tot = outflow_total(c);
+    let o = total_slot(c);
+    faces[o] = tot.x; faces[o + 1u] = tot.y;
+}
+
+// The carried flux across the face between lower cell lo and upper cell hi
+// (either may be OUT), u the velocity across it; + is lower to upper.
+fn carry_face(lo: u32, hi: u32, u: i32, s: u32) {
+    let o = s * CF;
+    var gas_f: array<I, 7>;
+    var heat_f = I(0u, 0u);
+    for (var k = 0u; k < 7u; k++) { gas_f[k] = I(0u, 0u); }
+    let inside = lo != OUT && hi != OUT;
+    var ok = u != 0 && lo != NONE && hi != NONE;
+    if (ok) {
+        // Only between cells air passes through (the outside always does).
+        if (lo != OUT && !permeable_of(lo)) { ok = false; }
+        if (hi != OUT && !permeable_of(hi)) { ok = false; }
+    }
+    if (ok) {
+        let donor = select(hi, lo, u > 0);
+        var share = I(0u, 0u);
+        if (donor == OUT) { share = mn(share_of_speed(u32(abs(u))), I(0u, ONE_HI)); }
+        else { share = face_share(total2(donor), u); }
+        let td = temp_of(donor);
+        for (var k = 0u; k < 7u; k++) {
+            let m = of_mass(gas(donor, k), share);
+            let e = carried(k, m, td);
+            if (u > 0) { gas_f[k] = m; heat_f = add(heat_f, e); } else { gas_f[k] = neg_(m); heat_f = sub(heat_f, e); }
+        }
+    }
+    for (var k = 0u; k < 7u; k++) { faces[o + 2u * k] = gas_f[k].x; faces[o + 2u * k + 1u] = gas_f[k].y; }
+    faces[o + 14u] = heat_f.x; faces[o + 15u] = heat_f.y;
+}
+
+@compute @workgroup_size(64)
+fn carry_faces(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    let p = lxyz(c % 512u);
+    for (var axis = 0u; axis < 3u; axis++) {
+        let up = step(c, axis, true, true);
+        carry_face(c, up, vplus(c, axis), plus_slot(c, axis));
+        if (p[axis] == 0u) {
+            let dn = step(c, axis, false, true);
+            if (dn == OUT || dn == NONE) { carry_face(dn, c, vminus(c, axis, dn), low_face(c, axis)); }
+        }
+    }
+}
+
+@compute @workgroup_size(64)
+fn carry_apply2(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+    let c = cell_of(id);
+    let live = c < P.slots * 512u;
+    var t_e = I(0u, 0u);
+    var t_g: array<I, 7>;
+    for (var k = 0u; k < 7u; k++) { t_g[k] = I(0u, 0u); }
+    if (live) {
+        var g: array<I, 7>;
+        for (var k = 0u; k < 7u; k++) { g[k] = gas(c, k); }
+        var energy = heat_at(P.in_copy, c, 0u);
+        if (permeable_of(c)) {
+            for (var axis = 0u; axis < 3u; axis++) {
+                for (var d = 0u; d < 2u; d++) {
+                    let up = d == 1u;
+                    let fs = face_slot(c, axis, up, true);
+                    let o = fs.x * CF;
+                    // This cell is the lower one on its + face (it gives what flows up).
+                    for (var k = 0u; k < 7u; k++) {
+                        let m = I(faces[o + 2u * k], faces[o + 2u * k + 1u]);
+                        g[k] = select(add(g[k], m), sub(g[k], m), up);
+                        if (fs.y == OUT) { t_g[k] = select(add(t_g[k], m), sub(t_g[k], m), up); }
+                    }
+                    let e = I(faces[o + 14u], faces[o + 15u]);
+                    energy = select(add(energy, e), sub(energy, e), up);
+                    if (fs.y == OUT) { t_e = select(add(t_e, e), sub(t_e, e), up); }
+                }
+            }
+        }
+        for (var k = 0u; k < 7u; k++) { put_gas(P.out_copy, c, k, g[k]); }
+        let slot = c / 512u; let l = c % 512u;
+        let ob = P.out_copy * P.copy_words + P.heat_base;
+        let ib = P.in_copy * P.copy_words + P.heat_base;
+        for (var f = 0u; f < 3u; f++) {
+            let o = 2u * ((slot * 3u + f) * 512u + l);
+            if (f == 0u) { state[ob + o] = energy.x; state[ob + o + 1u] = energy.y; }
+            else { state[ob + o] = state[ib + o]; state[ob + o + 1u] = state[ib + o + 1u]; }
+        }
+    }
+    wtally[t][0] = t_e;
+    for (var k = 0u; k < 7u; k++) { wtally[t][1u + k] = t_g[k]; }
+    workgroupBarrier();
+    let w = wg.x + wg.y * P.tiles_x;
+    if (t == 0u && w < P.slots * 8u) {
+        var s: array<I, 8>;
+        for (var j = 0u; j < 8u; j++) { s[j] = I(0u, 0u); }
+        if (P.accumulate != 0u) { for (var j = 0u; j < 8u; j++) { s[j] = I(tallies[w * 16u + 2u * j], tallies[w * 16u + 2u * j + 1u]); } }
         for (var i = 0u; i < 64u; i++) { for (var j = 0u; j < 8u; j++) { s[j] = add(s[j], wtally[i][j]); } }
         for (var j = 0u; j < 8u; j++) { tallies[w * 16u + 2u * j] = s[j].x; tallies[w * 16u + 2u * j + 1u] = s[j].y; }
     }

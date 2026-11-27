@@ -90,3 +90,45 @@ fn a_campfire_burns_the_same_on_a_shuffled_brick_pool() { compare_pool(burning_c
 
 #[test]
 fn a_campfire_burns_the_same_on_a_pool_with_a_face_scratch_and_compact_cells() { compare_pool(burning_campfire, 60, fv_gpu::pool::Mode::Scratch, true) }
+
+/// Diffusion and carrying both on the GPU, the state staying there between
+/// the two: every tick the same as the CPU's.
+fn compare_resident(make: impl Fn() -> Sim, ticks: usize, burning: bool) {
+    let mut cpu = make();
+    let mut gpu = make();
+    let n = gpu.world.bricks();
+    let g = match fv_gpu::pool::PoolDiffusion::with_mode(&gpu.world, fv_gpu::pool::shuffled(n, 5), fv_gpu::pool::Mode::Scratch, true) {
+        Ok(g) => Arc::new(Mutex::new(g)),
+        Err(e) => { no_gpu(e); return }
+    };
+    let g2 = g.clone();
+    gpu.diffuse_hook = Some(Box::new(move |w, flow| g.lock().unwrap().diffuse(w, flow)));
+    gpu.advect_hook = Some(Box::new(move |w, flow, steps| g2.lock().unwrap().advect(w, flow, steps)));
+    let mut moving = false;
+    for t in 0..ticks {
+        cpu.step();
+        gpu.step();
+        moving |= cpu.flow.max_speed() > 0;
+        assert_eq!(cpu.hash(), gpu.hash(), "tick {t}: the world differs (diffusion and carrying on the GPU)");
+        assert_eq!(cpu.world.tallies, gpu.world.tallies, "tick {t}: the edge tallies differ");
+        assert_eq!((gpu.energy_gap(), gpu.mass_gap()), (0, 0), "tick {t}: books");
+    }
+    assert!(moving, "the air never moved, so carrying wasn't tested");
+    if burning { assert!(gpu.world.cells.iter().any(|c| c.lit), "nothing burnt") }
+}
+
+#[test]
+fn a_campfire_burns_the_same_with_diffusion_and_carrying_on_the_gpu() { compare_resident(burning_campfire, 60, true) }
+
+#[test]
+fn a_lit_valley_with_wind_is_the_same_with_carrying_on_the_gpu() {
+    compare_resident(|| {
+        let v = valley(7, 32, 32, 60);
+        let (cx, cy) = (v.crib.0.min(28), v.crib.1.min(28));
+        let gz = v.ground_at(cx, cy) as u16 + 1;
+        let mut sim = Sim::new(v.world, Sky::afternoon());
+        sim.flow.wind = [600, -250];
+        for t in 0..40 { sim.schedule(Scheduled { tick: t, peer: 0, seq: 0, command: Command::Heat { x: cx as u16, y: cy as u16, z: gz, energy: joules(250) } }) }
+        sim
+    }, 40, false);
+}

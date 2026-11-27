@@ -54,7 +54,7 @@ pub struct PoolDiffusion {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter_info: wgpu::AdapterInfo,
-    pipelines: [wgpu::ComputePipeline; 5],
+    pipelines: [wgpu::ComputePipeline; 10],
     bind_group: wgpu::BindGroup,
     params: wgpu::Buffer,
     state: wgpu::Buffer,
@@ -76,6 +76,12 @@ pub struct PoolDiffusion {
     pub last: Timings,
     /// The kernels' times, ms (two for Workgroup, three for Scratch).
     pub kernel_ms: Vec<f64>,
+    /// The copy holding the world as it stands after the last diffusion
+    /// phase, and the tick it was for: carrying the same tick starts from
+    /// it without uploading the state again.
+    resident: Option<(u64, u32)>,
+    /// Carrying works out each face once (else each cell works out its own six).
+    pub carry_once: bool,
 }
 
 impl PoolDiffusion {
@@ -101,7 +107,7 @@ impl PoolDiffusion {
         let copy_words = cells * if compact { COMPACT_STATE_WORDS } else { STATE_WORDS };
         use wgpu::BufferUsages as U;
         let buf = |label: &str, words: usize, usage: wgpu::BufferUsages| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: (words * 4) as u64, usage, mapped_at_creation: false });
-        let params = buf("params", 12, U::UNIFORM | U::COPY_DST);
+        let params = buf("params", 16, U::UNIFORM | U::COPY_DST);
         let state = buf("state", 2 * copy_words, U::STORAGE | U::COPY_DST | U::COPY_SRC);
         let sides_b = buf("sides", cells * SIDE_WORDS, U::STORAGE | U::COPY_DST);
         let vel = buf("vel", slots * 3 * (BRICK_CELLS + 64), U::STORAGE | U::COPY_DST);
@@ -123,11 +129,11 @@ impl PoolDiffusion {
         }).collect();
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("pool"), entries: &entries });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("pool"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
-        let names = ["limits_pass", "apply_pass", "faces_scratch", "limits_scratch", "apply_scratch"];
+        let names = ["limits_pass", "apply_pass", "faces_scratch", "limits_scratch", "apply_scratch", "carry_prepare", "carry_apply", "carry_prepare2", "carry_faces", "carry_apply2"];
         let pipelines = names.map(|e| device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&layout), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: None }));
         let bge: Vec<wgpu::BindGroupEntry> = (0..8).map(|b| wgpu::BindGroupEntry { binding: b as u32, resource: all[b].as_entire_binding() }).collect();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("pool"), layout: &bgl, entries: &bge });
-        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new() };
+        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new(), resident: None, carry_once: true };
         p.write_table(w);
         Ok(p)
     }
@@ -153,24 +159,16 @@ impl PoolDiffusion {
         self.queue.write_buffer(&self.table, 0, bytemuck::cast_slice(&words));
     }
 
-    /// One diffusion phase: leaves `w` exactly as `transport::diffuse` would.
-    pub fn diffuse(&mut self, w: &mut World, vel: &dyn FaceVelocity) {
-        let cells = self.slots * BRICK_CELLS;
-        let mut t = Timings::default();
-        let t0 = Instant::now();
-        // The state into copy 0, field groups struct-of-arrays per slot.
+    fn gas_words(&self) -> usize { if self.compact { 1 } else { 2 } }
+    fn heat_base(&self) -> usize { self.slots * BRICK_CELLS * GASES * self.gas_words() }
+
+    /// The state as one copy's words: field groups struct-of-arrays per slot.
+    fn pack_state(&self, w: &World) -> Vec<u32> {
         let mut state = vec![0u32; self.copy_words];
-        let gw = if self.compact { 1 } else { 2 };
-        let heat_base = cells * GASES * gw;
+        let (gw, heat_base) = (self.gas_words(), self.heat_base());
         let put = |v: &mut [u32], o: usize, x: i64| { v[o] = x as u32; v[o + 1] = (x as u64 >> 32) as u32 };
-        let ss = sides(w);
-        let mut sv = vec![0u32; cells * SIDE_WORDS];
-        let mut vv = vec![0i32; self.slots * 3 * (BRICK_CELLS + 64)];
-        let vlow = self.slots * 3 * BRICK_CELLS;
-        let c32 = |v: i64| i32::try_from(v).expect("face velocity fits in i32");
         for b in 0..self.slots {
             let s = self.slot_of[b];
-            let (ox, oy, oz) = w.brick_origin(b);
             for l in 0..BRICK_CELLS {
                 let c = &w.cells[b * BRICK_CELLS + l];
                 for k in 0..GASES {
@@ -178,16 +176,40 @@ impl PoolDiffusion {
                     if self.compact { state[o] = u32::try_from(c.gas[k].0).expect("a gas mass outside the compact cell's u32 range") } else { put(&mut state, o, c.gas[k].0) }
                 }
                 for (f, e) in [c.energy, c.solid_energy, c.skin].into_iter().enumerate() { put(&mut state, heat_base + 2 * ((s * 3 + f) * BRICK_CELLS + l), e.0) }
-                let mut one = Vec::with_capacity(SIDE_WORDS);
+            }
+        }
+        state
+    }
+
+    fn pack_sides(&self, w: &World) -> Vec<u32> {
+        let ss = sides(w);
+        let mut sv = vec![0u32; self.slots * BRICK_CELLS * SIDE_WORDS];
+        let mut one = Vec::with_capacity(SIDE_WORDS);
+        for b in 0..self.slots {
+            for l in 0..BRICK_CELLS {
+                one.clear();
                 pack_side(&mut one, &ss[b * BRICK_CELLS + l]);
-                sv[(s * BRICK_CELLS + l) * SIDE_WORDS..][..SIDE_WORDS].copy_from_slice(&one);
+                sv[(self.slot_of[b] * BRICK_CELLS + l) * SIDE_WORDS..][..SIDE_WORDS].copy_from_slice(&one);
+            }
+        }
+        sv
+    }
+
+    /// Face velocities: each cell's three + faces, then each slot's lower
+    /// boundary faces (read only where no brick lies below).
+    fn pack_vel(&self, w: &World, vel: &dyn FaceVelocity) -> Vec<i32> {
+        let mut vv = vec![0i32; self.slots * 3 * (BRICK_CELLS + 64)];
+        let vlow = self.slots * 3 * BRICK_CELLS;
+        let c32 = |v: i64| i32::try_from(v).expect("face velocity fits in i32");
+        for b in 0..self.slots {
+            let s = self.slot_of[b];
+            let (ox, oy, oz) = w.brick_origin(b);
+            for l in 0..BRICK_CELLS {
                 let (lx, ly, lz) = World::local_xyz(l);
                 let (x, y, z) = ((ox + lx) as i64, (oy + ly) as i64, (oz + lz) as i64);
                 for a in 0..3 { vv[(s * 3 + a) * BRICK_CELLS + l] = c32(vel.face(x, y, z, a)) }
-                // The brick's lower boundary faces (read only where no brick is below).
                 for a in 0..3 {
-                    let p = [lx, ly, lz];
-                    if p[a] != 0 { continue }
+                    if [lx, ly, lz][a] != 0 { continue }
                     let j = match a { 0 => ly + B * lz, 1 => lx + B * lz, _ => lx + B * ly };
                     let mut q = [x, y, z];
                     q[a] -= 1;
@@ -195,31 +217,29 @@ impl PoolDiffusion {
                 }
             }
         }
+        vv
+    }
+
+    fn params(&self, w: &World, in_copy: u32, steps: i64, accumulate: bool) -> [u32; 16] {
         let tiles = (self.slots * 8) as u32;
-        let tiles_x = if tiles <= 65_535 { tiles } else { 65_535 };
-        let params: [u32; 12] = [self.slots as u32, 0, 1, self.copy_words as u32, heat_base as u32, vlow as u32, (self.slots * 26) as u32,
-            w.ambient.0 as u32, (w.ambient.0 as u64 >> 32) as u32, tiles_x, self.compact as u32, (self.slots * 8 * 16) as u32];
-        t.prepare = ms(t0);
+        let ot = w.outside_air.gas_temperature().0;
+        [self.slots as u32, in_copy, 1 - in_copy, self.copy_words as u32, self.heat_base() as u32, (self.slots * 3 * BRICK_CELLS) as u32, (self.slots * 26) as u32,
+            w.ambient.0 as u32, (w.ambient.0 as u64 >> 32) as u32, tiles.min(65_535), self.compact as u32, (self.slots * 8 * 16) as u32,
+            steps as u32, ot as u32, (ot as u64 >> 32) as u32, accumulate as u32]
+    }
 
-        let t0 = Instant::now();
-        self.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&params));
-        self.queue.write_buffer(&self.state, 0, bytemuck::cast_slice(&state));
-        self.queue.write_buffer(&self.sides, 0, bytemuck::cast_slice(&sv));
-        self.queue.write_buffer(&self.vel, 0, bytemuck::cast_slice(&vv));
-        self.queue.write_buffer(&self.tallies, (self.slots * 8 * 16 * 4) as u64, bytemuck::cast_slice(&[0u32]));
-        self.queue.submit([]);
-        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
-        t.upload = ms(t0);
-
+    /// Runs kernels in order, each with its own parameters, timing each.
+    fn run(&mut self, jobs: &[(usize, [u32; 16])]) {
+        let tiles = (self.slots * 8) as u32;
+        let tiles_x = tiles.min(65_535);
         let groups = (tiles_x, tiles.div_ceil(tiles_x));
-        let kernels: &[usize] = if self.mode == Mode::Scratch { &[2, 3, 4] } else { &[0, 1] };
-        self.kernel_ms.clear();
-        for &k in kernels {
+        for (k, params) in jobs {
             let t0 = Instant::now();
+            self.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(params));
             let mut enc = self.device.create_command_encoder(&Default::default());
             {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("pool"), timestamp_writes: None });
-                pass.set_pipeline(&self.pipelines[k]);
+                pass.set_pipeline(&self.pipelines[*k]);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.dispatch_workgroups(groups.0, groups.1, 1);
             }
@@ -227,11 +247,19 @@ impl PoolDiffusion {
             self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
             self.kernel_ms.push(ms(t0));
         }
-        t.compute = self.kernel_ms.iter().sum();
+    }
 
+    fn wait(&self) {
+        self.queue.submit([]);
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
+    }
+
+    /// Reads back copy `copy` and the tallies, and writes them into the world
+    /// as `World::run_phase` would (the tallies are added).
+    fn read_into(&mut self, w: &mut World, copy: u32, t: &mut Timings) {
         let t0 = Instant::now();
         let mut enc = self.device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(&self.state, (self.copy_words * 4) as u64, &self.read, 0, (self.copy_words * 4) as u64);
+        enc.copy_buffer_to_buffer(&self.state, (copy as usize * self.copy_words * 4) as u64, &self.read, 0, (self.copy_words * 4) as u64);
         enc.copy_buffer_to_buffer(&self.tallies, 0, &self.read, (self.copy_words * 4) as u64, ((self.slots * 8 * 16 + 1) * 4) as u64);
         self.queue.submit([enc.finish()]);
         let slice = self.read.slice(..);
@@ -239,9 +267,10 @@ impl PoolDiffusion {
         self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
         let data: Vec<u32> = bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped")).to_vec();
         self.read.unmap();
-        t.readback = ms(t0);
+        t.readback += ms(t0);
 
         let t0 = Instant::now();
+        let (gw, heat_base) = (self.gas_words(), self.heat_base());
         let get = |o: usize| (data[o] as u64 | (data[o + 1] as u64) << 32) as i64;
         assert_eq!(data[self.copy_words + self.slots * 8 * 16], 0, "a gas mass left the compact cell's u32 range");
         let mut next = core::mem::take(&mut w.next);
@@ -268,7 +297,72 @@ impl PoolDiffusion {
         }
         core::mem::swap(&mut w.cells, &mut next);
         w.next = next;
-        t.unpack = ms(t0);
+        t.unpack += ms(t0);
+    }
+
+    /// Uploads the state (into copy 0) and the sides.
+    fn upload(&mut self, w: &World, t: &mut Timings) {
+        let t0 = Instant::now();
+        let state = self.pack_state(w);
+        let sv = self.pack_sides(w);
+        t.prepare += ms(t0);
+        let t0 = Instant::now();
+        self.queue.write_buffer(&self.state, 0, bytemuck::cast_slice(&state));
+        self.queue.write_buffer(&self.sides, 0, bytemuck::cast_slice(&sv));
+        self.wait();
+        t.upload += ms(t0);
+    }
+
+    fn upload_vel(&mut self, w: &World, vel: &dyn FaceVelocity, t: &mut Timings) {
+        let t0 = Instant::now();
+        let vv = self.pack_vel(w, vel);
+        t.prepare += ms(t0);
+        let t0 = Instant::now();
+        self.queue.write_buffer(&self.vel, 0, bytemuck::cast_slice(&vv));
+        self.queue.write_buffer(&self.tallies, (self.slots * 8 * 16 * 4) as u64, bytemuck::cast_slice(&[0u32]));
+        self.wait();
+        t.upload += ms(t0);
+    }
+
+    /// One diffusion phase: leaves `w` exactly as `transport::diffuse` would.
+    /// The result stays on the GPU for carrying in the same tick.
+    pub fn diffuse(&mut self, w: &mut World, vel: &dyn FaceVelocity) {
+        let mut t = Timings::default();
+        self.kernel_ms.clear();
+        self.upload(w, &mut t);
+        self.upload_vel(w, vel, &mut t);
+        let p = self.params(w, 0, 1, false);
+        let jobs: Vec<(usize, [u32; 16])> = if self.mode == Mode::Scratch { vec![(2, p), (3, p), (4, p)] } else { vec![(0, p), (1, p)] };
+        self.run(&jobs);
+        t.compute = self.kernel_ms.iter().sum();
+        self.read_into(w, 1, &mut t);
+        self.resident = Some((w.tick, 1));
+        self.last = t;
+    }
+
+    /// Carrying (`transport::advect`) in `steps` sub-steps: leaves `w`
+    /// exactly as `advect` would. If this tick's diffusion ran here, it
+    /// starts from the state already on the GPU: only the new face
+    /// velocities go up. (Needs the face-scratch mode: its scratch holds
+    /// the outflow totals.)
+    pub fn advect(&mut self, w: &mut World, vel: &dyn FaceVelocity, steps: i64) {
+        assert_eq!(self.mode, Mode::Scratch, "carrying runs on the face-scratch pool");
+        let mut t = Timings::default();
+        self.kernel_ms.clear();
+        let mut cur = match self.resident.take() {
+            Some((tick, copy)) if tick == w.tick => copy,
+            _ => { self.upload(w, &mut t); 0 }
+        };
+        self.upload_vel(w, vel, &mut t);
+        let mut jobs = Vec::new();
+        for i in 0..steps {
+            let p = self.params(w, cur, steps, i > 0);
+            if self.carry_once { jobs.push((7, p)); jobs.push((8, p)); jobs.push((9, p)) } else { jobs.push((5, p)); jobs.push((6, p)) }
+            cur = 1 - cur;
+        }
+        self.run(&jobs);
+        t.compute = self.kernel_ms.iter().sum();
+        self.read_into(w, cur, &mut t);
         self.last = t;
     }
 }

@@ -40,6 +40,10 @@ pub struct Sim {
     /// Replaces the diffusion phase (used to split it between peers). It
     /// must leave the world exactly as `transport::diffuse` would.
     pub diffuse_hook: Option<Box<dyn FnMut(&mut World, &Flow) + Send>>,
+    /// Replaces carrying (`transport::advect`, given the flow and the number
+    /// of sub-steps), e.g. with the GPU's. It must leave the world exactly as
+    /// `advect` would.
+    pub advect_hook: Option<Box<dyn FnMut(&mut World, &Flow, i64) + Send>>,
     /// Pieces that came loose and are falling.
     pub bodies: Bodies,
     /// Look at what holds things up every this many ticks.
@@ -56,7 +60,7 @@ impl Sim {
         let flow = Flow::new(&world);
         let books = Books::open(&world);
         let light = Light::new(world.cells.len());
-        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: crate::flow::ADVECT_STEPS, diffuse_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default(), flames: None }
+        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: crate::flow::ADVECT_STEPS, diffuse_hook: None, advect_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default(), flames: None }
     }
 
     pub fn schedule(&mut self, s: Scheduled) {
@@ -98,7 +102,10 @@ impl Sim {
         // heat, released into its gas at the end of the last tick, reaches
         // the fuel beside it before the plume carries that gas away.
         self.flow.step(w);
-        advect(w, &self.flow, self.advect_steps);
+        match self.advect_hook.as_mut() {
+            Some(h) => h(w, &self.flow, self.advect_steps),
+            None => advect(w, &self.flow, self.advect_steps),
+        }
         chem::react_in(w, &self.flow);
         if let Some(f) = self.flames.as_mut() {
             f.resize(w.cells.len(), 0);
