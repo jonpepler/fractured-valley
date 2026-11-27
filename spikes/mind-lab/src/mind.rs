@@ -1201,7 +1201,9 @@ impl<S: Store> Mind<S> {
         if self.held.alarm.is_some_and(|a| s.tick > a.3 + ALARM_KEEP) { self.held.alarm = None; }
         self.mods.focus = 0;
         if let Some(i) = self.held.intent {
-            let carried = (st.act[i as usize] as i64 * self.params.persist as i64 / 1000) as i32;
+            // (Round 2: what is carried has faded for every tick since the last think.)
+            let mut carried = st.act[i as usize];
+            for _ in 0..dt { carried = (carried as i64 * self.params.persist as i64 / 1000) as i32; }
             let mut a0 = carried;
             if let Some((n, a)) = self.held.boost.take() { inject.push((n, a)); if n == i { a0 += a; } }
             else if self.last.ws.contains(&i) {
