@@ -1,13 +1,15 @@
-//! The brick-pool diffusion (brief 10's layout) on the dead tree: one phase
-//! compared cell by cell, best-of-REPS timings next to the dense version's,
-//! then TICKS whole ticks compared by hash.
+//! The brick-pool diffusion (brief 10's layout) on the dead tree, in each of
+//! its variants (faces in workgroup memory, or in a global scratch; i64 or
+//! compact u32 gas masses): one phase compared cell by cell, best-of-REPS
+//! kernel times next to the dense version's, then TICKS whole ticks.
 //!
-//!     VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json cargo run --release -p fv-gpu --example pool_diffuse
+//!     cargo run --release -p fv-gpu --example pool_diffuse
+//! (on a machine without a GPU: VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json)
 use fv_core::rad::Sky;
 use fv_core::scene::crib_and_tree;
 use fv_core::sim::{Command, Scheduled, Sim};
 use fv_core::units::*;
-use fv_gpu::pool::{shuffled, PoolDiffusion};
+use fv_gpu::pool::{shuffled, Mode, PoolDiffusion};
 use std::sync::{Arc, Mutex};
 
 fn scene() -> Sim {
@@ -23,37 +25,42 @@ fn main() {
     let mut sim = scene();
     for _ in 0..at { sim.step() }
     let n = sim.world.bricks();
-    let mut pool = PoolDiffusion::from_world(&sim.world, shuffled(n, 7)).expect("GPU");
-    let mut dense = fv_gpu::GpuDiffusion::new(&sim.world).expect("GPU");
-    println!("adapter: {} ({:?})", pool.adapter_info.name, pool.adapter_info.device_type);
+    let cells = sim.world.cells.len() as f64;
     let mut cpu_w = sim.world.clone();
     fv_core::transport::diffuse(&mut cpu_w, &sim.flow);
-    let mut w = sim.world.clone();
-    pool.diffuse(&mut w, &sim.flow);
-    let bad = (0..w.cells.len()).filter(|&i| w.cells[i] != cpu_w.cells[i]).count();
-    let tb = (0..w.tallies.len()).filter(|&b| w.tallies[b] != cpu_w.tallies[b]).count();
-    println!("tick {at}: {} cells, {bad} differ; {tb} of {n} tallies differ", w.cells.len());
-    let (mut pk, mut dk) = ([f64::MAX; 2], [f64::MAX; 4]);
-    let (mut pt, mut dt) = (f64::MAX, f64::MAX);
-    for _ in 0..reps {
+    let mut dense = fv_gpu::GpuDiffusion::new(&sim.world).expect("GPU");
+    println!("adapter: {} ({:?}); {} cells", dense.adapter_info.name, dense.adapter_info.device_type, cells);
+    let mut dk = [f64::MAX; 4];
+    for _ in 0..reps { let mut w = sim.world.clone(); dense.diffuse(&mut w, &sim.flow); let k = dense.kernel_times(); for j in 0..4 { dk[j] = dk[j].min(k[j]) } }
+    println!("dense                      kernels {:6.1} ms  (faces {:.1}, limits {:.1}, apply {:.1}, tallies {:.1})", dk.iter().sum::<f64>(), dk[0], dk[1], dk[2], dk[3]);
+    for (mode, compact) in [(Mode::Workgroup, false), (Mode::Scratch, false), (Mode::Scratch, true)] {
+        let mut pool = PoolDiffusion::with_mode(&sim.world, shuffled(n, 7), mode, compact).expect("GPU");
         let mut w = sim.world.clone();
         pool.diffuse(&mut w, &sim.flow);
-        for j in 0..2 { pk[j] = pk[j].min(pool.kernel_ms[j]) }
-        pt = pt.min(pool.last.total());
-        let mut w = sim.world.clone();
-        dense.diffuse(&mut w, &sim.flow);
-        dt = dt.min(dense.last.total());
-        let k = dense.kernel_times();
-        for j in 0..4 { dk[j] = dk[j].min(k[j]) }
+        let bad = (0..w.cells.len()).filter(|&i| w.cells[i] != cpu_w.cells[i]).count() + (0..n).filter(|&b| w.tallies[b] != cpu_w.tallies[b]).count();
+        let mut best = vec![f64::MAX; pool.kernel_ms.len()];
+        for _ in 0..reps { let mut w = sim.world.clone(); pool.diffuse(&mut w, &sim.flow); for j in 0..best.len() { best[j] = best[j].min(pool.kernel_ms[j]) } }
+        let total: f64 = best.iter().sum();
+        let label = format!("pool {:?}{}", mode, if compact { ", compact" } else { "" });
+        println!("{label:26} kernels {total:6.1} ms  ({}); {bad} cells/tallies differ", best.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(" + "));
+        if mode == Mode::Scratch && compact && ticks > 0 {
+            let mut a = sim.clone_for_test();
+            let mut b = sim.clone_for_test();
+            let g = Arc::new(Mutex::new(pool));
+            b.diffuse_hook = Some(Box::new(move |w, flow| g.lock().unwrap().diffuse(w, flow)));
+            let mut same = 0;
+            for _ in 0..ticks { a.step(); b.step(); if a.hash() == b.hash() { same += 1 } }
+            println!("  {ticks} whole ticks: {same} hashes equal; gaps {} {}", b.energy_gap(), b.mass_gap());
+        }
     }
-    println!("pool kernels (ms): limits pass {:.1} + apply pass {:.1} = {:.1}; phase with transfers {pt:.1}", pk[0], pk[1], pk[0] + pk[1]);
-    println!("dense kernels (ms): faces {:.1} + limits {:.1} + bricks {:.1} + tallies {:.1} = {:.1}; phase with transfers {dt:.1}", dk[0], dk[1], dk[2], dk[3], dk.iter().sum::<f64>());
-    let mut b = scene();
-    for _ in 0..at { b.step() }
-    let g = Arc::new(Mutex::new(pool));
-    let g2 = g.clone();
-    b.diffuse_hook = Some(Box::new(move |w, flow| g2.lock().unwrap().diffuse(w, flow)));
-    let mut same = 0;
-    for _ in 0..ticks { sim.step(); b.step(); if sim.hash() == b.hash() { same += 1 } }
-    println!("{ticks} whole ticks: {same} hashes equal; gaps {} {}", b.energy_gap(), b.mass_gap());
+}
+
+trait CloneForTest { fn clone_for_test(&self) -> Sim; }
+impl CloneForTest for Sim {
+    // A fresh run to the same tick (Sim holds boxed hooks, so it isn't Clone).
+    fn clone_for_test(&self) -> Sim {
+        let mut s = scene();
+        while s.world.tick < self.world.tick { s.step() }
+        s
+    }
 }

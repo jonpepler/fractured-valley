@@ -13,7 +13,7 @@
 struct Params {
     slots: u32, in_copy: u32, out_copy: u32, copy_words: u32,
     heat_base: u32, vlow: u32, outside: u32, ambient_lo: u32,
-    ambient_hi: u32, tiles_x: u32, pad0: u32, pad1: u32,
+    ambient_hi: u32, tiles_x: u32, compact: u32, flag: u32,
 }
 @group(0) @binding(0) var<uniform> P: Params;
 // Two copies of the state; in each, the gas group (7 fields × 512 cells per
@@ -37,9 +37,24 @@ const SS: u32 = 25u;
 
 fn ambient() -> I { return I(P.ambient_lo, P.ambient_hi); }
 fn st(o: u32) -> I { return I(state[o], state[o + 1u]); }
-fn gas_at(copy: u32, c: u32, k: u32) -> I {
+// The gas group: i64 (two words) per mass, or in the compact cell u32 (one
+// word; a mass is never negative, and the host and shader check < 2³²).
+fn gas_word(copy: u32, c: u32, k: u32) -> u32 {
     let slot = c / 512u; let l = c % 512u;
-    return st(copy * P.copy_words + 2u * ((slot * 7u + k) * 512u + l));
+    return copy * P.copy_words + select(2u, 1u, P.compact != 0u) * ((slot * 7u + k) * 512u + l);
+}
+fn gas_at(copy: u32, c: u32, k: u32) -> I {
+    let o = gas_word(copy, c, k);
+    if (P.compact != 0u) { return I(state[o], 0u); }
+    return st(o);
+}
+fn put_gas(copy: u32, c: u32, k: u32, v: I) {
+    let o = gas_word(copy, c, k);
+    if (P.compact != 0u) {
+        // Out of the compact range: flag it (the host refuses the result).
+        if (v.y != 0u) { tallies[P.flag] = 1u; }
+        state[o] = v.x;
+    } else { state[o] = v.x; state[o + 1u] = v.y; }
 }
 fn heat_at(copy: u32, c: u32, f: u32) -> I {
     let slot = c / 512u; let l = c % 512u;
@@ -296,7 +311,7 @@ fn apply_pass(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
     if (live) {
         let slot = c / 512u; let l = c % 512u;
         let ob = P.out_copy * P.copy_words;
-        for (var k = 0u; k < 7u; k++) { let o = ob + 2u * ((slot * 7u + k) * 512u + l); state[o] = g[k].x; state[o + 1u] = g[k].y; }
+        for (var k = 0u; k < 7u; k++) { put_gas(P.out_copy, c, k, g[k]); }
         var hs = array<I, 3>(energy, solid_e, skin);
         for (var f = 0u; f < 3u; f++) { let o = ob + P.heat_base + 2u * ((slot * 3u + f) * 512u + l); state[o] = hs[f].x; state[o + 1u] = hs[f].y; }
     }
@@ -305,6 +320,166 @@ fn apply_pass(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
     for (var k = 0u; k < 7u; k++) { wtally[t][1u + k] = t_g[k]; }
     workgroupBarrier();
     if (t == 0u && live) {
+        var s: array<I, 8>;
+        for (var j = 0u; j < 8u; j++) { s[j] = I(0u, 0u); }
+        for (var i = 0u; i < 64u; i++) { for (var j = 0u; j < 8u; j++) { s[j] = add(s[j], wtally[i][j]); } }
+        for (var j = 0u; j < 8u; j++) { tallies[w * 16u + 2u * j] = s[j].x; tallies[w * 16u + 2u * j + 1u] = s[j].y; }
+    }
+}
+
+// ── the same phase with a global face scratch ─────────────────────────────
+// Every face worked out once a tick (not once per pass) and kept per brick:
+// each cell's three + faces, then each brick's lower boundary faces where
+// no brick lies below (3 × 64). Costs ~280 B per active cell of transient
+// memory and saves half the face arithmetic, which §3 of the notes shows is
+// the limit while 64-bit arithmetic is emulated.
+@group(0) @binding(7) var<storage, read_write> faces: array<u32>;
+const FS: u32 = 21u;
+const FACES_PER_SLOT: u32 = 1728u;
+
+fn plus_slot(c: u32, axis: u32) -> u32 { return c / 512u * FACES_PER_SLOT + axis * 512u + c % 512u; }
+fn low_face(c: u32, axis: u32) -> u32 {
+    let p = lxyz(c % 512u);
+    var j = 0u;
+    if (axis == 0u) { j = p.y + 8u * p.z; } else if (axis == 1u) { j = p.x + 8u * p.z; } else { j = p.x + 8u * p.y; }
+    return c / 512u * FACES_PER_SLOT + 1536u + axis * 64u + j;
+}
+fn store_face(s: u32, f: Face) {
+    let o = s * FS;
+    faces[o] = f.f.energy.x; faces[o + 1u] = f.f.energy.y; faces[o + 2u] = f.f.carried.x; faces[o + 3u] = f.f.carried.y;
+    for (var k = 0u; k < 7u; k++) { faces[o + 4u + 2u * k] = f.f.gas[k].x; faces[o + 5u + 2u * k] = f.f.gas[k].y; }
+    faces[o + 18u] = f.f.flame.x; faces[o + 19u] = f.f.flame.y;
+    faces[o + 20u] = select(0u, 1u, f.present) | select(0u, 2u, f.f.film);
+}
+fn fw(o: u32) -> I { return I(faces[o], faces[o + 1u]); }
+fn load_face(s: u32) -> Flux {
+    let o = s * FS;
+    var f: Flux;
+    f.energy = fw(o); f.carried = fw(o + 2u);
+    for (var k = 0u; k < 7u; k++) { f.gas[k] = fw(o + 4u + 2u * k); }
+    f.flame = fw(o + 18u); f.film = (faces[o + 20u] & 2u) != 0u;
+    return f;
+}
+fn has_face(s: u32) -> bool { return (faces[s * FS + 20u] & 1u) != 0u; }
+// The face slot on side `up` of cell c along axis, and the cell beyond.
+fn face_slot(c: u32, axis: u32, up: bool, permeable: bool) -> vec2<u32> {
+    let n = step(c, axis, up, permeable);
+    if (up) { return vec2<u32>(plus_slot(c, axis), n); }
+    if (n != OUT && n != NONE) { return vec2<u32>(plus_slot(n, axis), n); }
+    return vec2<u32>(low_face(c, axis), n);
+}
+fn cell_of(id: vec3<u32>) -> u32 { return id.x + id.y * P.tiles_x * 64u; }
+
+@compute @workgroup_size(64)
+fn faces_scratch(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    let perm = side(c).permeable;
+    let p = lxyz(c % 512u);
+    for (var axis = 0u; axis < 3u; axis++) {
+        store_face(plus_slot(c, axis), face(c, step(c, axis, true, perm), vplus(c, axis), axis));
+        if (p[axis] == 0u) {
+            let dn = step(c, axis, false, perm);
+            if (dn == OUT || dn == NONE) { store_face(low_face(c, axis), face(dn, c, vminus(c, axis, dn), axis)); }
+        }
+    }
+}
+
+@compute @workgroup_size(64)
+fn limits_scratch(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    let perm = side(c).permeable;
+    var leaving: array<I, 7>;
+    for (var k = 0u; k < 7u; k++) { leaving[k] = I(0u, 0u); }
+    for (var axis = 0u; axis < 3u; axis++) {
+        for (var d = 0u; d < 2u; d++) {
+            let up = d == 1u;
+            let fs = face_slot(c, axis, up, perm);
+            if (!has_face(fs.x)) { continue; }
+            for (var k = 0u; k < 7u; k++) {
+                let g = fw(fs.x * FS + 4u + 2u * k);
+                if (up && gt0(g)) { leaving[k] = add(leaving[k], g); }
+                if (!up && isneg(g)) { leaving[k] = sub(leaving[k], g); }
+            }
+        }
+    }
+    var ppm = i_(FULL);
+    for (var k = 0u; k < 7u; k++) {
+        let can = divi(muli(mx(gas(c, k), I(0u, 0u)), 7), 8);
+        if (lt(can, leaving[k])) { ppm = mn(ppm, mul_div(can, i_(FULL), leaving[k])); }
+    }
+    limits[2u * c] = ppm.x; limits[2u * c + 1u] = ppm.y;
+}
+
+@compute @workgroup_size(64)
+fn apply_scratch(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) t: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+    let c = cell_of(id);
+    let live = c < P.slots * 512u;
+    var t_e = I(0u, 0u);
+    var t_g: array<I, 7>;
+    for (var k = 0u; k < 7u; k++) { t_g[k] = I(0u, 0u); }
+    if (live) {
+        let my = side(c);
+        var g: array<I, 7>;
+        for (var k = 0u; k < 7u; k++) { g[k] = gas(c, k); }
+        var energy = heat_at(P.in_copy, c, 0u); var solid_e = heat_at(P.in_copy, c, 1u); var skin = heat_at(P.in_copy, c, 2u);
+        for (var axis = 0u; axis < 3u; axis++) {
+            for (var d = 0u; d < 2u; d++) {
+                let isup = d == 1u;
+                let fs = face_slot(c, axis, isup, my.permeable);
+                if (!has_face(fs.x)) { continue; }
+                var f = load_face(fs.x);
+                let inside = fs.y != OUT;
+                if (inside) { scale_gas(&f, mn(limit(c), limit(fs.y))); } else { scale_gas(&f, limit(c)); }
+                let e = select(f.energy, neg_(f.energy), isup);
+                if (my.wet) { solid_e = add(solid_e, e); }
+                else if (my.permeable) { energy = add(energy, e); }
+                else if (f.film) { skin = add(skin, e); }
+                else { solid_e = add(solid_e, e); }
+                let flame = select(f.flame, neg_(f.flame), isup);
+                if (isneg(flame)) { energy = add(energy, flame); } else { skin = add(skin, flame); }
+                let cr = select(f.carried, neg_(f.carried), isup);
+                energy = add(energy, cr);
+                for (var k = 0u; k < 7u; k++) { g[k] = add(g[k], select(f.gas[k], neg_(f.gas[k]), isup)); }
+                if (!inside) {
+                    t_e = add(t_e, add(e, cr));
+                    for (var k = 0u; k < 7u; k++) { t_g[k] = add(t_g[k], select(f.gas[k], neg_(f.gas[k]), isup)); }
+                }
+            }
+        }
+        if (gt0(my.fuel_g) && lt(my.t, my.t_skin)) {
+            var lean = 0;
+            for (var axis = 0u; axis < 2u; axis++) {
+                for (var d = 0u; d < 2u; d++) {
+                    let n = step(c, axis, d == 1u, false);
+                    if (n == OUT || n == NONE) { continue; }
+                    if (!iszero(lsd(n * SS + 12u))) { lean += C_FLAME_LEAN; }
+                }
+            }
+            lean = min(lean, 1000);
+            if (lean > 0) {
+                let gg = divi(muli(my.fuel_g, lean), 1000);
+                let e0 = heat_at(P.in_copy, c, 0u);
+                let latent = muli(gas(c, C_VAPOUR), C_LATENT);
+                let q = mn(heat(gg, sub(my.t_skin, my.t)), mx(divi(sub(e0, latent), 4), I(0u, 0u)));
+                energy = sub(energy, q);
+                skin = add(skin, q);
+            }
+        }
+        for (var k = 0u; k < 7u; k++) { put_gas(P.out_copy, c, k, g[k]); }
+        let slot = c / 512u; let l = c % 512u;
+        let ob = P.out_copy * P.copy_words + P.heat_base;
+        var hs = array<I, 3>(energy, solid_e, skin);
+        for (var f = 0u; f < 3u; f++) { let o = ob + 2u * ((slot * 3u + f) * 512u + l); state[o] = hs[f].x; state[o + 1u] = hs[f].y; }
+    }
+    // The workgroup's 64 cells (an eighth of a brick, in cell order): its
+    // edge tally, an integer sum in thread order.
+    wtally[t][0] = t_e;
+    for (var k = 0u; k < 7u; k++) { wtally[t][1u + k] = t_g[k]; }
+    workgroupBarrier();
+    let w = wg.x + wg.y * P.tiles_x;
+    if (t == 0u && w < P.slots * 8u) {
         var s: array<I, 8>;
         for (var j = 0u; j < 8u; j++) { s[j] = I(0u, 0u); }
         for (var i = 0u; i < 64u; i++) { for (var j = 0u; j < 8u; j++) { s[j] = add(s[j], wtally[i][j]); } }

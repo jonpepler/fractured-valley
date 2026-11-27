@@ -59,11 +59,11 @@ fn a_lit_valley_is_the_same_on_the_gpu() {
 }
 
 /// The same on the brick pool, with the bricks in a shuffled slot order.
-fn compare_pool(make: impl Fn() -> Sim, ticks: usize) {
+fn compare_pool(make: impl Fn() -> Sim, ticks: usize, mode: fv_gpu::pool::Mode, compact: bool) {
     let mut cpu = make();
     let mut gpu = make();
     let n = gpu.world.bricks();
-    let g = match fv_gpu::pool::PoolDiffusion::from_world(&gpu.world, fv_gpu::pool::shuffled(n, 99)) {
+    let g = match fv_gpu::pool::PoolDiffusion::with_mode(&gpu.world, fv_gpu::pool::shuffled(n, 99), mode, compact) {
         Ok(g) => Arc::new(Mutex::new(g)),
         Err(e) => { no_gpu(e); return }
     };
@@ -78,12 +78,15 @@ fn compare_pool(make: impl Fn() -> Sim, ticks: usize) {
     assert!(gpu.world.cells.iter().any(|c| c.lit), "nothing burnt");
 }
 
-#[test]
-fn a_campfire_burns_the_same_on_a_shuffled_brick_pool() {
-    compare_pool(|| {
-        let f = campfire(24, 16);
-        let mut sim = Sim::new(f.world, Sky::afternoon());
-        for t in 0..30 { for (i, &(x, y, z)) in f.torch.iter().enumerate() { sim.schedule(Scheduled { tick: t, peer: 0, seq: i as u32, command: Command::Heat { x: x as u16, y: y as u16, z: z as u16, energy: joules(2_000) } }) } }
-        sim
-    }, 60);
+fn burning_campfire() -> Sim {
+    let f = campfire(24, 16);
+    let mut sim = Sim::new(f.world, Sky::afternoon());
+    for t in 0..30 { for (i, &(x, y, z)) in f.torch.iter().enumerate() { sim.schedule(Scheduled { tick: t, peer: 0, seq: i as u32, command: Command::Heat { x: x as u16, y: y as u16, z: z as u16, energy: joules(2_000) } }) } }
+    sim
 }
+
+#[test]
+fn a_campfire_burns_the_same_on_a_shuffled_brick_pool() { compare_pool(burning_campfire, 60, fv_gpu::pool::Mode::Workgroup, false) }
+
+#[test]
+fn a_campfire_burns_the_same_on_a_pool_with_a_face_scratch_and_compact_cells() { compare_pool(burning_campfire, 60, fv_gpu::pool::Mode::Scratch, true) }

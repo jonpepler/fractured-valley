@@ -16,8 +16,21 @@ use std::time::Instant;
 
 pub fn pool_shader_source() -> String { constants() + include_str!("common.wgsl") + include_str!("pool.wgsl") }
 
-/// Words of state per cell in one copy: 7 gases and 3 energies, i64 each.
+/// Words of state per cell in one copy: 7 gases and 3 energies, i64 each
+/// (the compact cell keeps each gas mass in one u32 word).
 pub const STATE_WORDS: usize = 2 * (GASES + 3);
+pub const COMPACT_STATE_WORDS: usize = GASES + 2 * 3;
+/// Faces kept per brick slot with a global face scratch.
+pub const FACES_PER_SLOT: usize = 3 * BRICK_CELLS + 3 * 64;
+
+/// How the pool runs the phase.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Faces only in workgroup memory, worked out again in each of two passes.
+    Workgroup,
+    /// Faces worked out once into a global scratch, then the limiters, then apply.
+    Scratch,
+}
 const NONE_SLOT: u32 = u32::MAX;
 
 /// A permutation of `n` brick slots (deterministic), so that slot order is
@@ -41,8 +54,8 @@ pub struct PoolDiffusion {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter_info: wgpu::AdapterInfo,
-    pipelines: [wgpu::ComputePipeline; 2],
-    bind_groups: [wgpu::BindGroup; 2],
+    pipelines: [wgpu::ComputePipeline; 5],
+    bind_group: wgpu::BindGroup,
     params: wgpu::Buffer,
     state: wgpu::Buffer,
     sides: wgpu::Buffer,
@@ -52,14 +65,23 @@ pub struct PoolDiffusion {
     read: wgpu::Buffer,
     /// Brick b of the world is in slot `slot_of[b]`.
     pub slot_of: Vec<usize>,
+    /// Held by the bind group; kept here so its size is visible.
+    #[allow(dead_code)]
+    faces: wgpu::Buffer,
     slots: usize,
     copy_words: usize,
+    pub mode: Mode,
+    /// Gas masses as u32 (the compact cell).
+    pub compact: bool,
     pub last: Timings,
-    pub kernel_ms: [f64; 2],
+    /// The kernels' times, ms (two for Workgroup, three for Scratch).
+    pub kernel_ms: Vec<f64>,
 }
 
 impl PoolDiffusion {
-    pub fn from_world(w: &World, slot_of: Vec<usize>) -> Result<PoolDiffusion, String> {
+    pub fn from_world(w: &World, slot_of: Vec<usize>) -> Result<PoolDiffusion, String> { Self::with_mode(w, slot_of, Mode::Workgroup, false) }
+
+    pub fn with_mode(w: &World, slot_of: Vec<usize>, mode: Mode, compact: bool) -> Result<PoolDiffusion, String> {
         let slots = w.bricks();
         assert_eq!(slot_of.len(), slots);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -76,7 +98,7 @@ impl PoolDiffusion {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("pool"), source: wgpu::ShaderSource::Wgsl(pool_shader_source().into()) });
 
         let cells = slots * BRICK_CELLS;
-        let copy_words = cells * STATE_WORDS;
+        let copy_words = cells * if compact { COMPACT_STATE_WORDS } else { STATE_WORDS };
         use wgpu::BufferUsages as U;
         let buf = |label: &str, words: usize, usage: wgpu::BufferUsages| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: (words * 4) as u64, usage, mapped_at_creation: false });
         let params = buf("params", 12, U::UNIFORM | U::COPY_DST);
@@ -85,17 +107,27 @@ impl PoolDiffusion {
         let vel = buf("vel", slots * 3 * (BRICK_CELLS + 64), U::STORAGE | U::COPY_DST);
         let table = buf("table", slots * 26 + 20 + SIDE_WORDS, U::STORAGE | U::COPY_DST);
         let lim = buf("limits", cells * 2, U::STORAGE);
-        let tallies = buf("tallies", slots * 8 * 16, U::STORAGE | U::COPY_SRC);
-        let read = buf("read", copy_words + slots * 8 * 16, U::MAP_READ | U::COPY_DST);
-        let all = [&params, &state, &sides_b, &vel, &table, &lim, &tallies];
-        let names = ["limits_pass", "apply_pass"];
-        let uses: [&[u32]; 2] = [&[0, 1, 2, 3, 4, 5], &[0, 1, 2, 3, 4, 5, 6]];
-        let pipelines = names.map(|e| device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: None, module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: None }));
-        let bind_groups = std::array::from_fn(|k| {
-            let entries: Vec<wgpu::BindGroupEntry> = uses[k].iter().map(|&b| wgpu::BindGroupEntry { binding: b, resource: all[b as usize].as_entire_binding() }).collect();
-            device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(names[k]), layout: &pipelines[k].get_bind_group_layout(0), entries: &entries })
-        });
-        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_groups, params, state, sides: sides_b, vel, table, tallies, read, slot_of, slots, copy_words, last: Timings::default(), kernel_ms: [0.0; 2] };
+        // The tallies, then one word flagging a gas mass out of the compact range.
+        let tallies = buf("tallies", slots * 8 * 16 + 1, U::STORAGE | U::COPY_SRC | U::COPY_DST);
+        let faces = buf("faces", if mode == Mode::Scratch { slots * FACES_PER_SLOT * crate::FLUX_WORDS } else { crate::FLUX_WORDS }, U::STORAGE);
+        let read = buf("read", copy_words + slots * 8 * 16 + 1, U::MAP_READ | U::COPY_DST);
+        let all = [&params, &state, &sides_b, &vel, &table, &lim, &tallies, &faces];
+        // One layout for every kernel: binding 0 uniform, the rest storage
+        // (read-only: sides, velocities, table).
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..8u32).map(|b| wgpu::BindGroupLayoutEntry {
+            binding: b, visibility: wgpu::ShaderStages::COMPUTE, count: None,
+            ty: wgpu::BindingType::Buffer {
+                ty: if b == 0 { wgpu::BufferBindingType::Uniform } else { wgpu::BufferBindingType::Storage { read_only: matches!(b, 2 | 3 | 4) } },
+                has_dynamic_offset: false, min_binding_size: None,
+            },
+        }).collect();
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("pool"), entries: &entries });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("pool"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
+        let names = ["limits_pass", "apply_pass", "faces_scratch", "limits_scratch", "apply_scratch"];
+        let pipelines = names.map(|e| device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&layout), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: None }));
+        let bge: Vec<wgpu::BindGroupEntry> = (0..8).map(|b| wgpu::BindGroupEntry { binding: b as u32, resource: all[b].as_entire_binding() }).collect();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("pool"), layout: &bgl, entries: &bge });
+        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new() };
         p.write_table(w);
         Ok(p)
     }
@@ -128,7 +160,8 @@ impl PoolDiffusion {
         let t0 = Instant::now();
         // The state into copy 0, field groups struct-of-arrays per slot.
         let mut state = vec![0u32; self.copy_words];
-        let heat_base = cells * GASES * 2;
+        let gw = if self.compact { 1 } else { 2 };
+        let heat_base = cells * GASES * gw;
         let put = |v: &mut [u32], o: usize, x: i64| { v[o] = x as u32; v[o + 1] = (x as u64 >> 32) as u32 };
         let ss = sides(w);
         let mut sv = vec![0u32; cells * SIDE_WORDS];
@@ -140,7 +173,10 @@ impl PoolDiffusion {
             let (ox, oy, oz) = w.brick_origin(b);
             for l in 0..BRICK_CELLS {
                 let c = &w.cells[b * BRICK_CELLS + l];
-                for k in 0..GASES { put(&mut state, 2 * ((s * GASES + k) * BRICK_CELLS + l), c.gas[k].0) }
+                for k in 0..GASES {
+                    let o = gw * ((s * GASES + k) * BRICK_CELLS + l);
+                    if self.compact { state[o] = u32::try_from(c.gas[k].0).expect("a gas mass outside the compact cell's u32 range") } else { put(&mut state, o, c.gas[k].0) }
+                }
                 for (f, e) in [c.energy, c.solid_energy, c.skin].into_iter().enumerate() { put(&mut state, heat_base + 2 * ((s * 3 + f) * BRICK_CELLS + l), e.0) }
                 let mut one = Vec::with_capacity(SIDE_WORDS);
                 pack_side(&mut one, &ss[b * BRICK_CELLS + l]);
@@ -162,7 +198,7 @@ impl PoolDiffusion {
         let tiles = (self.slots * 8) as u32;
         let tiles_x = if tiles <= 65_535 { tiles } else { 65_535 };
         let params: [u32; 12] = [self.slots as u32, 0, 1, self.copy_words as u32, heat_base as u32, vlow as u32, (self.slots * 26) as u32,
-            w.ambient.0 as u32, (w.ambient.0 as u64 >> 32) as u32, tiles_x, 0, 0];
+            w.ambient.0 as u32, (w.ambient.0 as u64 >> 32) as u32, tiles_x, self.compact as u32, (self.slots * 8 * 16) as u32];
         t.prepare = ms(t0);
 
         let t0 = Instant::now();
@@ -170,30 +206,33 @@ impl PoolDiffusion {
         self.queue.write_buffer(&self.state, 0, bytemuck::cast_slice(&state));
         self.queue.write_buffer(&self.sides, 0, bytemuck::cast_slice(&sv));
         self.queue.write_buffer(&self.vel, 0, bytemuck::cast_slice(&vv));
+        self.queue.write_buffer(&self.tallies, (self.slots * 8 * 16 * 4) as u64, bytemuck::cast_slice(&[0u32]));
         self.queue.submit([]);
         self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
         t.upload = ms(t0);
 
         let groups = (tiles_x, tiles.div_ceil(tiles_x));
-        for k in 0..2 {
+        let kernels: &[usize] = if self.mode == Mode::Scratch { &[2, 3, 4] } else { &[0, 1] };
+        self.kernel_ms.clear();
+        for &k in kernels {
             let t0 = Instant::now();
             let mut enc = self.device.create_command_encoder(&Default::default());
             {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("pool"), timestamp_writes: None });
                 pass.set_pipeline(&self.pipelines[k]);
-                pass.set_bind_group(0, &self.bind_groups[k], &[]);
+                pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.dispatch_workgroups(groups.0, groups.1, 1);
             }
             self.queue.submit([enc.finish()]);
             self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
-            self.kernel_ms[k] = ms(t0);
+            self.kernel_ms.push(ms(t0));
         }
-        t.compute = self.kernel_ms[0] + self.kernel_ms[1];
+        t.compute = self.kernel_ms.iter().sum();
 
         let t0 = Instant::now();
         let mut enc = self.device.create_command_encoder(&Default::default());
         enc.copy_buffer_to_buffer(&self.state, (self.copy_words * 4) as u64, &self.read, 0, (self.copy_words * 4) as u64);
-        enc.copy_buffer_to_buffer(&self.tallies, 0, &self.read, (self.copy_words * 4) as u64, (self.slots * 8 * 16 * 4) as u64);
+        enc.copy_buffer_to_buffer(&self.tallies, 0, &self.read, (self.copy_words * 4) as u64, ((self.slots * 8 * 16 + 1) * 4) as u64);
         self.queue.submit([enc.finish()]);
         let slice = self.read.slice(..);
         slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
@@ -204,12 +243,16 @@ impl PoolDiffusion {
 
         let t0 = Instant::now();
         let get = |o: usize| (data[o] as u64 | (data[o + 1] as u64) << 32) as i64;
+        assert_eq!(data[self.copy_words + self.slots * 8 * 16], 0, "a gas mass left the compact cell's u32 range");
         let mut next = core::mem::take(&mut w.next);
         for b in 0..self.slots {
             let s = self.slot_of[b];
             for l in 0..BRICK_CELLS {
                 let mut c = w.cells[b * BRICK_CELLS + l];
-                for k in 0..GASES { c.gas[k].0 = get(2 * ((s * GASES + k) * BRICK_CELLS + l)) }
+                for k in 0..GASES {
+                    let o = gw * ((s * GASES + k) * BRICK_CELLS + l);
+                    c.gas[k].0 = if self.compact { data[o] as i64 } else { get(o) };
+                }
                 c.energy.0 = get(heat_base + 2 * (s * 3 * BRICK_CELLS + l));
                 c.solid_energy.0 = get(heat_base + 2 * ((s * 3 + 1) * BRICK_CELLS + l));
                 c.skin.0 = get(heat_base + 2 * ((s * 3 + 2) * BRICK_CELLS + l));

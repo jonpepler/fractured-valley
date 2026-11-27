@@ -165,11 +165,48 @@ fn div(n: I, d: I) -> I {
 }
 fn divi(n: I, d: i32) -> I { return div(n, i_(d)); }
 // a × b / d through 128 bits (units::mul_div), narrowed to 64.
-fn mul_div(a: I, b: I, d: I) -> I { return narrow(wdiv(mulw(a, b), widen(d))); }
+// ── exact 32-bit fast paths ───────────────────────────────────────────────
+// Most products here (a mass × a specific heat × a temperature, a
+// conductance × a difference) have both factors below 2³², so the product
+// is one 32 × 32 → 64 multiply, and most divisors are below 2¹⁶, so the
+// quotient is four native 32-bit divides, unrolled. Same results as the
+// general 128-bit path, which takes the rest.
+
+// Unsigned 64 / d for 0 < d < 2¹⁶, four 16-bit digits, unrolled.
+fn udiv64_small(n: I, d: u32) -> I {
+    if (n.y == 0u) { return I(n.x / d, 0u); }
+    let c3 = n.y >> 16u; let q3 = c3 / d; var r = c3 - q3 * d;
+    let c2 = (r << 16u) | (n.y & 0xffffu); let q2 = c2 / d; r = c2 - q2 * d;
+    let c1 = (r << 16u) | (n.x >> 16u); let q1 = c1 / d; r = c1 - q1 * d;
+    let c0 = (r << 16u) | (n.x & 0xffffu); let q0 = c0 / d;
+    return I((q1 << 16u) | q0, (q3 << 16u) | q2);
+}
+// Unsigned 64 / 64 with the small-divisor case first.
+fn udiv64_any(n: I, d: I) -> I {
+    if (d.y == 0u && d.x < 65536u) { return udiv64_small(n, d.x); }
+    return udiv64(n, d);
+}
+fn signed(q: I, neg: bool) -> I { return select(q, neg_(q), neg); }
+
+fn mul_div(a: I, b: I, d: I) -> I {
+    let ua = abs_(a); let ub = abs_(b); let ud = abs_(d);
+    if (ua.y == 0u && ub.y == 0u) {
+        let neg = isneg(a) != isneg(b) != isneg(d);
+        return signed(udiv64_any(mul32w(ua.x, ub.x), ud), neg);
+    }
+    return narrow(wdiv(mulw(a, b), widen(d)));
+}
 // a × b / (d1 × d2), d1, d2 > 0: ⌊⌊x/d1⌋/d2⌋ = ⌊x/(d1·d2)⌋ (and the same
 // for truncation toward zero, by symmetry), so a divisor too big for the
 // 16-bit path can go as two that fit.
-fn mul_div2(a: I, b: I, d1: I, d2: I) -> I { return narrow(wdiv(wdiv(mulw(a, b), widen(d1)), widen(d2))); }
+fn mul_div2(a: I, b: I, d1: I, d2: I) -> I {
+    let ua = abs_(a); let ub = abs_(b);
+    if (ua.y == 0u && ub.y == 0u) {
+        let neg = isneg(a) != isneg(b);
+        return signed(udiv64_any(udiv64_any(mul32w(ua.x, ub.x), d1), d2), neg);
+    }
+    return narrow(wdiv(wdiv(mulw(a, b), widen(d1)), widen(d2)));
+}
 fn mul_div_1e6(a: I, b: I) -> I { return mul_div2(a, b, i_(1000), i_(1000)); }
 
 // Exact floor(√v) for v ≥ 0: what (v as f64).sqrt() as i64 gives for every
