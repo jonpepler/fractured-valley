@@ -23,7 +23,7 @@ use super::species::{people, Founding, Ids};
 use super::talk::{band_dir, from_ref, Content, Drawn, Ref, Say};
 use super::world::{d2, dist, name, Deed, Kind, World, PLACE_RADIUS, SPEAK, TALK};
 use crate::graph::{lt, tag, Anchor};
-use crate::mind::{key, Action, Mind, Sense, Temperament};
+use crate::mind::{key, Action, Mind, Percept, Sense, Temperament};
 use crate::rng::hash;
 use crate::store::{Runtime, Store};
 use crate::think::Form;
@@ -90,6 +90,8 @@ pub struct Person {
     pub corrected_to: Vec<(usize, u32)>,
     /// Keeps a model of what others know (ablation: off).
     pub model_on: bool,
+    /// Stage 3 of round 2 (a measure, not hashed): told nodes merged into water already known.
+    pub merged_told: u32,
     /// Offloading on: a fact read from a note one keeps is encoded less in the head.
     pub offload: bool,
     pub last_ask: Option<u32>,
@@ -201,7 +203,7 @@ impl Person {
         let n = pnode.len();
         let rel = (0..n).map(|j| if j == i { Rel::default() } else { Rel { base_t: f.trust[j], base_w: f.warmth[j], ..Rel::default() } }).collect();
         let mut p = Person { i, m, ids: sp.ids, traits: Traits::default(), medium: Medium::Speak, lex, pnode, told: vec![], notes: vec![], owe_thanks: vec![], corrected_to: vec![],
-            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: vec![-1; n], hunt: None, village: None,
+            model_on: true, merged_told: 0, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: vec![-1; n], hunt: None, village: None,
             rel, heard_buf: vec![] };
         // Round 2: who the others are to this mind (their feelings are the people layer's), the
         // landmarks it has words for (they don't go dormant), and its turn when thinking less often.
@@ -573,6 +575,8 @@ impl Person {
         if self.hunt.is_some() { self.hunt_hear(w, &s, &heard, &mut cues); }
         s.cues = cues;
         s.alarms = alarms;
+        // (Stage 3 of round 2: what was seen between thinks, for the model of who knows what.)
+        let window: Vec<Sense> = if self.model_on && !self.m.buffered.is_empty() { self.m.buffered.clone() } else { vec![] };
         let a = self.m.step(&s);
         let a = if self.hunt.is_some() { self.hunt_act(&s, a) } else { a };
         self.m.commit(&s, a);
@@ -588,14 +592,24 @@ impl Person {
             // (Stage 5: the water this mind knows is read once, not once per person in sight; it
             // doesn't change in this loop.)
             let waters = self.water_things();
-            for p in &self.m.last.percepts.clone() {
-                if let Some(j) = (0..self.pnode.len()).find(|&j| j != i && self.pnode[j] == p.node) {
-                    for &(thing, pi) in &waters {
-                        let (px, py) = self.place_xy(pi);
-                        if d2(p.x, p.y, px, py) <= 2 * 2 { strengthen(&mut self.m, self.pnode[j], thing, lt::ASSOC, 700, None); }
+            // Stage 3 of round 2: once for each tick someone was seen there (the ticks between
+            // thinks included), not once a think: k sightings close the gap as k ticks would.
+            let mut ticks: Vec<Vec<Percept>> = window.iter().map(|b| self.m.perceive(b)).collect();
+            ticks.push(self.m.last.percepts.iter().filter(|p| window.is_empty() || s.seen.iter().any(|e| e.id == p.entity)).cloned().collect());
+            let mut seen_at: Vec<(usize, u32, u32)> = vec![];
+            for ps in &ticks {
+                let mut this: Vec<(usize, u32)> = vec![];
+                for p in ps {
+                    if let Some(j) = (0..self.pnode.len()).find(|&j| j != i && self.pnode[j] == p.node) {
+                        for &(thing, pi) in &waters {
+                            let (px, py) = self.place_xy(pi);
+                            if d2(p.x, p.y, px, py) <= 2 * 2 && !this.contains(&(j, thing)) { this.push((j, thing)); }
+                        }
                     }
                 }
+                for (j, thing) in this { match seen_at.iter_mut().find(|x| x.0 == j && x.1 == thing) { Some(x) => x.2 += 1, None => seen_at.push((j, thing, 1)) } }
             }
+            for (j, thing, k) in seen_at { strengthen(&mut self.m, self.pnode[j], thing, lt::ASSOC, crate::mind::per_ticks(700, k), None); }
         }
         deed.say = self.speak(w, &s, &asked_water, &asked_other, &mut deed);
         deed
@@ -636,8 +650,37 @@ impl Person {
             let (px, py) = self.place_xy(pi);
             if self.told[t].arrived.is_none() && d2(s.body.x, s.body.y, px, py) <= 3 * 3 { self.told[t].arrived = Some(tick); }
             let snap = self.told[t].tol + PLACE_RADIUS;
-            let s_node = self.told[t].thing;
+            let mut s_node = self.told[t].thing;
+            let from_t = self.told[t].from;
             if let Some(e) = s.seen.iter().filter(|e| e.kind == Kind::Water.k() && d2(e.x, e.y, px, py) <= snap * snap).min_by_key(|e| (d2(e.x, e.y, px, py), e.id)) {
+                // Stage 3 of round 2 (the duplicated entity ids of stage 1): the water found is
+                // water this mind already holds by another node. The claim was about that one:
+                // the told node is let go as an entity (its links fade as any learnt node's do),
+                // its records move to the known node and place, and its source links with them.
+                let mut pi = pi;
+                let mut pn = pn;
+                let merged = self.m.entity_nodes.iter().any(|x| x.0 == e.id && x.1 != s_node);
+                if let Some(n0) = self.m.entity_nodes.iter().find(|x| x.0 == e.id && x.1 != s_node).map(|x| x.1) {
+                    let p0 = self.place_of_thing(n0).unwrap_or(pi);
+                    if let Some(k) = self.m.entity_nodes.iter().position(|x| x.1 == s_node) { self.m.entity_nodes.remove(k); self.m.entity_kinds.remove(k); }
+                    let froms: Vec<usize> = self.told.iter().filter(|r| r.thing == s_node).filter_map(|r| r.from).collect();
+                    for a in froms {
+                        let an = self.pnode[a];
+                        let w0 = weight(&self.m, s_node, an, lt::SOURCE);
+                        if w0 > 0 { let lv = self.trust(a) - 500; strengthen(&mut self.m, n0, an, lt::SOURCE, w0, Some(lv)); }
+                    }
+                    for r in self.told.iter_mut() { if r.thing == s_node { r.thing = n0; r.place = p0; } }
+                    // One record per (thing, teller, claim), as `ground` keeps them.
+                    let mut k = 0;
+                    while k < self.told.len() {
+                        let key = (self.told[k].thing, self.told[k].from, self.told[k].dry_claim);
+                        if let Some(j) = (0..k).find(|&j| (self.told[j].thing, self.told[j].from, self.told[j].dry_claim) == key) {
+                            let r = self.told.remove(k); self.told[j].times += r.times;
+                        } else { k += 1; }
+                    }
+                    self.merged_told += 1;
+                    s_node = n0; pi = p0; pn = self.m.place_nodes[p0];
+                }
                 // Confirmed: the tentative place and water are moved onto the real thing.
                 self.m.store.set_anchor(pn, Anchor::Place { x: e.x as i16, y: e.y as i16 });
                 self.m.store.set_anchor(s_node, Anchor::Entity { id: e.id, x: e.x as i16, y: e.y as i16 });
@@ -648,12 +691,14 @@ impl Person {
                 }
                 self.m.expect[pi][key(Kind::Water.k(), false)] = 900;
                 for k in 0..self.told.len() { if self.told[k].thing == s_node && self.told[k].confirmed.is_none() { self.told[k].confirmed = Some(tick); } }
-                if let Some(a) = self.told[t].from {
+                if let Some(a) = from_t {
                     self.feel_evidence(a, EV_CONFIRM, 0, EV_THANKS, 0);
                     let n = self.pnode[a];
                     strengthen(&mut self.m, n, ids.debt, lt::ASSOC, 600, None);
                     if !self.owe_thanks.contains(&a) { self.owe_thanks.push(a); }
                 }
+                // (A merge renumbers the records: the rest are checked on the next think.)
+                if merged { break; }
                 continue;
             }
             if let Some(h) = s.seen.iter().find(|e| (e.kind == Kind::DryFresh.k() || e.kind == Kind::DryOld.k()) && d2(e.x, e.y, px, py) <= PLACE_RADIUS * PLACE_RADIUS) {

@@ -18,7 +18,14 @@ use fv_mind_lab::village::runs::{run, Setup};
 // per-class knots, saturating 32-bit arithmetic, links heaviest first with an exact early stop),
 // so every think rounds a little differently and every run's hash moves; the behavioural tests
 // all still pass, and native and wasm32 agree (`tools/wasm-hashes.sh`).
-const PINNED: [u64; 4] = [0x618b455c20550618, 0xde18e5c72fe441dd, 0x89d4dbcc6634c02c, 0xc6a964e2d2527214];
+// Round 2, stage 3: two re-pinned, two added. Thinking every 4 ticks (seed 9) and the cheap tier
+// (seed 2) moved on purpose: a body goes on eating and striking between thinks, an ended
+// procedure (a walk arrived, a meal over, a flight with nothing in sight) or a held intent's
+// object in sight makes a mind think, buffered ticks are taken in before the present, inputs are
+// integrated over a think's window, and per-think rates found in the audit are per tick. Thinking
+// every tick (seed 1) and pruning (seed 3) did not move. Added: a big brain every 4 ticks with a
+// small brain between, and shallow thinking. Native and wasm32 agree (`tools/wasm-hashes.sh`).
+const PINNED: [u64; 6] = [0x6a561c0d2a180a77, 0xde18e5c72fe441dd, 0x7ec23540a8b27b4c, 0xc6a964e2d2527214, 0x53fd85f70d03c31f, 0x93bf70c0fb987003];
 
 #[test]
 fn village_runs_give_identical_pinned_hashes() {

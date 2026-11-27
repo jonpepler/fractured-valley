@@ -19,11 +19,13 @@ fn main() {
     std::fs::create_dir_all("out/village").unwrap();
     let f = |name: &str| Mutex::new(std::fs::File::create(format!("out/village/{name}{tag}.csv")).unwrap());
     let (runs, daysf, people) = (f("runs"), f("days"), f("people"));
-    writeln!(runs.lock().unwrap(), "seed,mode,n,days,hash,brain_us_per_mind_tick,thinks,skipped,woken,meals,drinks,gossip,help,proposals,caught,gored,surprised,said,heard_per_tick,air_per_tick,trust0,trust1,warmth0,warmth1,warm_sat,cold_sat,total_b,own_b,places,pruned_places,pruned_links,danger_ticks,feast,danger_thought,surprised_per_1000_thinks").unwrap();
+    writeln!(runs.lock().unwrap(), "seed,mode,n,days,hash,brain_us_per_mind_tick,thinks,skipped,woken,meals,drinks,gossip,help,proposals,caught,gored,surprised,said,heard_per_tick,air_per_tick,trust0,trust1,warmth0,warmth1,warm_sat,cold_sat,total_b,own_b,places,pruned_places,pruned_links,danger_ticks,feast,danger_thought,surprised_per_1000_thinks,told,dup_ids,merged_told,small_trained,small_asked,small_acted,small_empty,small_unreachable,shadow_agree,shadow_disagree,shadow_none,small_fuel,carry_agree,carry_disagree").unwrap();
     writeln!(daysf.lock().unwrap(), "seed,mode,day,before_total,after_total,base_share,places_b,people_b,sources_b,plans_b,notes_b,other_own_b,fast_before,state,expect,layer,place_count,source_links,told,nodes,links,meals,drinks,gossip,help,proposals,caught,surprised").unwrap();
     writeln!(people.lock().unwrap(), "seed,mode,i,reactivity,aggression,honesty,helpful,places,waters,bushes,{},walked,{},danger,surprised,drinks,meals,best_friend,best_close,warmth_out,trust_out,warmth_in,gossip_said,gossip_heard,hunts_led,told,source_links",
         (0..PLACE_CLASSES).map(|k| format!("at{k}")).collect::<Vec<_>>().join(","), (0..SAY_KINDS).map(|k| format!("said{k}")).collect::<Vec<_>>().join(",")).unwrap();
-    let jobs: Vec<(u64, String)> = (0..seeds as u64).flat_map(|s| modes.iter().map(move |m| (s + 1, m.clone()))).collect();
+    // `FV_SEED_FROM`: start at this seed (to continue a study in parts); default 1.
+    let from: u64 = std::env::var("FV_SEED_FROM").ok().and_then(|x| x.parse().ok()).unwrap_or(1);
+    let jobs: Vec<(u64, String)> = (from - 1..from - 1 + seeds as u64).flat_map(|s| modes.iter().map(move |m| (s + 1, m.clone()))).collect();
     let next = AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4);
     std::thread::scope(|sc| {
@@ -32,10 +34,7 @@ fn main() {
                 let k = next.fetch_add(1, Ordering::Relaxed);
                 let Some((seed, mode)) = jobs.get(k).cloned() else { break };
                 let mut s = Setup::new(seed, n, days);
-                if mode == "cheap" { s.every = 4; }
-                if mode == "prune" { s.prune = true; }
-                if mode == "oldvoice" { s.voice = false; }
-                if mode == "nofix" { s.fixes = false; }
+                s.apply_mode(&mode);
                 let (rec, v) = run(&s, 1, None);
                 let st = stats(&v);
                 let (w0, t0) = feelings(seed, n);
@@ -48,12 +47,17 @@ fn main() {
                 let tot = |f: &dyn Fn(&fv_mind_lab::village::life::Stats) -> u32| st.iter().map(f).sum::<u32>();
                 let sum_day = |f: &dyn Fn(&fv_mind_lab::village::runs::DayRec) -> u32| rec.day.iter().map(f).sum::<u32>();
                 let pruned: (u32, u32) = v.folk.iter().fold((0, 0), |a, p| (a.0 + p.m.pruned.0, a.1 + p.m.pruned.1));
-                let line = format!("{seed},{mode},{n},{days},{:016x},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.1},{:.4},{:.4},{:.0},{:.0},{:.2},{},{},{},{},{},{:.2}",
+                let line = format!("{seed},{mode},{n},{days},{:016x},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.1},{:.4},{:.4},{:.0},{:.0},{:.2},{},{},{},{},{},{:.2},{:.2},{},{},{}",
                     rec.hash, rec.brain_ns as f64 / 1e3 / (rec.ticks as f64 * n as f64), tot(&|s| s.thinks), tot(&|s| s.skipped), tot(&|s| s.woken),
                     sum_day(&|d| d.meals), sum_day(&|d| d.drinks), sum_day(&|d| d.gossip), sum_day(&|d| d.help), sum_day(&|d| d.proposals), sum_day(&|d| d.caught), sum_day(&|d| d.gored), sum_day(&|d| d.surprised), sum_day(&|d| d.said),
                     rec.heard as f64 / (rec.ticks as f64 * n as f64), rec.air as f64 / rec.ticks as f64,
                     mean0(&t0), trust1 as f64 / pairs, mean0(&w0), warm1 as f64 / pairs, hot as f64 / pairs, cold as f64 / pairs,
-                    mean(&|s| s.total()), mean(&|s| s.own()), mean(&|s| s.place_count), pruned.0, pruned.1, rec.danger.iter().sum::<u32>(), sum_day(&|d| d.feast), rec.danger_thought.iter().sum::<u32>(), sum_day(&|d| d.surprised) as f64 * 1000.0 / tot(&|s| s.thinks).max(1) as f64);
+                    mean(&|s| s.total()), mean(&|s| s.own()), mean(&|s| s.place_count), pruned.0, pruned.1, rec.danger.iter().sum::<u32>(), sum_day(&|d| d.feast), rec.danger_thought.iter().sum::<u32>(), sum_day(&|d| d.surprised) as f64 * 1000.0 / tot(&|s| s.thinks).max(1) as f64,
+                    v.folk.iter().map(|p| p.told.len()).sum::<usize>() as f64 / n as f64,
+                    v.folk.iter().map(|p| { let mut ids: Vec<u32> = p.m.entity_nodes.iter().map(|x| x.0).collect(); ids.sort_unstable(); let k = ids.len(); ids.dedup(); k - ids.len() }).sum::<usize>(),
+                    v.folk.iter().map(|p| p.merged_told).sum::<u32>(),
+                    { let ss: Vec<fv_mind_lab::habit::SmallStats> = v.folk.iter().filter_map(|p| p.m.small.as_ref().map(|x| x.stats)).collect();
+                      format!("{},{},{},{},{},{},{},{},{},{},{}", ss.iter().map(|x| x.trained).sum::<u32>(), ss.iter().map(|x| x.asked).sum::<u32>(), ss.iter().map(|x| x.acted).sum::<u32>(), ss.iter().map(|x| x.empty).sum::<u32>(), ss.iter().map(|x| x.unreachable).sum::<u32>(), ss.iter().map(|x| x.agree).sum::<u32>(), ss.iter().map(|x| x.disagree).sum::<u32>(), ss.iter().map(|x| x.no_answer).sum::<u32>(), ss.iter().map(|x| x.fuel).sum::<u64>(), ss.iter().map(|x| x.carry_agree).sum::<u32>(), ss.iter().map(|x| x.carry_disagree).sum::<u32>()) });
                 writeln!(runs.lock().unwrap(), "{line}").unwrap();
                 {
                     let mut df = daysf.lock().unwrap();
@@ -67,7 +71,7 @@ fn main() {
                             dr.meals, dr.drinks, dr.gossip, dr.help, dr.proposals, dr.caught, dr.surprised).unwrap();
                     }
                 }
-                if mode == "full" || mode == "cheap" {
+                if mode == "full" || mode == "cheap" || mode.starts_with('e') {
                     let mut pf = people.lock().unwrap();
                     let vs = v.w.village.as_ref().unwrap();
                     for (i, p) in v.folk.iter().enumerate() {

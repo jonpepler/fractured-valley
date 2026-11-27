@@ -102,6 +102,9 @@ pub const BASE_ENCODE: i64 = 60;
 pub const HEBB_RATE: i64 = 4000;
 /// Extinction: per tick an expected thing is missing, its links gain a negative trace of error / this.
 pub const EXTINCT_RATE: i32 = 6;
+/// The body eats only with the need a thing answers at least this high (a precondition, kept
+/// from round 1; stage 3 of round 2 checks it every tick so a body goes on eating between thinks).
+pub const EAT_AT: i32 = 150;
 /// Fast weights fade by 1/128 every this many ticks (a half-life of ~9 days).
 pub const FAST_FADE_EVERY: u32 = 32;
 /// Naps start at this fatigue, and end below `WAKE_AT` (or when surprised, hurt or very hungry).
@@ -295,6 +298,10 @@ pub struct Config {
     /// knots, saturating 32-bit arithmetic, links heaviest first with an exact early stop, the
     /// same step the GPU runs. Off: `think::think`, the step as it was.
     pub think_v2: bool,
+    /// Round 2, stage 3 (9.5): a think after `dt` ticks injects what was sensed throughout the
+    /// window weighted as persistence would have carried it (see `step_with`). Off: each input
+    /// once, at full weight, as stage 1 did. Only matters for a mind thinking less than every tick.
+    pub integrate_window: bool,
 }
 // Hashed field by field, as the derive did; stage 4's setting only when on (so minds that don't
 // use it keep their pinned hashes).
@@ -309,7 +316,7 @@ impl std::hash::Hash for Config {
             if on { tag.hash(h); }
         }
         // Round 2's settings, each with a tag of its own when it differs from the old rule.
-        for (on, tag) in [(self.needs_in_choice, 0x61u8), (!self.courage_spread, 0x62), (!self.novelty_keep, 0x63), (!self.dormancy, 0x64), (!self.protect_social, 0x65), (self.think_v2, 0x66)] {
+        for (on, tag) in [(self.needs_in_choice, 0x61u8), (!self.courage_spread, 0x62), (!self.novelty_keep, 0x63), (!self.dormancy, 0x64), (!self.protect_social, 0x65), (self.think_v2, 0x66), (!self.integrate_window, 0x67)] {
             if on { tag.hash(h); }
         }
     }
@@ -317,7 +324,7 @@ impl std::hash::Hash for Config {
 /// Round 2 (9.6): the village's bug fix (`expect_at_edge`) is the default, and its model fixes
 /// (`food_contingent`, `felt_without_sources`, `habituate`) are the default provisionally.
 impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true, focus: true, flee_from_all: false, prune_places: false, expect_at_edge: true, food_contingent: true, felt_without_sources: true, habituate: true,
-    needs_in_choice: false, courage_spread: true, novelty_keep: true, dormancy: true, protect_social: true, think_v2: think_v2_default() } } }
+    needs_in_choice: false, courage_spread: true, novelty_keep: true, dormancy: true, protect_social: true, think_v2: think_v2_default(), integrate_window: true } } }
 impl Config {
     /// Round 1's rules (stage 5's village settings off, choice-time gating, stage 3's courage, the
     /// fixed sleep share, no dormancy, feelings consolidated): an ablation for comparisons.
@@ -359,8 +366,10 @@ pub fn graded(margin: i32, span: i32) -> i32 { (500 + margin as i64 * 500 / span
 pub fn per_ticks(p: i32, dt: u32) -> i32 { let mut q: i64 = 1_000_000; for _ in 0..dt { q = q * (1000 - p.clamp(0, 1000) as i64) / 1000; } (1000 - (q + 500) / 1000) as i32 }
 
 /// The think parameters under stress: fewer hops and a smaller frontier.
-pub fn stressed_params(base: &Params, stress: i32, t: &Temperament) -> Params {
-    let cut = stress as i64 * t.stress_cut() as i64 / 1000;
+pub fn stressed_params(base: &Params, stress: i32, t: &Temperament) -> Params { cut_params(base, stress as i64 * t.stress_cut() as i64 / 1000) }
+/// The think parameters cut by `cut` (per mille, 950 the most): stress's cut, which stage 3 of
+/// round 2 also uses for a mind set to think shallowly (`Mind::depth_cut`).
+pub fn cut_params(base: &Params, cut: i64) -> Params {
     let mut p = *base;
     p.hops = (base.hops as i64 - (base.hops as i64 - 1) * cut / 950).max(1) as usize;
     p.frontier = (base.frontier as i64 * (1000 - cut * 85 / 100) / 1000).max(6) as usize;
@@ -613,6 +622,15 @@ pub struct Mind<S: Store = Runtime> {
     /// Round 2 (9.8): nodes the mind has a word for (a person's landmarks), sorted: they never go
     /// dormant (the word keeps them).
     pub named: Vec<u32>,
+    /// Round 2, stage 3: think shallowly, every think cut as stress of this cut would cut it (per
+    /// mille; 0: full depth). Hashed only when set.
+    pub depth_cut: i32,
+    /// Round 2, stage 3: the small brain (`habit`), when on. Hashed only when on.
+    pub small: Option<Box<crate::habit::Small>>,
+    /// Round 2, stage 3: a candidate rate rule, "every tick while engaged": a mind holding an intent
+    /// (a plan, a pursuit) thinks every tick whatever its `every`. Read only from the mind's own
+    /// state, so peers agree. Hashed only when on.
+    pub full_when_engaged: bool,
 }
 
 /// Round 2 (9.8): a node in cold storage: everything that tied it into the graph, kept so a cue
@@ -651,6 +669,9 @@ impl<S: Store> Hash for Mind<S> {
         if self.cfg.prune_places { self.place_seen.hash(h); self.pruned.hash(h); }
         // Round 2's state, where it is in use.
         if self.every > 1 { self.every.hash(h); self.phase.hash(h); self.last_think.hash(h); self.cont.hash(h); }
+        if self.depth_cut != 0 { 0xdc_u8.hash(h); self.depth_cut.hash(h); }
+        if let Some(sm) = &self.small { 0x5b_u8.hash(h); sm.hash(h); }
+        if self.full_when_engaged { 0x6e_u8.hash(h); }
         if !self.buffered.is_empty() { self.buffered.hash(h); }
         if self.cfg.novelty_keep { self.day_novelty.hash(h); }
         if !self.social.is_empty() { self.social.hash(h); self.rel_to.hash(h); }
@@ -696,7 +717,7 @@ impl<S: Store> Mind<S> {
             trace: false, last: Report::default(), learn: true, pin_arousal: None, pin_mood: None, skip_sleep: false, temperament,
             idle_consolidation: true, consol: Consol::default(), puzzle: None, search_wp: None, search_n: 0, napping: false, volatility: vec![0; nk],
             feelings: sp.feelings.clone(), young_from: 0, nights: 0, held: Held::default(), charges: false, plan: PlanState::default(), food2: vec![], familiar: vec![0; nk], spent: vec![], place_seen: vec![], pruned: (0, 0),
-            every: 1, phase: 0, last_think: None, buffered: vec![], cont: None, dt: 1, day_novelty: 0, social: vec![], rel_to: vec![], cold: vec![], dormancy: (0, 0), named: vec![],
+            every: 1, phase: 0, last_think: None, buffered: vec![], cont: None, dt: 1, day_novelty: 0, social: vec![], rel_to: vec![], cold: vec![], dormancy: (0, 0), named: vec![], depth_cut: 0, small: None, full_when_engaged: false,
         };
         m.young_from = m.store.len() as u32;
         for &(pi, k) in &sp.expect { m.expect[pi][key(k, false)] = 900; }
@@ -724,7 +745,7 @@ impl<S: Store> Mind<S> {
             prev_pain: self.prev_pain, trace: self.trace, last: self.last.clone(), learn: self.learn, pin_arousal: self.pin_arousal, pin_mood: self.pin_mood, skip_sleep: self.skip_sleep,
             temperament: self.temperament, idle_consolidation: self.idle_consolidation, consol: self.consol, puzzle: self.puzzle, search_wp: self.search_wp, search_n: self.search_n,
             napping: self.napping, volatility: self.volatility.clone(), feelings: self.feelings.clone(), young_from: self.young_from, nights: self.nights, held: self.held.clone(), charges: self.charges, plan: self.plan.clone(), food2: self.food2.clone(), familiar: self.familiar.clone(), spent: self.spent.clone(), place_seen: self.place_seen.clone(), pruned: self.pruned,
-            every: self.every, phase: self.phase, last_think: self.last_think, buffered: self.buffered.clone(), cont: self.cont, dt: self.dt, day_novelty: self.day_novelty, social: self.social.clone(), rel_to: self.rel_to.clone(), cold: self.cold.clone(), dormancy: self.dormancy, named: self.named.clone() }
+            every: self.every, phase: self.phase, last_think: self.last_think, buffered: self.buffered.clone(), cont: self.cont, dt: self.dt, day_novelty: self.day_novelty, social: self.social.clone(), rel_to: self.rel_to.clone(), cold: self.cold.clone(), dormancy: self.dormancy, named: self.named.clone(), depth_cut: self.depth_cut, small: self.small.clone(), full_when_engaged: self.full_when_engaged }
     }
 
     /// A hash of everything the mind holds (form-independent).
@@ -769,7 +790,7 @@ impl<S: Store> Mind<S> {
     fn tk(&self, n: u32) -> u64 { tie(&self.store, &self.params, n) }
 
     pub fn place_learnt(&self, pi: usize) -> bool { self.store.anchor(self.place_nodes[pi]).is_some_and(|a| a.xy().0 != self.unlearnt as i32) }
-    fn place_xy(&self, pi: usize) -> (i32, i32) { self.store.anchor(self.place_nodes[pi]).map(|a| a.xy()).unwrap_or((-999, -999)) }
+    pub fn place_xy(&self, pi: usize) -> (i32, i32) { self.store.anchor(self.place_nodes[pi]).map(|a| a.xy()).unwrap_or((-999, -999)) }
 
     /// The place a point is at, by the mind's own map: the nearest learnt place within the
     /// species' place radius, ties to the lower index.
@@ -1030,13 +1051,47 @@ impl<S: Store> Mind<S> {
     /// (`(tick + phase) % every == 0`), or a reflex interrupts (`reflex`).
     pub fn due(&self, s: &Sense) -> bool {
         self.every <= 1 || s.body.asleep || self.cont.is_none() || (s.tick + self.phase) % self.every == 0 || self.reflex(s)
+            || (self.full_when_engaged && self.held.intent.is_some())
+            // (With a small brain, an ended procedure is the small brain's to answer.)
+            || (self.small.as_ref().is_none_or(|sm| sm.shadow) && self.ended(s))
+    }
+    /// Stage 3 of round 2 (9.1's "a procedure reports back"): what the body was doing between
+    /// thinks has ended, so the mind thinks now rather than standing idle until its turn: a walk
+    /// has reached its goal, a meal can't go on (sated, or the food gone), a strike's target is out
+    /// of reach, or a flight has run its course or lost sight of every creature.
+    pub fn ended(&self, s: &Sense) -> bool {
+        match self.cont {
+            Some(Action::WalkTo { x, y }) => s.body.x == x && s.body.y == y,
+            Some(Action::Eat { entity }) => !self.can_eat(s, entity),
+            Some(Action::Snap { entity }) => !s.seen.iter().any(|e| e.id == entity && (e.x - s.body.x).abs().max((e.y - s.body.y).abs()) <= 2),
+            // (A flight reports back when its course is run, or when nothing it could be fleeing,
+            // a creature, is in sight any more: a slow deer otherwise ran on, blind, for ticks.)
+            Some(Action::Flee { .. }) => (self.roles.resp.is_none() && self.flee_left == 0) || !s.seen.iter().any(|e| self.kinds.get(e.kind as usize).is_some_and(|k| k.creature)),
+            // (Holding against, charging at or freezing before something: ended when it is out of sight.)
+            Some(Action::Charge { entity, .. }) | Some(Action::Hold { entity }) => !s.seen.iter().any(|e| e.id == entity),
+            Some(Action::Freeze) => !s.seen.iter().any(|e| self.kinds.get(e.kind as usize).is_some_and(|k| k.creature)),
+            _ => false,
+        }
     }
     /// Round 2 (9.5): the reflexes, checked every tick from the senses alone (no thought): pain
     /// rising, a creature in sight, or anything coming at the body from within 2 cells. Any of
     /// them interrupts and makes the mind think now (stage 5's wake-up rules, for every mind).
     pub fn reflex(&self, s: &Sense) -> bool {
         if s.body.asleep { return false; }
-        s.body.pain > self.prev_pain || s.seen.iter().any(|e| self.kinds.get(e.kind as usize).is_some_and(|k| k.creature) || (e.approaching && dist(e.x, e.y, s.body.x, s.body.y) <= 2))
+        if s.body.pain > self.prev_pain || s.seen.iter().any(|e| self.kinds.get(e.kind as usize).is_some_and(|k| k.creature) || (e.approaching && dist(e.x, e.y, s.body.x, s.body.y) <= 2)) { return true; }
+        // Stage 3 of round 2: **what a held intent is about, in sight.** A hunter whose plan is the
+        // deer wakes when it sees the deer, as a frightened one does for the boar (the intent's
+        // links, which also make it predict the thing: `perceive`). Without this a slow hunter
+        // never caught anything: the deer, for whom people are creatures, thought every tick.
+        if let Some(i) = self.held.intent {
+            if s.seen.is_empty() { return false; }
+            let ls = self.store.links_vec(i);
+            return s.seen.iter().any(|e| {
+                let c = self.kinds.get(e.kind as usize).map_or(u32::MAX, |k| k.concept);
+                ls.iter().any(|l| l.to == c || self.entity_nodes.iter().zip(&self.entity_kinds).any(|(&(_, n), &k)| k == e.kind && n == l.to))
+            });
+        }
+        false
     }
     /// Round 2 (9.5): a tick without a think: the senses are buffered for the next think, the
     /// mind's upkeep runs, and the body goes on with what was last chosen (walking, running,
@@ -1044,11 +1099,34 @@ impl<S: Store> Mind<S> {
     pub fn idle(&mut self, s: &Sense) -> Action {
         if !s.body.asleep && !s.seen.is_empty() { let mut b = s.clone(); b.cues.clear(); b.alarms.clear(); self.buffered.push(b); }
         self.upkeep(s.tick);
+        // Round 2, stage 3: the small brain, if this mind has one, may choose instead.
+        if self.small.is_some() { if let Some(a) = self.small_choice(s) { self.cont = Some(a); return a; } }
         match self.cont {
-            Some(a @ (Action::WalkTo { .. } | Action::Flee { .. } | Action::Charge { .. } | Action::Hold { .. } | Action::Freeze)) => a,
+            Some(a @ Action::Flee { .. }) => {
+                // (Stage 3 of round 2: a fox's flight lasts `flee_left` ticks, not thinks.)
+                if self.roles.resp.is_none() { self.flee_left = (self.flee_left - 1).max(0); }
+                a
+            }
+            Some(a @ (Action::WalkTo { .. } | Action::Charge { .. } | Action::Hold { .. } | Action::Freeze)) => a,
+            // Stage 3 of round 2: a body goes on eating (or striking) between thinks while the
+            // body's own precondition holds, so a bite is per tick, not per think. Eating: the
+            // thing is in sight, within a cell, available, and its own need is at least
+            // `EAT_AT` (the precondition `choose` applies). Striking: the target is within reach.
+            Some(a @ Action::Eat { entity }) if self.can_eat(s, entity) => a,
+            Some(a @ Action::Snap { entity }) if s.seen.iter().any(|e| e.id == entity && (e.x - s.body.x).abs().max((e.y - s.body.y).abs()) <= 2) => a,
             Some(Action::Sleep) if self.napping => Action::Sleep,
             _ => Action::Stay,
         }
+    }
+    /// The need a thing of this kind answers, from the body (thirst for water, hunger for food;
+    /// one appetite for a species with one).
+    pub fn need_for(&self, b: &Body, kind: u8) -> i32 {
+        if self.roles.hunger2 == u32::MAX || self.concept(kind) == self.roles.food { b.hunger } else { b.hunger2 }
+    }
+    /// Stage 3 of round 2: the body's precondition for a bite, checked every tick from the senses.
+    pub fn can_eat(&self, s: &Sense, entity: u32) -> bool {
+        s.seen.iter().any(|e| e.id == entity && e.available && self.kinds.get(e.kind as usize).is_some_and(|k| k.edible)
+            && (e.x - s.body.x).abs().max((e.y - s.body.y).abs()) <= 1 && self.need_for(&s.body, e.kind) >= EAT_AT)
     }
 
     fn step_with(&mut self, s0: &Sense, st: &mut Activation) -> Action {
@@ -1095,6 +1173,52 @@ impl<S: Store> Mind<S> {
             }
         }
 
+        // Stage 3 of round 2: the ticks between thinks are taken in **in order, before the
+        // present**: each buffered tick's sight is perceived against the expectations of its own
+        // moment, its surprise (and any absence) is felt as it would have been then, decayed by
+        // the ticks since at the rates the upkeep decays arousal (9/10 a tick) and stress (as
+        // `upkeep`), and it teaches expectations and familiarity. Before, the buffer taught after
+        // the think, so the present was judged against stale expectations, and a surprise seen
+        // between thinks was felt once at most, wherever it was last seen.
+        let (mut b_arousal, mut b_stress) = (0i64, 0i64);
+        let mut b_seen: Vec<Vec<(u8, Option<usize>)>> = vec![];
+        // Stage 3 of round 2: **inputs integrated over the window.** Thinking every tick, what is
+        // sensed throughout (a sight, a need, the place one stands in) is injected every tick and
+        // carried at `persist` a tick, so it builds; a think after `dt` ticks injects each input
+        // weighted by the persistence it would have carried: Σ persist^age over the ticks it was
+        // present (per mille; 1000 for one tick). `b_w` holds the buffered sights' weights; the
+        // body's needs and the place, present throughout, get `g` = Σ_{k<dt} persist^k.
+        let mut b_w: Vec<(u32, i64)> = vec![];
+        let pers = self.params.persist as i64;
+        let decay = move |age: u32| { let mut x = 1000i64; for _ in 0..age { x = x * pers / 1000; } x };
+        let integrate = self.cfg.integrate_window;
+        let g: i64 = if integrate { (0..dt).map(decay).sum() } else { 1000 };
+        if !buffered.is_empty() && !s0.body.asleep {
+            for b in &buffered {
+                let ps = self.perceive(b);
+                b_seen.push(ps.iter().map(|p| (p.kind, p.place)).collect());
+                let pk = decay(s0.tick.saturating_sub(b.tick).min(MAX_DT));
+                for e in &b.seen { match b_w.iter_mut().find(|x| x.0 == e.id) { Some(x) => x.1 += pk, None => b_w.push((e.id, pk)) } }
+                let ab = self.absences(b, &ps);
+                let sur: i64 = ps.iter().filter(|p| p.error >= IGNORE_BELOW).map(|p| (p.error / 2 * self.calm_factor(p.kind) / 1000) as i64).sum::<i64>()
+                    + ab.iter().map(|x| (x.2 / 2 * self.calm_factor(x.1) / 1000) as i64).sum::<i64>();
+                let age = s0.tick.saturating_sub(b.tick).min(MAX_DT);
+                let (mut sa, mut ss) = (sur, sur);
+                for _ in 0..age { sa -= sa / 10; ss -= ss / 40 + (ss > 0) as i64; }
+                b_arousal += sa; b_stress += ss.max(0);
+                if self.learn {
+                    self.day_novelty = (self.day_novelty + ps.iter().filter(|p| p.error >= IGNORE_BELOW).map(|p| p.error as i64).sum::<i64>() + ab.iter().map(|x| x.2 as i64).sum::<i64>()).min(1 << 40);
+                    self.learn_expectations(b, &ps);
+                    if self.cfg.habituate { self.habituate_grow(&ps); }
+                }
+            }
+        }
+        // Is a percept in sight now (not merged in from the buffer, where it was last seen)?
+        let in_now = |p: &Percept| buffered.is_empty() || s0.seen.iter().any(|e| e.id == p.entity);
+        // Its injection weight over the window (per mille), and an injection so weighted.
+        let wt = |p: &Percept| -> i64 { if buffered.is_empty() || !integrate { 1000 } else { 1000 * in_now(p) as i64 + b_w.iter().find(|x| x.0 == p.entity).map_or(0, |x| x.1) } };
+        let w_of = |x: i32, w: i64| -> i32 { if w == 1000 { x } else { (x as i64 * w / 1000).min(i32::MAX as i64) as i32 } };
+
         // 1–2. Sense, predict, inject. A landmark where the mind knows no place teaches it one.
         if self.learn {
             for e in &s.seen {
@@ -1114,17 +1238,21 @@ impl<S: Store> Mind<S> {
             if self.entity_nodes.iter().any(|&(_, n)| n == p.node) {
                 self.store.set_anchor(p.node, Anchor::Entity { id: p.entity, x: p.x as i16, y: p.y as i16 });
             }
+            let w = wt(p);
             if p.error < IGNORE_BELOW {
-                inject.push((p.node, SEEN_TOUCH));
+                inject.push((p.node, w_of(SEEN_TOUCH, w)));
             } else {
-                inject.push((p.node, p.error));
+                inject.push((p.node, w_of(p.error, w)));
                 surprised.push((p.node, p.x, p.y));
                 if let Some(pl) = p.place {
-                    inject.push((self.place_nodes[pl], p.error / 2));
+                    inject.push((self.place_nodes[pl], w_of(p.error / 2, w)));
                     surprised.push((self.place_nodes[pl], p.x, p.y));
                 }
-                surprise += p.error / 2 * self.calm_factor(p.kind) / 1000;
-                max_error = max_error.max(p.error);
+                // (Stage 3 of round 2: a thing merged in from the buffer was felt on its own tick.)
+                if in_now(p) {
+                    surprise += p.error / 2 * self.calm_factor(p.kind) / 1000;
+                    max_error = max_error.max(p.error);
+                }
                 if self.kinds[p.kind as usize].landmark && rep.learnt.iter().any(|&n| p.place.is_some_and(|pi| self.place_nodes[pi] == n)) { self.volatile_event(p.kind); }
             }
         }
@@ -1182,30 +1310,33 @@ impl<S: Store> Mind<S> {
         // (Review: per tick. What is in sight now counts here; each buffered tick's sight counts below.)
         self.day_novelty = (self.day_novelty + percepts.iter().filter(|p| p.error >= IGNORE_BELOW && (buffered.is_empty() || s0.seen.iter().any(|e| e.id == p.entity))).map(|p| p.error as i64).sum::<i64>() + absent.iter().map(|x| x.2 as i64).sum::<i64>()).min(1 << 40);
         if let Some(pz) = &mut self.puzzle {
-            if percepts.iter().any(|p| p.kind == pz.kind && p.place != Some(pz.place)) { pz.strength -= pz.strength / 8 + 20; }
+            // (Stage 3 of round 2: once for each tick it was seen elsewhere, buffered ticks too.)
+            let elsewhere = percepts.iter().any(|p| p.kind == pz.kind && p.place != Some(pz.place) && in_now(p)) as usize
+                + b_seen.iter().filter(|t| t.iter().any(|&(k, pl)| k == pz.kind && pl != Some(pz.place))).count();
+            for _ in 0..elsewhere { pz.strength -= pz.strength / 8 + 20; }
             for _ in 0..dt { pz.strength -= pz.strength / 400 + 1; }
             if pz.strength <= 0 { self.puzzle = None; self.search_wp = None; self.search_n = 0; }
         }
         let absent_now = absent.clone();
         rep.absent = absent;
-        if fx.hunger > 100 { inject.push((self.roles.hunger, fx.hunger / 2)); }
-        if self.roles.hunger2 != u32::MAX && fx.hunger2 > 100 { inject.push((self.roles.hunger2, fx.hunger2 / 2)); }
+        if fx.hunger > 100 { inject.push((self.roles.hunger, w_of(fx.hunger / 2, g))); }
+        if self.roles.hunger2 != u32::MAX && fx.hunger2 > 100 { inject.push((self.roles.hunger2, w_of(fx.hunger2 / 2, g))); }
         let fatigue = self.mods.fatigue;
-        if fatigue > 300 { inject.push((self.roles.fatigue, fatigue / 3)); }
-        if fx.pain > 0 { inject.push((self.roles.pain, fx.pain)); }
+        if fatigue > 300 { inject.push((self.roles.fatigue, w_of(fatigue / 3, g))); }
+        if fx.pain > 0 { inject.push((self.roles.pain, w_of(fx.pain, g))); }
         let here = self.place_index_at(fx.x, fx.y);
-        if let Some(pl) = here { inject.push((self.place_nodes[pl], PLACE_CONTEXT)); }
+        if let Some(pl) = here { inject.push((self.place_nodes[pl], w_of(PLACE_CONTEXT, g))); }
         inject.extend_from_slice(&s.cues);
         let pain_rise = (fx.pain - self.prev_pain).max(0);
         self.prev_pain = fx.pain;
         if pain_rise > 0 { for p in &percepts { if self.kinds[p.kind as usize].creature { surprised.push((p.node, p.x, p.y)); } } }
         let a_before = self.mods.arousal;
-        self.mods.arousal = (self.mods.arousal + surprise + pain_rise).min(1000);
+        self.mods.arousal = (self.mods.arousal as i64 + surprise as i64 + b_arousal + pain_rise as i64).min(1000) as i32;
         if let Some(a) = self.pin_arousal { self.mods.arousal = a; }
         if let Some(m) = self.pin_mood { self.mods.mood = m; }
         // Stage 3: a companion seen where expected draws more attention the more alarmed the mind
         // is now (in alarm one looks to others).
-        for p in &percepts { if p.error < IGNORE_BELOW && self.kinds[p.kind as usize].tracked && self.mods.arousal > 0 { inject.push((p.node, self.mods.arousal * COMPANY / 1000)); } }
+        for p in &percepts { if p.error < IGNORE_BELOW && self.kinds[p.kind as usize].tracked && self.mods.arousal > 0 { inject.push((p.node, w_of(self.mods.arousal * COMPANY / 1000, wt(p)))); } }
 
         if max_error > 0 { st.damp(1000 - max_error * INTERRUPT / 1000); }
 
@@ -1224,6 +1355,9 @@ impl<S: Store> Mind<S> {
                 // stress in the proportion this temperament's stress cuts its thought.
                 let cut = (self.mods.stress as i64 * self.temperament.stress_cut() as i64 / 1000).min(1000);
                 let top = ((INTENT_HOLD - carried).max(0) as i64 * (1000 - cut) / 1000) as i32;
+                // (Stage 3 of round 2: rehearsal goes on through the window, so it is integrated
+                // like any sustained input, by `g`.)
+                let top = w_of(top, g);
                 if top > 0 { inject.push((i, top)); a0 += top; }
             }
             self.mods.intent = i;
@@ -1240,12 +1374,15 @@ impl<S: Store> Mind<S> {
         let tg = self.temperament.stress_gain() as i64 * (1000 + self.mods.fatigue as i64 / 2) / 1000;
         // Stage 3: companions linked to "ally" buffer the stress a tick adds (social buffering).
         let buffer = self.roles.resp.filter(|r| r.ally != u32::MAX).map_or(0, |r| st.act[r.ally as usize] as i64 * BUFFER as i64 / 1000);
-        let stressor = (pain_rise as i64 + surprise as i64 / 2 + (st.act[self.roles.danger as usize] as i64 / 16 - buffer) * dt as i64).max(0);
+        let stressor = (pain_rise as i64 + (surprise as i64 + b_stress) / 2 + (st.act[self.roles.danger as usize] as i64 / 16 - buffer) * dt as i64).max(0);
         self.mods.stress = (self.mods.stress as i64 + stressor * tg / 1000).min(1000) as i32;
         if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
 
         // 3. Think, as deep as stress allows, in what budget compaction left.
-        let mut p = stressed_params(&self.params, self.mods.stress, &self.temperament);
+        // (Stage 3 of round 2: a mind set to think shallowly is cut as stress would cut it, by the
+        // larger of the two.)
+        let stress_cut = self.mods.stress as i64 * self.temperament.stress_cut() as i64 / 1000;
+        let mut p = cut_params(&self.params, stress_cut.max(self.depth_cut as i64));
         // Round 2 (9.5): what is carried into this think has faded for the ticks since the last.
         for _ in 1..dt { p.persist = (p.persist as i64 * self.params.persist as i64 / 1000) as i32; }
         if self.consol.forced > 0 {
@@ -1277,14 +1414,8 @@ impl<S: Store> Mind<S> {
 
         // 5. Learn by day.
         if self.learn {
-            // Round 2 (9.5): what was seen on the ticks between thinks teaches expectations and
-            // familiarity as it would have tick by tick.
-            for b in &buffered {
-                let ps = self.perceive(b);
-                self.day_novelty = (self.day_novelty + ps.iter().filter(|p| p.error >= IGNORE_BELOW).map(|p| p.error as i64).sum::<i64>()).min(1 << 40);
-                self.learn_expectations(b, &ps);
-                if self.cfg.habituate { self.habituate_grow(&ps); }
-            }
+            // (Round 2: what was seen on the ticks between thinks taught expectations and
+            // familiarity before the think, above.)
             // (Review: things merged in from the buffer were learnt twice, and at their old places
             // as if seen now. Learning reads only what is in sight now; the buffer taught the rest.)
             let now: Vec<Percept> = if buffered.is_empty() { vec![] } else { percepts.iter().filter(|p| s0.seen.iter().any(|e| e.id == p.entity)).cloned().collect() };
@@ -1554,15 +1685,15 @@ impl<S: Store> Mind<S> {
                 return (Action::Flee { from_x: x, from_y: y, speed }, format!("danger {danger} on my mind (bar {flee_at}), from {}", name(n)), vec![]);
             }
         }
-        if self.appetite(&fx) >= 150 {
+        if self.appetite(&fx) >= EAT_AT {
             let seen = |id: u32| s.seen.iter().find(|e| e.id == id).is_some_and(|e| e.available);
             for p in percepts {
                 // (Stage 5: with two appetites, what is wanted is this thing's own concept, so a
                 // thirsty person by a berry bush doesn't eat because water is on its mind.)
                 let wanted = if self.roles.hunger2 == u32::MAX { ws.contains(&self.roles.food) } else { ws.contains(&self.concept(p.kind)) };
                 // (And the need is this thing's: water for thirst, food for hunger.)
-                let need = if self.roles.hunger2 == u32::MAX || self.concept(p.kind) == self.roles.food { fx.hunger } else { fx.hunger2 };
-                if need >= 150 && self.kinds[p.kind as usize].edible && (p.x - fx.x).abs().max((p.y - fx.y).abs()) <= 1
+                let need = self.need_for(&fx, p.kind);
+                if need >= EAT_AT && self.kinds[p.kind as usize].edible && (p.x - fx.x).abs().max((p.y - fx.y).abs()) <= 1
                     && (ws.contains(&p.node) || wanted) && seen(p.entity) {
                     return (Action::Eat { entity: p.entity }, format!("eat {}", name(p.node)), vec![]);
                 }
@@ -1742,6 +1873,7 @@ impl<S: Store> Mind<S> {
             }
             Action::Sleep => { self.goal = None; if !s.body.asleep { self.napping = true; } }
         }
+        if self.small.is_some() { self.distil(s, &a); }
     }
 
     fn learn_expectations(&mut self, s: &Sense, percepts: &[Percept]) {
@@ -1806,6 +1938,7 @@ impl<S: Store> Mind<S> {
     /// A night: asleep, a night's consolidation; lying awake (`skip_sleep`), `NIGHT_TICKS`
     /// waking ticks with the body held still.
     pub fn night(&mut self, s: &Sense) {
+        if self.small.is_some() { self.small_night(); }
         if !self.skip_sleep { self.sleep(); return; }
         let mut wd = s.clone();
         wd.body.asleep = false;
@@ -1989,7 +2122,9 @@ impl<S: Store> Mind<S> {
             (None, Some(a)) => self.store.set_anchor(x, a),
             _ => {}
         }
-        if let Some((id, k)) = d.entity { self.entity_nodes.push((id, x)); self.entity_kinds.push(k); }
+        // (Stage 3 of round 2: unless another node came to stand for that thing while this one
+        // was cold; then it comes back as a memory, not as a second record of the same thing.)
+        if let Some((id, k)) = d.entity { if !self.entity_nodes.iter().any(|e| e.0 == id) { self.entity_nodes.push((id, x)); self.entity_kinds.push(k); } }
         for &(o, ..) in d.out.iter().chain(d.inl.iter()) { if self.is_cold(o) { self.revive(o); } }
         for &(to, ty, w, lv) in &d.out { self.store.add_link(x, to, ty, w as i32, lv as i32); }
         for &(src, ty, w, lv) in &d.inl { self.store.add_link(src, x, ty, w as i32, lv as i32); }

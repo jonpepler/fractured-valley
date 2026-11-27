@@ -118,10 +118,15 @@ pub fn village_runs() -> Vec<(&'static str, u64)> {
     let mut big = Setup::new(3, 50, 1); big.prune = true;
     // Round 2: every mind thinking every 4 ticks (the per-tick rates, buffered senses, reflexes).
     let mut slow = Setup::new(9, 20, 2); slow.think_every = 4;
+    // Round 2, stage 3: a big brain every 4 ticks with a small brain between, and shallow thinking.
+    let mut small = Setup::new(9, 20, 2); small.apply_mode("b4");
+    let mut shallow = Setup::new(10, 20, 1); shallow.apply_mode("s634");
     vec![
         ("village: 20 people, 2 days, every mind thinking every 4 ticks (seed 9)", run(&slow, 1, None).0.hash),
         ("village: 30 people, 2 days (seed 1)", run(&Setup::new(1, 30, 2), 1, None).0.hash),
         ("village: 30 people, 2 days, the cheap tier (seed 2)", run(&cheap, 1, None).0.hash),
         ("village: 50 people, a day, pruning on (seed 3)", run(&big, 1, None).0.hash),
+        ("village: 20 people, 2 days, a big brain every 4 ticks and a small brain between (seed 9)", run(&small, 1, None).0.hash),
+        ("village: 20 people, a day, every mind thinking shallowly (cut 634, seed 10)", run(&shallow, 1, None).0.hash),
     ]
 }

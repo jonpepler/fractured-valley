@@ -46,10 +46,42 @@ pub struct Setup {
     pub fixes: bool,
     /// Round 2 (9.5): every mind (people and animals) thinks every this many ticks.
     pub think_every: u32,
+    /// Round 2, stage 3: inputs integrated over a think's window (`Config::integrate_window`).
+    pub integrate: bool,
+    /// Round 2, stage 3: every mind thinks this shallowly (`Mind::depth_cut`; 0: full depth).
+    pub depth_cut: i32,
+    /// Round 2, stage 3: every mind has a small brain (`habit`): (stride, shadow). Acting: the big
+    /// brain thinks every `think_every` ticks and the small one answers between. Shadow: every
+    /// mind thinks every tick, and a table trained on every `stride`-th choice is scored.
+    pub small: Option<(u32, bool)>,
+    /// Round 2, stage 3: every mind thinks every tick while it holds an intent (`Mind::full_when_engaged`).
+    pub engaged: bool,
 }
 impl Setup {
     pub fn new(seed: u64, people: usize, days: u32) -> Setup {
-        Setup { seed, people, days, every: 1, far: 16, observer: None, foxes: 3, boar: true, deer: true, gossip: true, prune: false, voice: true, fixes: true, think_every: 1 }
+        Setup { seed, people, days, every: 1, far: 16, observer: None, foxes: 3, boar: true, deer: true, gossip: true, prune: false, voice: true, fixes: true, think_every: 1, integrate: true, depth_cut: 0, small: None, engaged: false }
+    }
+    /// A study mode, parts joined by "+": full, cheap, prune, oldvoice, nofix; round 2's stage 3:
+    /// e<N> (every mind thinks every N ticks), noint (`integrate` off), s<cut> (every mind thinks
+    /// shallowly), g (every tick while holding an intent), b<N> (a big brain every N ticks with a small brain between), w<N> (thinking every
+    /// tick, with a shadow small brain trained on every N-th choice).
+    pub fn apply_mode(&mut self, mode: &str) {
+        for part in mode.split('+') {
+            let num = |p: &str| p[1..].parse::<i32>().ok();
+            match part {
+                "cheap" => self.every = 4,
+                "prune" => self.prune = true,
+                "oldvoice" => self.voice = false,
+                "nofix" => self.fixes = false,
+                "noint" => self.integrate = false,
+                "g" => self.engaged = true,
+                _ if part.starts_with('e') && num(part).is_some() => self.think_every = num(part).unwrap() as u32,
+                _ if part.starts_with('s') && num(part).is_some() => self.depth_cut = num(part).unwrap(),
+                _ if part.starts_with('b') && num(part).is_some() => { let k = num(part).unwrap() as u32; self.think_every = k; self.small = Some((k, false)); }
+                _ if part.starts_with('w') && num(part).is_some() => self.small = Some((num(part).unwrap() as u32, true)),
+                _ => {}
+            }
+        }
     }
 }
 
@@ -180,6 +212,8 @@ pub fn build(s: &Setup) -> Valley {
     }).collect();
     // Round 2 (9.5): every mind at the setup's thinking rate, staggered.
     for (k, m) in v.deer_minds.iter_mut().chain(v.beasts.iter_mut()).chain(v.fox_minds.iter_mut()).enumerate() { m.every = s.think_every.max(1); m.phase = k as u32; }
+    for m in v.deer_minds.iter_mut().chain(v.beasts.iter_mut()).chain(v.fox_minds.iter_mut()).chain(v.folk.iter_mut().map(|p| &mut p.m)) { m.cfg.integrate_window = s.integrate; m.depth_cut = s.depth_cut; m.full_when_engaged = s.engaged;
+        if let Some((stride, shadow)) = s.small { m.small = Some(Box::new(crate::habit::Small::new(stride, shadow))); } }
     v
 }
 

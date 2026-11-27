@@ -18,6 +18,7 @@
 pub mod danger;
 pub mod fox;
 pub mod graph;
+pub mod habit;
 pub mod hashes;
 pub mod hunt;
 pub mod mind;

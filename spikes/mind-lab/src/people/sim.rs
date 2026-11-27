@@ -54,10 +54,21 @@ pub struct Valley {
     pub fox_minds: Vec<crate::mind::Mind<crate::store::Runtime>>,
     /// Stage 5: wall time of the brains' pass (people, then animals), for measures; never hashed.
     pub brain_ns: u64,
+    /// Round 2, stage 3: the study's thinking rate has been applied to every mind (`STUDY_EVERY`).
+    pub every_applied: bool,
+}
+
+thread_local! {
+    /// Round 2, stage 3 (a study hook, never set by a mind or a test): on this thread, every mind
+    /// of a valley stepped by `Valley::step` thinks every this many ticks (people staggered by
+    /// index, animals by their own), set on its first step. 0 or 1: as built.
+    pub static STUDY_EVERY: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// With `STUDY_EVERY`: every mind also thinks every tick while it holds an intent.
+    pub static STUDY_ENGAGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl Valley {
-    pub fn new(w: World, folk: Vec<Person>) -> Valley { Valley { w, folk, record: None, frames: vec![], snapshots: vec![], beasts: vec![], deer_minds: vec![], fox_minds: vec![], brain_ns: 0 } }
+    pub fn new(w: World, folk: Vec<Person>) -> Valley { Valley { w, folk, record: None, frames: vec![], snapshots: vec![], beasts: vec![], deer_minds: vec![], fox_minds: vec![], brain_ns: 0, every_applied: false } }
     pub fn at(&mut self, tick: u32, e: super::world::Event) { self.w.script.push((tick, e)); }
     pub fn recording(mut self, who: usize) -> Self {
         self.record = Some(who); self.folk[who].m.trace = true;
@@ -68,6 +79,15 @@ impl Valley {
 
     /// One tick, on `threads` threads, visiting people in `order` (a permutation).
     pub fn step(&mut self, threads: usize, order: &[usize]) {
+        if !self.every_applied {
+            self.every_applied = true;
+            let e = STUDY_EVERY.with(|c| c.get());
+            if e > 1 {
+                let g = STUDY_ENGAGED.with(|c| c.get());
+                for p in self.folk.iter_mut() { p.m.every = e; p.m.full_when_engaged = g; }
+                for (k, m) in self.beasts.iter_mut().chain(self.deer_minds.iter_mut()).chain(self.fox_minds.iter_mut()).enumerate() { m.every = e; m.phase = k as u32; m.full_when_engaged = g; }
+            }
+        }
         let log0 = self.w.log.len();
         self.w.pre_step();
         let slept = self.w.night_now;
