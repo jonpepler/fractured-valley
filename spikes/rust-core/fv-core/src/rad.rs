@@ -534,6 +534,18 @@ struct Deposits { gas: Vec<AtomicI64>, solid: Vec<AtomicI64>, light: Vec<[Atomic
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Meets { Solid, Gas }
 
+/// A cell's attenuation of a (non-ionising) band per metre, Q16, by what
+/// does it: its solid's blades, its soot and its drops.
+fn band_kappa(c: &Cell, subs: &[Substance], band: usize, kelvin: usize) -> (i64, i64, i64) {
+    let sub = &subs[c.substance as usize];
+    let share = c.solid_share(subs).0 as i64;
+    let k_solid = sub.surface_per_volume * share / Fraction::ONE.0 as i64 * ONE / 4;
+    let soot = c.gas[Gas::Soot as usize].0;
+    let k_soot = if soot == 0 { 0 } else { soot * soot_kappa(band, kelvin) / CELL_VOLUME_ML };
+    let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / (100 * CELL_VOLUME_ML); // 0.15 per metre per mg/L
+    (k_solid, k_soot, k_drop)
+}
+
 /// What a cell does to a band as light passes through it: attenuation per
 /// metre (Q16), and if it interacts, what it met and the albedo of that.
 /// `kelvin`: the temperature of the light's source (soot's infrared κ).
@@ -545,11 +557,7 @@ fn volume_optics(c: &Cell, subs: &[Substance], band: usize, kelvin: usize, s: &m
         let mu = if c.substance == NONE { 60 } else { sub.optics.ionising_cm2_per_g };
         return (mu * mass / 1_000 * ONE / 10_000, if c.has_solid() { Meets::Solid } else { Meets::Gas }, 0);
     }
-    let share = c.solid_share(subs).0 as i64;
-    let k_solid = sub.surface_per_volume * share / Fraction::ONE.0 as i64 * ONE / 4;
-    let soot = c.gas[Gas::Soot as usize].0;
-    let k_soot = if soot == 0 { 0 } else { soot * soot_kappa(band, kelvin) / CELL_VOLUME_ML };
-    let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / (100 * CELL_VOLUME_ML); // 0.15 per metre per mg/L
+    let (k_solid, k_soot, k_drop) = band_kappa(c, subs, band, kelvin);
     let total = k_solid + k_soot + k_drop;
     if total == 0 { return (0, Meets::Gas, 0) }
     // Which of them does it meet? In proportion to each one's attenuation.
@@ -668,6 +676,107 @@ fn trace(w: &World, optic: &[u8], mut p: Packet, dep: &Deposits, tally: &mut Tal
     tally.radiation_out += p.energy;
 }
 
+/// Light from a directional source (the sun or moon): every band together,
+/// along one straight path. It isn't a random packet: in each cell it
+/// crosses, each band loses exactly its expected share, 1 − e^(−τ), and that
+/// share is split by what it met, in proportion to each one's attenuation,
+/// into what is absorbed (by the solid or the gas) and what is scattered. A
+/// first opaque face takes all that is left the same way. What is scattered
+/// leaves as one ordinary packet per band (random direction, as any
+/// reflection), so it costs no more than before. Every split is in whole µJ
+/// with the remainder carried on, so the books stay exact.
+#[derive(Copy, Clone)]
+struct Beam { pos: [i64; 3], dir: [i64; 3], energy: [i64; 4], kelvin: u16, seed: u64 }
+
+fn trace_beam(w: &World, optic: &[u8], beam: &Beam, dep: &Deposits, tally: &mut Tally) {
+    let subs = &w.subs;
+    let tab = absorb_table();
+    let (mut pos, dir, mut e) = (beam.pos, beam.dir, beam.energy);
+    let mut stream = Stream(beam.seed);
+    let mut cell = pos.map(|v| v.div_euclid(ONE));
+    // A scattered or reflected share sets off as an ordinary packet.
+    let scatter = |stream: &mut Stream, pos: [i64; 3], dir: [i64; 3], band: usize, energy: i64, tally: &mut Tally| {
+        if energy > 0 { trace(w, optic, Packet { pos, dir, energy, band: band as u8, bounces: 1, kelvin: beam.kelvin, stream: Stream(stream.next()) }, dep, tally) }
+    };
+    for _ in 0..MAX_STEPS {
+        if e.iter().all(|&v| v == 0) { return }
+        if !w.inside(cell[0], cell[1], cell[2]) { tally.radiation_out += e.iter().sum::<i64>(); return }
+        let i = w.idx(cell[0] as usize, cell[1] as usize, cell[2] as usize);
+        // Distance to this cell's exit along the ray, in Q16 cell lengths.
+        let mut t_exit = i64::MAX;
+        let mut exit_axis = 0;
+        for a in 0..3 {
+            if dir[a] == 0 { continue }
+            let edge = if dir[a] > 0 { (cell[a] + 1) * ONE - pos[a] } else { pos[a] - cell[a] * ONE + 1 };
+            let t = quotient(edge * ONE, dir[a].abs());
+            if t < t_exit { t_exit = t; exit_axis = a }
+        }
+        let t_exit = t_exit.max(1);
+        if optic[i] & OPTIC_CLEAR == 0 {
+            let c = &w.cells[i];
+            let sub = &subs[c.substance as usize];
+            for b in 0..4 {
+                if e[b] == 0 { continue }
+                let (k_solid, k_soot, k_drop) = band_kappa(c, subs, b, beam.kelvin as usize);
+                let k = k_solid + k_soot + k_drop;
+                let tau_water = if c.open_water() { water_tau(c, b, pos[2] - cell[2] * ONE, dir[2] * t_exit / ONE, t_exit) } else { 0 };
+                if k == 0 && tau_water == 0 { continue }
+                let tau_volume = div_i128(div_i128(k as i128 * t_exit as i128, ONE as i128) * CELL_MM as i128, 1_000) as i64;
+                let tau = tau_volume.saturating_add(tau_water);
+                let met = Fraction(tab[((tau >> 8) as usize).min(4095)]).of(e[b]);
+                if met <= 0 { continue }
+                e[b] -= met;
+                if (1..=3).contains(&b) { dep.light[i][b - 1].fetch_add(met, Relaxed); }
+                // What it met: the water, by its share of τ; the rest by attenuation.
+                let m_water = div_i128(met as i128 * tau_water as i128, tau.max(1) as i128) as i64;
+                let m_volume = met - m_water;
+                let m_solid = if k > 0 { div_i128(m_volume as i128 * k_solid as i128, k as i128) as i64 } else { 0 };
+                let m_soot = if k > 0 { div_i128(m_volume as i128 * k_soot as i128, k as i128) as i64 } else { 0 };
+                let m_drop = m_volume - m_solid - m_soot;
+                let (r_water, r_solid, r_drop) = (Fraction(water_albedo(b)).of(m_water), Fraction(band_albedo(sub, b)).of(m_solid), Fraction(drop_albedo(b)).of(m_drop));
+                dep.solid[i].fetch_add(m_water - r_water + m_solid - r_solid, Relaxed);
+                dep.gas[i].fetch_add(m_soot + m_drop - r_drop, Relaxed);
+                let at = centre(cell[0] as usize, cell[1] as usize, cell[2] as usize, &mut stream);
+                let d = isotropic(&mut stream);
+                scatter(&mut stream, at, d, b, r_water + r_solid + r_drop, tally);
+            }
+        }
+        // Move to the next cell.
+        let mut next = cell;
+        let step = if dir[exit_axis] > 0 { 1 } else { -1 };
+        next[exit_axis] += step;
+        for a in 0..3 { pos[a] += dir[a] * t_exit / ONE }
+        pos[exit_axis] = if step > 0 { next[exit_axis] * ONE } else { next[exit_axis] * ONE + ONE - 1 };
+        // An opaque cell ahead takes what is left at its surface.
+        if w.inside(next[0], next[1], next[2]) {
+            let j = w.idx(next[0] as usize, next[1] as usize, next[2] as usize);
+            if optic[j] & OPTIC_OPAQUE != 0 {
+                let sub = &subs[w.cells[j].substance as usize];
+                let mut from = pos;
+                from[exit_axis] = if step > 0 { next[exit_axis] * ONE - 1 } else { next[exit_axis] * ONE + ONE };
+                for b in 0..4 {
+                    if e[b] == 0 { continue }
+                    if (1..=3).contains(&b) { dep.light[j][b - 1].fetch_add(e[b], Relaxed); }
+                    let r = Fraction(band_albedo(sub, b)).of(e[b]);
+                    dep.solid[j].fetch_add(e[b] - r, Relaxed);
+                    let d = lambert(&mut stream, exit_axis, -step);
+                    scatter(&mut stream, from, d, b, r, tally);
+                }
+                return;
+            }
+        }
+        cell = next;
+    }
+    // Still travelling after its longest path: it stops where it is.
+    if w.inside(cell[0], cell[1], cell[2]) {
+        let i = w.idx(cell[0] as usize, cell[1] as usize, cell[2] as usize);
+        let store = if optic[i] & OPTIC_OPAQUE != 0 { &dep.solid[i] } else { &dep.gas[i] };
+        store.fetch_add(e.iter().sum::<i64>(), Relaxed);
+        return;
+    }
+    tally.radiation_out += e.iter().sum::<i64>();
+}
+
 #[inline]
 fn absorb(dep: &Deposits, i: usize, p: &Packet, meets: Meets) {
     let store = if meets == Meets::Solid { &dep.solid[i] } else { &dep.gas[i] };
@@ -677,20 +786,21 @@ fn absorb(dep: &Deposits, i: usize, p: &Packet, meets: Meets) {
 
 /// Sunlight and skylight entering at the top: one packet per band per column
 /// for the sun (fixed direction: no noise), one skylight packet per column.
-fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) -> i64 {
+fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>, beams: &mut Vec<Beam>) -> i64 {
     let mut stream = Stream(hash(w.seed, w.tick, (y * w.nx + x) as u64, 0x5ca));
     let top = w.nz as i64 * ONE - 1;
     let pos = [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, top];
+    // Sun and moon are directional: one beam per column, from its centre.
+    let centre_top = [x as i64 * ONE + ONE / 2, y as i64 * ONE + ONE / 2, top];
     let mut total = 0;
     // Sunlight per column: irradiance on a horizontal cell face = W/m² × face × cos(zenith).
     let cos_z = (-sky.sun_dir[2]).max(0);
     let sun_mj = (Power(sky.sun_w_m2 * FACE_MM2 * cos_z / ONE) * TICK).0;
     let bands = tables().bands[5_778];
-    for (b, share) in bands.iter().enumerate() {
-        let e = Fraction(*share).of(sun_mj);
-        if e <= 0 { continue }
-        out.push(Packet { pos, dir: sky.sun_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
-        total += e;
+    let sun = bands.map(|share| Fraction(share).of(sun_mj).max(0));
+    if sun.iter().any(|&e| e > 0) {
+        beams.push(Beam { pos: centre_top, dir: sky.sun_dir, energy: sun, kelvin: SUN_K, seed: stream.next() });
+        total += sun.iter().sum::<i64>();
     }
     // Skylight: bluer, from a random direction across the sky.
     let sky_mj = (Power(sky.sky_w_m2 * FACE_MM2) * TICK).0;
@@ -704,11 +814,10 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
     // Moonlight: sunlight's bands × the moon's reflectance, a few µJ per
     // column per tick, rounded by chance to whole µJ (fair on average).
     if sky.moon_uw_m2 > 0 {
-        let e = moon_split(sky, -sky.moon_dir[2], |_| stream.below(1_000));
-        for (b, &e) in e.iter().enumerate() {
-            if e <= 0 { continue }
-            out.push(Packet { pos, dir: sky.moon_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
-            total += e;
+        let e = moon_split(sky, -sky.moon_dir[2], |_| stream.below(1_000)).map(|e| e.max(0));
+        if e.iter().any(|&e| e > 0) {
+            beams.push(Beam { pos: centre_top, dir: sky.moon_dir, energy: e, kelvin: SUN_K, seed: stream.next() });
+            total += e.iter().sum::<i64>();
         }
     }
     // The sky's own heat radiation, diffuse, at its effective temperature.
@@ -773,38 +882,29 @@ pub(crate) fn moon_split(sky: &Sky, cos: i64, mut roll: impl FnMut(usize) -> u64
 }
 
 /// Moonlight entering through a side face of the box, like [`side_sun`].
-fn side_moon(w: &World, sky: &Sky, x: usize, y: usize, z: usize, axis: usize, out: &mut Vec<Packet>) -> i64 {
+fn side_moon(w: &World, sky: &Sky, x: usize, y: usize, z: usize, axis: usize, beams: &mut Vec<Beam>) -> i64 {
     let mut stream = Stream(hash(w.seed, w.tick, w.idx(x, y, z) as u64, 0x5cf + axis as u64));
-    let e = moon_split(sky, sky.moon_dir[axis].abs(), |_| stream.below(1_000));
-    let mut pos = [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, z as i64 * ONE + stream.below(ONE as u64) as i64];
+    let e = moon_split(sky, sky.moon_dir[axis].abs(), |_| stream.below(1_000)).map(|e| e.max(0));
+    let mut pos = [x as i64 * ONE + ONE / 2, y as i64 * ONE + ONE / 2, z as i64 * ONE + ONE / 2];
     pos[axis] = if sky.moon_dir[axis] > 0 { 1 } else { [w.nx, w.ny][axis] as i64 * ONE - 2 };
-    let mut total = 0;
-    for (b, &e) in e.iter().enumerate() {
-        if e <= 0 { continue }
-        out.push(Packet { pos, dir: sky.moon_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
-        total += e;
-    }
-    total
+    if e.iter().all(|&e| e == 0) { return 0 }
+    beams.push(Beam { pos, dir: sky.moon_dir, energy: e, kelvin: SUN_K, seed: stream.next() });
+    e.iter().sum()
 }
 
 /// Direct sunlight entering through a side face of the box (an open-air
 /// cell on the sunward edge): W/m² × face × the sun's angle to that face.
-fn side_sun(w: &World, sky: &Sky, x: usize, y: usize, z: usize, axis: usize, out: &mut Vec<Packet>) -> i64 {
+fn side_sun(w: &World, sky: &Sky, x: usize, y: usize, z: usize, axis: usize, beams: &mut Vec<Beam>) -> i64 {
     if sky.sun_w_m2 == 0 { return 0 }
-    let mut stream = Stream(hash(w.seed, w.tick, w.idx(x, y, z) as u64, 0x5ce + axis as u64));
+    let stream = Stream(hash(w.seed, w.tick, w.idx(x, y, z) as u64, 0x5ce + axis as u64));
     let cos = sky.sun_dir[axis].abs();
     let e_total = (Power(sky.sun_w_m2 * FACE_MM2 * cos / ONE) * TICK).0;
-    let mut pos = [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, z as i64 * ONE + stream.below(ONE as u64) as i64];
+    let mut pos = [x as i64 * ONE + ONE / 2, y as i64 * ONE + ONE / 2, z as i64 * ONE + ONE / 2];
     pos[axis] = if sky.sun_dir[axis] > 0 { 1 } else { [w.nx, w.ny][axis] as i64 * ONE - 2 };
-    let bands = tables().bands[5_778];
-    let mut total = 0;
-    for (b, share) in bands.iter().enumerate() {
-        let e = Fraction(*share).of(e_total);
-        if e <= 0 { continue }
-        out.push(Packet { pos, dir: sky.sun_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
-        total += e;
-    }
-    total
+    let e = tables().bands[5_778].map(|share| Fraction(share).of(e_total).max(0));
+    if e.iter().all(|&e| e == 0) { return 0 }
+    beams.push(Beam { pos, dir: sky.sun_dir, energy: e, kelvin: SUN_K, seed: stream.0 });
+    e.iter().sum()
 }
 
 /// One tick of radiation: emit, travel, absorb, and record the light.
@@ -813,12 +913,13 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
     let bricks = w.bricks();
     // 1. Every brick works out its cells' emission and packets.
     let mut packets: Vec<Vec<Packet>> = (0..bricks).map(|_| Vec::new()).collect();
+    let mut beams: Vec<Vec<Beam>> = (0..bricks).map(|_| Vec::new()).collect();
     let mut emitted = vec![[0i64; 2]; n]; // [from solid, from gas]
     let mut decay_heat = vec![0i64; n];
     let mut sky_in = vec![0i64; bricks];
     {
         let wr: &World = w;
-        let work = |b: usize, list: &mut Vec<Packet>, em: &mut [[i64; 2]], dh: &mut [i64], glow: &mut [[i64; 3]], skyin: &mut i64| {
+        let work = |b: usize, list: &mut Vec<Packet>, bl: &mut Vec<Beam>, em: &mut [[i64; 2]], dh: &mut [i64], glow: &mut [[i64; 3]], skyin: &mut i64| {
             let (ox, oy, oz) = wr.brick_origin(b);
             for l in 0..BRICK_CELLS {
                 let (lx, ly, lz) = World::local_xyz(l);
@@ -832,16 +933,16 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
                 em[l] = [from_solid - absorbed, from_gas];
                 dh[l] = local;
                 glow[l] = g;
-                if z == wr.nz - 1 { *skyin += sky_packets(wr, sky, x, y, list) }
+                if z == wr.nz - 1 { *skyin += sky_packets(wr, sky, x, y, list, bl) }
                 // Low sun also crosses the box's sunward sides through open air.
                 if !wr.cells[i].opaque(&wr.subs) {
                     for axis in 0..2 {
                         let toward = sky.sun_dir[axis];
                         let at_edge = [x, y][axis] == if toward > 0 { 0 } else { [wr.nx, wr.ny][axis] - 1 };
-                        if toward != 0 && at_edge { *skyin += side_sun(wr, sky, x, y, z, axis, list) }
+                        if toward != 0 && at_edge { *skyin += side_sun(wr, sky, x, y, z, axis, bl) }
                         let toward = sky.moon_dir[axis];
                         let at_edge = [x, y][axis] == if toward > 0 { 0 } else { [wr.nx, wr.ny][axis] - 1 };
-                        if sky.moon_uw_m2 > 0 && toward != 0 && at_edge { *skyin += side_moon(wr, sky, x, y, z, axis, list) }
+                        if sky.moon_uw_m2 > 0 && toward != 0 && at_edge { *skyin += side_moon(wr, sky, x, y, z, axis, bl) }
                     }
                 }
             }
@@ -849,13 +950,13 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
         #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
-            packets.par_iter_mut().zip(emitted.par_chunks_mut(BRICK_CELLS)).zip(decay_heat.par_chunks_mut(BRICK_CELLS))
+            packets.par_iter_mut().zip(beams.par_iter_mut()).zip(emitted.par_chunks_mut(BRICK_CELLS)).zip(decay_heat.par_chunks_mut(BRICK_CELLS))
                 .zip(light.glow.par_chunks_mut(BRICK_CELLS)).zip(sky_in.par_iter_mut()).enumerate()
-                .for_each(|(b, ((((list, em), dh), g), s))| work(b, list, em, dh, g, s));
+                .for_each(|(b, (((((list, bl), em), dh), g), s))| work(b, list, bl, em, dh, g, s));
         }
         #[cfg(not(feature = "parallel"))]
-        for (b, ((((list, em), dh), g), s)) in packets.iter_mut().zip(emitted.chunks_mut(BRICK_CELLS)).zip(decay_heat.chunks_mut(BRICK_CELLS))
-            .zip(light.glow.chunks_mut(BRICK_CELLS)).zip(sky_in.iter_mut()).enumerate() { work(b, list, em, dh, g, s) }
+        for (b, (((((list, bl), em), dh), g), s)) in packets.iter_mut().zip(beams.iter_mut()).zip(emitted.chunks_mut(BRICK_CELLS)).zip(decay_heat.chunks_mut(BRICK_CELLS))
+            .zip(light.glow.chunks_mut(BRICK_CELLS)).zip(sky_in.iter_mut()).enumerate() { work(b, list, bl, em, dh, g, s) }
     }
     // 2. Trace every packet; deposits are integer sums, so any order gives the same totals.
     let dep = Deposits {
@@ -871,10 +972,16 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
         #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
-            packets.par_iter().zip(traced.par_iter_mut()).for_each(|(list, t)| for p in list { trace(wr, &optic, *p, &dep, t) });
+            packets.par_iter().zip(beams.par_iter()).zip(traced.par_iter_mut()).for_each(|((list, bl), t)| {
+                for p in list { trace(wr, &optic, *p, &dep, t) }
+                for b in bl { trace_beam(wr, &optic, b, &dep, t) }
+            });
         }
         #[cfg(not(feature = "parallel"))]
-        for (list, t) in packets.iter().zip(traced.iter_mut()) { for p in list { trace(wr, &optic, *p, &dep, t) } }
+        for ((list, bl), t) in packets.iter().zip(beams.iter()).zip(traced.iter_mut()) {
+            for p in list { trace(wr, &optic, *p, &dep, t) }
+            for b in bl { trace_beam(wr, &optic, b, &dep, t) }
+        }
     }
     // 3. Each cell gives up what it emitted and keeps what it absorbed.
     for i in 0..n {
