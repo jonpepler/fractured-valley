@@ -48,6 +48,8 @@ pub struct Life {
     pub stats: Stats,
     /// Did it think this tick (for measures that read the mind's last report).
     pub thought: bool,
+    /// Gossip off (an ablation).
+    pub no_gossip: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
@@ -149,7 +151,7 @@ fn hear_gossip(p: &mut Person, heard: &[(Utterance, i32, bool)]) {
 /// Gossip told: someone I feel strongly about is on my mind, and a companion I like is near.
 fn gossip(p: &mut Person, w: &World) -> Option<(Say, Option<usize>, i32)> {
     let tick = w.tick;
-    if w.dusk { return None; }
+    if w.dusk || p.village.as_ref().unwrap().no_gossip { return None; }
     let me = (w.people[p.i].x, w.people[p.i].y);
     // A companion in sight and in talking distance (my percepts), that I don't dislike.
     let listener = p.m.last.percepts.iter().filter_map(|q| who(p, q.node).map(|j| (crate::mind::d2(q.x, q.y, me.0, me.1), j)))

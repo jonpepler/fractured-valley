@@ -27,7 +27,7 @@ fn action_text(a: &Action, v: &Valley, who: usize) -> String {
         },
         Action::Flee { .. } => "flee".into(),
         Action::Snap { .. } => "snap".into(),
-        Action::Eat { entity } => format!("drink from {}", v.w.things.iter().find(|t| t.id == entity).map(|t| t.name.as_str()).unwrap_or("?")),
+        Action::Eat { entity } => { let t = v.w.things.iter().find(|t| t.id == entity); format!("{} {}", if t.is_some_and(|t| t.kind == super::world::Kind::Berry) { "eat from" } else { "drink from" }, t.map(|t| t.name.as_str()).unwrap_or("?")) }
         Action::Sleep => "sleep".into(),
         Action::Hold { .. } => "hold its ground".into(),
         Action::Freeze => "freeze".into(),

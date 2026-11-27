@@ -84,3 +84,32 @@ cargo run --release --example danger_viewers && NODE_PATH=$(npm root -g) node to
 ```
 
 Findings: `research/mind-lab/03-danger.md` in the store.
+
+## Stage 5: the village
+
+Twenty to fifty people in one valley for a month: water, berry bushes, a deer, a foraging boar and a
+few foxes, each with a mind of its own. Module `village` (`life`: the tier, gossip, the idea of a
+hunt; `fox`; `runs`: the valley for a seed, the month, the measures).
+
+```bash
+cargo test --release --test village_determinism -- --nocapture   # pins; 1/2/4/8 threads × 3 orders; not blind
+cargo run --release --example village_study -- 100 30 30 full,cheap,prune && python3 tools/village_report.py
+cargo run --release --example village_month -- 30 30 1          # one valley, storage per night
+cargo run --release --example village_threads -- 50 2           # the pool on 1, 2, 4, 8 threads: one hash
+cargo run --release --example village_profile -- 30 2           # where a tick's time goes
+cargo run --release --example village_surprise -- 30 1          # what surprises villagers, by kind
+cargo run --release --example early_stop                         # the early stop on every pinned run
+cargo run --release --bin village_bench -- 30 3                  # µs per mind-tick, native
+cargo build --release --bin village_bench --target wasm32-wasip1 && node tools/wasi.mjs target/wasm32-wasip1/release/village_bench.wasm 30 3
+cargo run --release --example village_viewers && NODE_PATH=$(npm root -g) node tools/frames.cjs out/village-frames viewer/village-frames.json
+```
+
+Library changes (each off unless a village turns it on, and hashed only when on, so every earlier
+pin holds): people as a vector of any size (`people::world::{name, person_id, person_kind}`,
+`species::village_people`); a second appetite (`Roles::hunger2`, `Mods::hunger2`); the voice model
+(`world::voice_level`, `heard_voice`); `Config::{expect_at_edge, food_contingent,
+felt_without_sources, habituate, prune_places}`; spent intents (`Mind::spent`); the cheap tier's
+`Mind::upkeep`; `sim::Pool` (brains on persistent threads); the early stop in `think`
+(`think::EARLY_STOP`, exact, on by default). Bit-identical speed-ups: `learn_expectations`, place
+lookups once per perceive, the backlog read once per step. Findings: `research/mind-lab/05-village.md`
+in the private store.

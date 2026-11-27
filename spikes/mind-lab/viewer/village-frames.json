@@ -1,0 +1,18 @@
+[
+  {"file": "village-calm.html", "t": 5719, "h": 0, "name": "village-calm-1", "label": "Cy is surprised: a prediction error injects activation and damps the thought on the mind"},
+  {"file": "village-calm.html", "t": 5722, "h": -1, "name": "village-calm-2", "label": "Cy gossips: someone it feels strongly about is on its mind"},
+  {"file": "village-calm.html", "t": 5729, "h": -1, "name": "village-calm-3", "label": "Cy (the calmest, reactivity 24): morning of day 19"},
+  {"file": "village-calm.html", "t": 5950, "h": -1, "name": "village-calm-4", "label": "Cy at dusk: thoughts turn to rest"},
+  {"file": "village-reactive.html", "t": 5722, "h": 0, "name": "village-reactive-1", "label": "Abe is surprised: a prediction error injects activation and damps the thought on the mind"},
+  {"file": "village-reactive.html", "t": 5725, "h": -1, "name": "village-reactive-2", "label": "Abe speaks (its own mind chose to)"},
+  {"file": "village-reactive.html", "t": 5726, "h": -1, "name": "village-reactive-3", "label": "Abe gossips: someone it feels strongly about is on its mind"},
+  {"file": "village-reactive.html", "t": 5729, "h": -1, "name": "village-reactive-4", "label": "Abe (the most reactive, reactivity 945): morning of day 19"},
+  {"file": "village-reactive.html", "t": 5879, "h": -1, "name": "village-reactive-5", "label": "Abe eats or drinks"},
+  {"file": "village-reactive.html", "t": 5950, "h": -1, "name": "village-reactive-6", "label": "Abe at dusk: thoughts turn to rest"},
+  {"file": "village-gossip.html", "t": 5719, "h": 0, "name": "village-gossip-1", "label": "Fen is surprised: a prediction error injects activation and damps the thought on the mind"},
+  {"file": "village-gossip.html", "t": 5720, "h": -1, "name": "village-gossip-2", "label": "Fen gossips: someone it feels strongly about is on its mind"},
+  {"file": "village-gossip.html", "t": 5721, "h": -1, "name": "village-gossip-3", "label": "Fen speaks (its own mind chose to)"},
+  {"file": "village-gossip.html", "t": 5729, "h": -1, "name": "village-gossip-4", "label": "Fen (the keenest gossip, reactivity 606): morning of day 19"},
+  {"file": "village-gossip.html", "t": 5763, "h": -1, "name": "village-gossip-5", "label": "Fen eats or drinks"},
+  {"file": "village-gossip.html", "t": 5950, "h": -1, "name": "village-gossip-6", "label": "Fen at dusk: thoughts turn to rest"}
+]

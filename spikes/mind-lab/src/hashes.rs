@@ -108,3 +108,17 @@ pub fn hunt_order(threads: usize, order: &[usize], betray: bool) -> u64 {
     for _ in 0..120 { v.step(threads, order); }
     v.state_hash()
 }
+
+/// The pinned village runs (stage 5): 30 people for two days in full detail and with the cheap
+/// tier, and 50 people for a day with place pruning on. Every run on one thread (the village's
+/// pool gives the same hash on any number: `tests/village_determinism.rs`).
+pub fn village_runs() -> Vec<(&'static str, u64)> {
+    use crate::village::runs::{run, Setup};
+    let mut cheap = Setup::new(2, 30, 2); cheap.every = 4;
+    let mut big = Setup::new(3, 50, 1); big.prune = true;
+    vec![
+        ("village: 30 people, 2 days (seed 1)", run(&Setup::new(1, 30, 2), 1, None).0.hash),
+        ("village: 30 people, 2 days, the cheap tier (seed 2)", run(&cheap, 1, None).0.hash),
+        ("village: 50 people, a day, pruning on (seed 3)", run(&big, 1, None).0.hash),
+    ]
+}

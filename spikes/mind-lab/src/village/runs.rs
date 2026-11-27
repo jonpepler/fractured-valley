@@ -40,10 +40,12 @@ pub struct Setup {
     pub gossip: bool,
     /// Stage 5's principled place pruning (`Config::prune_places`).
     pub prune: bool,
+    /// The voice model (off: the old falloff, ordinary speech heard to about 27 cells).
+    pub voice: bool,
 }
 impl Setup {
     pub fn new(seed: u64, people: usize, days: u32) -> Setup {
-        Setup { seed, people, days, every: 1, far: 16, observer: None, foxes: 3, boar: true, deer: true, gossip: true, prune: false }
+        Setup { seed, people, days, every: 1, far: 16, observer: None, foxes: 3, boar: true, deer: true, gossip: true, prune: false, voice: true }
     }
 }
 
@@ -112,7 +114,7 @@ pub fn build(s: &Setup) -> Valley {
     w.village = Some(Box::new(VillageState {
         hunger: (0..n).map(|i| r(700 + i as u64, 400) as i32).collect(), meals: vec![0; n],
         bushes: (0..BUSHES).map(|b| Bush { id: BUSH0 + b as u32, servings: 4, max: 4, regrow: 40 }).collect(),
-        foxes, voice: true, heal: true, deer_home: if s.deer { vec![l.meadows[0]] } else { vec![] }, feasts: vec![],
+        foxes, voice: s.voice, heal: true, deer_home: if s.deer { vec![l.meadows[0]] } else { vec![] }, feasts: vec![],
         boar_hunger: if s.boar { vec![300] } else { vec![] }, boar_meals: if s.boar { vec![0] } else { vec![] },
     }));
     if s.deer { let m0 = l.meadows[0]; w.deer.push(Deer { x: m0.0, y: m0.1, px: m0.0, py: m0.1, hunger: 300, asleep: false, caught: None, ran: 0, missed: 0, escaped: None }); }
@@ -149,7 +151,7 @@ pub fn build(s: &Setup) -> Valley {
         let dk = p.hunt.as_ref().unwrap().k.deer_kind;
         p.m.store.add_link(dk, sp.ids.food, crate::graph::lt::ASSOC, 500, 0);
         p.m.young_from = p.m.store.len() as u32;
-        p.village = Some(Box::new(Life { every: 1, ..Life::default() }));
+        p.village = Some(Box::new(Life { every: 1, no_gossip: !s.gossip, ..Life::default() }));
         p
     }).collect();
     let mut v = Valley::new(w, folk);
@@ -327,6 +329,7 @@ pub fn run(s: &Setup, threads: usize, order: Option<&[usize]>) -> (Record, Valle
             if !q.asleep { for j in i + 1..n { let o = &v.w.people[j]; if pw::d2(q.x, q.y, o.x, o.y) <= 9 { rec.close[i * n + j] += 1; rec.close[j * n + i] += 1; } } }
         }
         rec.air += v.w.air.len() as u64;
+        if !v.w.air.is_empty() { for i in 0..n { if !v.w.people[i].asleep { rec.heard += v.w.heard(i).len() as u64; } } }
         for u in &v.w.air {
             let k = say_kind(&u.say);
             rec.said[u.speaker][k] += 1;
