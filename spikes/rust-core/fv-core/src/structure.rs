@@ -371,11 +371,12 @@ fn solve_piece(w: &World, cells: &[[usize; 3]], grounded: &[bool], report: &mut 
                 out[i] = acc;
             }
         };
-        // The dot products below are summed in index order from the same
-        // start as `Iterator::sum` (so the rounding is the same), but inside
-        // the loops that make their terms: the sum is a chain of dependent
-        // additions, and the loop's other work fills the time between them.
-        let zero: f64 = core::iter::empty::<f64>().sum();
+        // Conjugate gradients with a Jacobi (diagonal) preconditioner: each
+        // cell's residual is scaled by its own total stiffness, so stiff rock
+        // and soft leaves converge together instead of the softest setting
+        // the pace. Converged to the same residual as before.
+        let diag: Vec<f64> = (0..n).map(|i| stiff[row[i] as usize..row[i + 1] as usize].iter().sum()).collect();
+        let precondition = |r: &[f64], z: &mut [f64]| { for i in 0..n { z[i] = if diag[i] > 0.0 { r[i] / diag[i] } else { 0.0 } } };
         let bvec: Vec<f64> = weight.iter().map(|w| -w).collect();
         let mut x = uz.clone();
         let mut ax = vec![0.0; n];
@@ -384,31 +385,27 @@ fn solve_piece(w: &World, cells: &[[usize; 3]], grounded: &[bool], report: &mut 
         x.pop();
         let mut r: Vec<f64> = (0..n).map(|i| bvec[i] - ax[i]).collect();
         // Cells with no active links can't be solved for (they float); leave them.
-        let mut p = r.clone();
+        let mut z = vec![0.0; n];
+        precondition(&r, &mut z);
+        let mut p = z.clone();
         p.push(0.0);
         let mut rr: f64 = r.iter().map(|v| v * v).sum();
+        let mut rz: f64 = (0..n).map(|i| r[i] * z[i]).sum();
         let bb: f64 = bvec.iter().map(|v| v * v).sum::<f64>().max(1e-30);
         let mut ap = vec![0.0; n];
         for _ in 0..(4 * n + 200) {
             if rr <= bb * 1e-20 { break }
-            // ap = A·p and pap = p·ap, together.
-            let mut pap = zero;
-            for i in 0..n {
-                let mut acc = 0.0;
-                let pi = p[i];
-                for l in row[i] as usize..row[i + 1] as usize {
-                    acc += stiff[l] * (pi - p[col[l] as usize]);
-                }
-                ap[i] = acc;
-                pap += pi * acc;
-            }
+            apply(&p, &mut ap);
+            let pap: f64 = (0..n).map(|i| p[i] * ap[i]).sum();
             if pap <= 0.0 { break }
-            let alpha = rr / pap;
-            let mut rr2 = zero;
-            for i in 0..n { x[i] += alpha * p[i]; r[i] -= alpha * ap[i]; rr2 += r[i] * r[i] }
-            let beta = rr2 / rr;
-            rr = rr2;
-            for i in 0..n { p[i] = r[i] + beta * p[i] }
+            let alpha = rz / pap;
+            for i in 0..n { x[i] += alpha * p[i]; r[i] -= alpha * ap[i] }
+            rr = r.iter().map(|v| v * v).sum();
+            precondition(&r, &mut z);
+            let rz2: f64 = (0..n).map(|i| r[i] * z[i]).sum();
+            let beta = rz2 / rz;
+            rz = rz2;
+            for i in 0..n { p[i] = z[i] + beta * p[i] }
         }
         uz = x;
         // Let go of contacts that are pulling (the cell above lifted off).
