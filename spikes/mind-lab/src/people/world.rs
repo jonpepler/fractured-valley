@@ -21,20 +21,37 @@ pub const PLACE_RADIUS: i32 = 6;
 pub const TALK: i32 = 8;
 pub const PEOPLE: usize = 4;
 pub const NAMES: [&str; PEOPLE] = ["Ash", "Bryn", "Cai", "Dee"];
+/// Stage 5: people are a vector of any size. The first four keep their names, ids and looks, so
+/// every earlier scenario is unchanged; the rest are named from this list (debug labels and logs
+/// only: names are never hashed and never read by a mind).
+pub const MORE_NAMES: [&str; 60] = ["Eli", "Fen", "Gil", "Hal", "Ivo", "Jun", "Kit", "Lev", "Mo", "Nell", "Oda", "Pip", "Quin", "Rue", "Sol", "Tam", "Uma", "Vi", "Wren", "Xan",
+    "Yew", "Zed", "Abe", "Bea", "Cy", "Dot", "Edda", "Fay", "Gus", "Hob", "Ida", "Jem", "Kay", "Lux", "Mab", "Ned", "Ora", "Pell", "Rook", "Sid",
+    "Tess", "Ulf", "Val", "Wim", "Yara", "Zia", "Arlo", "Bram", "Cleo", "Dov", "Esme", "Finn", "Gwen", "Hugo", "Isla", "Jory", "Kes", "Lark", "Mira", "Noor"];
+pub fn name(j: usize) -> &'static str { if j < PEOPLE { NAMES[j] } else { MORE_NAMES.get(j - PEOPLE).copied().unwrap_or("someone") } }
+/// Stage 5: what person `j` looks like (a kind index). The first four are `Kind::Ash..Dee`; later
+/// people come after the kinds every species tells apart today (`Kind::ALL`) and the village's
+/// own (`Kind::Berry`, `Kind::Fox`), so no earlier species' kind table changes.
+pub fn person_kind(j: usize) -> u8 { if j < PEOPLE { j as u8 } else { (Kind::Fox as usize + 1 + j - PEOPLE) as u8 } }
+/// The number of kinds a species must tell apart in a valley of `n` people (the village's kinds
+/// only when `village`).
+pub fn kind_count(n: usize, village: bool) -> usize { if village || n > PEOPLE { Kind::Fox as usize + 1 + n.saturating_sub(PEOPLE) } else { Kind::ALL.len() } }
 
 /// What a person can tell apart by looking (the index is the species' kind index). Each person
 /// has their own look, so people are recognised by look, never by identity.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum Kind { Ash, Bryn, Cai, Dee, Water, Rock, Windmill, Oak, Hut, Note, DryFresh, DryOld, Boar, Deer }
+pub enum Kind { Ash, Bryn, Cai, Dee, Water, Rock, Windmill, Oak, Hut, Note, DryFresh, DryOld, Boar, Deer,
+    /// Stage 5 (the village only; not in `ALL`, so earlier species' kind tables are unchanged):
+    /// a berry bush, and a fox.
+    Berry, Fox }
 impl Kind {
     pub const ALL: [Kind; 14] = [Kind::Ash, Kind::Bryn, Kind::Cai, Kind::Dee, Kind::Water, Kind::Rock, Kind::Windmill, Kind::Oak, Kind::Hut, Kind::Note, Kind::DryFresh, Kind::DryOld, Kind::Boar, Kind::Deer];
     pub fn k(self) -> u8 { self as u8 }
     pub fn person(i: usize) -> Kind { Kind::ALL[i] }
     pub fn name(self) -> &'static str {
         match self { Kind::Ash => "Ash", Kind::Bryn => "Bryn", Kind::Cai => "Cai", Kind::Dee => "Dee", Kind::Water => "water", Kind::Rock => "rock", Kind::Windmill => "windmill",
-            Kind::Oak => "oak", Kind::Hut => "hut", Kind::Note => "note", Kind::DryFresh => "freshly dry hollow", Kind::DryOld => "long-dry hollow", Kind::Boar => "boar", Kind::Deer => "deer" }
+            Kind::Oak => "oak", Kind::Hut => "hut", Kind::Note => "note", Kind::DryFresh => "freshly dry hollow", Kind::DryOld => "long-dry hollow", Kind::Boar => "boar", Kind::Deer => "deer", Kind::Berry => "berry bush", Kind::Fox => "fox" }
     }
-    pub fn landmark(self) -> bool { matches!(self, Kind::Water | Kind::Rock | Kind::Windmill | Kind::Oak | Kind::Hut | Kind::DryFresh | Kind::DryOld) }
+    pub fn landmark(self) -> bool { matches!(self, Kind::Water | Kind::Rock | Kind::Windmill | Kind::Oak | Kind::Hut | Kind::DryFresh | Kind::DryOld | Kind::Berry) }
     /// Stage 4: things a person can hide behind (a person keeping still right by one is hidden).
     pub fn cover(self) -> bool { matches!(self, Kind::Rock | Kind::Windmill | Kind::Oak | Kind::Hut) }
 }
@@ -164,6 +181,100 @@ pub struct World {
     pub cover: bool,
     pub still: Vec<u32>,
     pub blows: Vec<(u32, usize, usize)>,
+    /// Stage 5: the village's state (hunger and food, berry bushes, foxes, the voice model), hashed
+    /// only when present, so no earlier stage's world hash moves.
+    pub village: Option<Box<VillageState>>,
+}
+
+/// Stage 5: a berry bush's fruit (world truth): servings left, at most `max`, one more every
+/// `regrow` ticks.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Bush { pub id: u32, pub servings: i32, pub max: i32, pub regrow: u32 }
+
+/// Stage 5: a fox's body (its mind is `crate::village::fox`). Its id as a thing seen is `FOX_ID + k`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct FoxBody { pub x: i32, pub y: i32, pub px: i32, pub py: i32, pub hunger: i32, pub asleep: bool, pub meals: u32 }
+pub const FOX_ID: u32 = 70;
+
+/// Stage 5: what the village adds to the valley.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct VillageState {
+    /// Each person's hunger (0..1000, +`HUNGER_RATE` a tick; a serving of berries takes `MEAL` off).
+    pub hunger: Vec<i32>,
+    pub meals: Vec<u32>,
+    pub bushes: Vec<Bush>,
+    pub foxes: Vec<FoxBody>,
+    /// The voice model (`voice_level`): loudness falls with distance as sound does, a solid thing
+    /// between speaker and hearer takes `BARRIER` off, and other voices mask quieter ones.
+    pub voice: bool,
+    /// Wounds heal: one goring a night (a person three times gored is otherwise down for good).
+    pub heal: bool,
+    /// The deer comes back to its meadow the morning after it is caught (world rule).
+    pub deer_home: Vec<(i32, i32)>,
+    /// Meals from a caught deer: (tick, who ate).
+    pub feasts: Vec<(u32, u32)>,
+    /// Each boar's hunger (in the village a boar forages at the bushes) and meals.
+    pub boar_hunger: Vec<i32>,
+    pub boar_meals: Vec<u32>,
+}
+pub const HUNGER_RATE: i32 = 1;
+pub const MEAL: i32 = 400;
+/// A caught deer feeds everyone within this many cells of it (a shared meal: a world rule).
+pub const FEAST_R: i32 = 4;
+pub const FEAST: i32 = 600;
+
+// ------------------------------------------------------------------------- stage 5: the voice
+/// Speech levels at 1 m, in tenths of a decibel (ANSI S3.5-1997 speech levels: normal about 60 dB,
+/// raised 66, shouted 77 to 82; a whisper about 30 to 35; a muted voice about 50).
+pub fn voice_db(vol: i32) -> i32 { match vol { v if v <= LOW => 500, v if v < 0 => 350, v if v >= SHOUT => 800, _ => 600 } }
+/// The village's background noise by day (tenths of a dB): a lived-in rural place, 40 dB(A).
+pub const AMBIENT: i32 = 400;
+/// A solid landmark near the line between speaker and hearer takes this off (a barrier's insertion
+/// loss: 5 to 15 dB for a low wall or a building; one barrier counted).
+pub const BARRIER: i32 = 100;
+/// Catching speech by signal-to-noise ratio (tenths of a dB): never below `SNR_MIN`, always at or
+/// above `SNR_CLEAR`, a hashed roll in between (sentence intelligibility rises from near 0 to near
+/// 100% over about -6 to +6 dB SNR for normal hearing).
+pub const SNR_MIN: i32 = -60;
+pub const SNR_CLEAR: i32 = 60;
+
+/// `10·log10(x)` in tenths of a decibel, for x ≥ 1, in integers: `log2` to 8 fractional bits by
+/// repeated squaring, times 10·log10(2) = 3.0103.
+pub fn db10(x: u32) -> i32 {
+    let x = x.max(1);
+    let ip = 31 - x.leading_zeros();
+    // x / 2^ip in [1, 2), held in Q30.
+    let mut m: u64 = if ip <= 30 { (x as u64) << (30 - ip) } else { (x as u64) >> (ip - 30) };
+    let mut frac = 0u32;
+    for _ in 0..8 {
+        m = (m * m) >> 30;
+        frac <<= 1;
+        if m >= 2 << 30 { m >>= 1; frac |= 1; }
+    }
+    let log2_q8 = ((ip as i64) << 8) + frac as i64;
+    (log2_q8 * 30103 / 25600) as i32
+}
+
+/// The level of utterance `u` heard at `(x, y)` (tenths of a dB): its voice at 1 m, less spherical
+/// spreading (6 dB per doubling of distance), less one barrier if a solid landmark stands near the
+/// line between (within a cell of it, and not at either end).
+pub fn voice_level(w: &World, u: &Utterance, x: i32, y: i32) -> i32 {
+    let d2v = d2(u.x, u.y, x, y).max(1) as u32;
+    let mut l = voice_db(u.vol) - db10(d2v);
+    if w.things.iter().any(|t| t.alive && t.kind.cover() && blocks(u.x, u.y, x, y, t.x, t.y)) { l -= BARRIER; }
+    l
+}
+/// Does a solid thing at `(tx, ty)` stand within a cell of the segment from a to b, away from both ends?
+pub fn blocks(ax: i32, ay: i32, bx: i32, by: i32, tx: i32, ty: i32) -> bool {
+    if (tx - ax).abs().max((ty - ay).abs()) <= 1 || (tx - bx).abs().max((ty - by).abs()) <= 1 { return false; }
+    let (vx, vy, wx, wy) = ((bx - ax) as i64, (by - ay) as i64, (tx - ax) as i64, (ty - ay) as i64);
+    let len2 = vx * vx + vy * vy;
+    if len2 == 0 { return false; }
+    let t = wx * vx + wy * vy;
+    if t <= 0 || t >= len2 { return false; }
+    // Squared distance from the line, times len2: cross² ≤ len2 (within one cell).
+    let cross = wx * vy - wy * vx;
+    cross * cross <= len2
 }
 
 pub const CAMP: u32 = 9;
@@ -172,8 +283,15 @@ pub const ROCK: u32 = 11;
 pub const WINDMILL: u32 = 12;
 pub const OAK: u32 = 13;
 pub const SPRING: u32 = 14;
-/// Ids of people as things that can be seen: 1..=4.
-pub fn person_id(i: usize) -> u32 { i as u32 + 1 }
+/// Ids of people as things that can be seen: 1..=4 for the first four (as before), then
+/// `PERSON_ID0 + i` (stage 5: clear of the landmarks', boars', deer's and notes' ids).
+pub fn person_id(i: usize) -> u32 { if i < PEOPLE { i as u32 + 1 } else { PERSON_ID0 + i as u32 } }
+pub const PERSON_ID0: u32 = 1000;
+/// The person an id belongs to, if any, in a valley of `n` people.
+pub fn person_of(id: u32, n: usize) -> Option<usize> {
+    let j = if (1..=PEOPLE as u32).contains(&id) { id as usize - 1 } else if id >= PERSON_ID0 + PEOPLE as u32 { (id - PERSON_ID0) as usize } else { return None };
+    (j < n).then_some(j)
+}
 
 pub use crate::mind::{d2, dist};
 
@@ -236,7 +354,7 @@ impl World {
             t(SPRING, Kind::Water, "the spring", 40 + j(9), 6 + j(10)),
         ];
         let people = (0..PEOPLE).map(|_| Person { x: 10, y: 23, px: 10, py: 23, thirst: 200, asleep: false, drinks: 0, pain: 0, gored: 0, first_drink: None, away: false }).collect();
-        World { seed, tick: 0, things, notes: vec![], people, air: vec![], script: vec![], log: vec![], next_id: 100, night_now: false, dusk: false, dusk_at: 0, leads: vec![], said: vec![], boars: vec![], deer: vec![], meadows: vec![], cover: false, still: vec![], blows: vec![] }
+        World { seed, tick: 0, things, notes: vec![], people, air: vec![], script: vec![], log: vec![], next_id: 100, night_now: false, dusk: false, dusk_at: 0, leads: vec![], said: vec![], boars: vec![], deer: vec![], meadows: vec![], cover: false, still: vec![], blows: vec![], village: None }
     }
     /// Evening sleepiness (stage 3): from dusk it rises from 400 by 10 a tick, to 900.
     pub fn drowsy(&self) -> i32 { if self.dusk { (400 + 10 * (self.tick - self.dusk_at) as i32).min(900) } else { 0 } }
@@ -261,11 +379,12 @@ impl World {
         if !p.asleep || awake {
             let near = |x: i32, y: i32| d2(x, y, p.x, p.y) <= SIGHT * SIGHT;
             for t in self.things.iter().filter(|t| t.alive && near(t.x, t.y)) {
-                seen.push(Seen { id: t.id, kind: t.kind.k(), x: t.x, y: t.y, approaching: false, available: t.kind == Kind::Water });
+                let available = match t.kind { Kind::Water => true, Kind::Berry => self.servings(t.id) > 0, _ => false };
+                seen.push(Seen { id: t.id, kind: t.kind.k(), x: t.x, y: t.y, approaching: false, available });
             }
             for (j, q) in self.people.iter().enumerate() {
                 if j == i || q.away || !near(q.x, q.y) || self.hidden(j, p.x, p.y) { continue; }
-                seen.push(Seen { id: person_id(j), kind: Kind::person(j).k(), x: q.x, y: q.y, approaching: d2(q.x, q.y, p.x, p.y) < d2(q.px, q.py, p.x, p.y), available: false });
+                seen.push(Seen { id: person_id(j), kind: person_kind(j), x: q.x, y: q.y, approaching: d2(q.x, q.y, p.x, p.y) < d2(q.px, q.py, p.x, p.y), available: false });
             }
             for (k, q) in self.deer.iter().enumerate().filter(|(_, q)| q.caught.is_none() && q.escaped.is_none() && near(q.x, q.y)) {
                 seen.push(Seen { id: DEER_ID + k as u32, kind: Kind::Deer.k(), x: q.x, y: q.y, approaching: d2(q.x, q.y, p.x, p.y) < d2(q.px, q.py, p.x, p.y), available: false });
@@ -276,8 +395,14 @@ impl World {
             for n in self.notes.iter().filter(|n| n.holder.is_none() && near(n.x, n.y)) {
                 seen.push(Seen { id: n.id, kind: Kind::Note.k(), x: n.x, y: n.y, approaching: false, available: false });
             }
+            if let Some(v) = &self.village {
+                for (k, q) in v.foxes.iter().enumerate().filter(|(_, q)| near(q.x, q.y)) {
+                    seen.push(Seen { id: FOX_ID + k as u32, kind: Kind::Fox.k(), x: q.x, y: q.y, approaching: d2(q.x, q.y, p.x, p.y) < d2(q.px, q.py, p.x, p.y), available: false });
+                }
+            }
         }
-        Sense { tick: self.tick, seed: self.seed, body: Body { x: p.x, y: p.y, hunger: p.thirst, pain: p.pain, asleep: p.asleep && !awake, drowsy: self.drowsy() }, seen, cues: vec![], alarms: vec![] }
+        let hunger2 = self.village.as_ref().map_or(0, |v| v.hunger[i]);
+        Sense { tick: self.tick, seed: self.seed, body: Body { x: p.x, y: p.y, hunger: p.thirst, pain: p.pain, asleep: p.asleep && !awake, drowsy: self.drowsy(), hunger2 }, seen, cues: vec![], alarms: vec![] }
     }
 
     /// What boar `b` senses: people, landmarks and other boars in sight.
@@ -288,13 +413,15 @@ impl World {
         if !q.asleep {
             for t in self.things.iter().filter(|t| t.alive && near(t.x, t.y)) { seen.push(Seen { id: t.id, kind: t.kind.k(), x: t.x, y: t.y, approaching: false, available: false }); }
             for (j, p) in self.people.iter().enumerate().filter(|(_, p)| !p.away && near(p.x, p.y)) {
-                seen.push(Seen { id: person_id(j), kind: Kind::person(j).k(), x: p.x, y: p.y, approaching: d2(p.x, p.y, q.x, q.y) < d2(p.px, p.py, q.x, q.y), available: false });
+                seen.push(Seen { id: person_id(j), kind: person_kind(j), x: p.x, y: p.y, approaching: d2(p.x, p.y, q.x, q.y) < d2(p.px, p.py, q.x, q.y), available: false });
             }
             for (c, o) in self.boars.iter().enumerate().filter(|&(c, o)| c != b && near(o.x, o.y)) {
                 seen.push(Seen { id: BOAR_ID + c as u32, kind: Kind::Boar.k(), x: o.x, y: o.y, approaching: false, available: false });
             }
         }
-        Sense { tick: self.tick, seed: self.seed, body: Body { x: q.x, y: q.y, hunger: 0, pain: q.pain, asleep: q.asleep, drowsy: 0 }, seen, cues: vec![], alarms: vec![] }
+        let hunger = self.village.as_ref().and_then(|v| v.boar_hunger.get(b).copied()).unwrap_or(0);
+        if self.village.is_some() { for s in seen.iter_mut() { if s.kind == Kind::Berry.k() { s.available = self.servings(s.id) > 0; } } }
+        Sense { tick: self.tick, seed: self.seed, body: Body { x: q.x, y: q.y, hunger, pain: q.pain, asleep: q.asleep, drowsy: 0, hunger2: 0 }, seen, cues: vec![], alarms: vec![] }
     }
 
     /// What deer `k` senses: people (not those hidden from it), landmarks and other deer in sight.
@@ -305,13 +432,37 @@ impl World {
         if !q.asleep && q.caught.is_none() && q.escaped.is_none() {
             for t in self.things.iter().filter(|t| t.alive && near(t.x, t.y)) { seen.push(Seen { id: t.id, kind: t.kind.k(), x: t.x, y: t.y, approaching: false, available: false }); }
             for (j, p) in self.people.iter().enumerate().filter(|&(j, p)| !p.away && near(p.x, p.y) && !self.hidden(j, q.x, q.y)) {
-                seen.push(Seen { id: person_id(j), kind: Kind::person(j).k(), x: p.x, y: p.y, approaching: d2(p.x, p.y, q.x, q.y) < d2(p.px, p.py, q.x, q.y), available: false });
+                seen.push(Seen { id: person_id(j), kind: person_kind(j), x: p.x, y: p.y, approaching: d2(p.x, p.y, q.x, q.y) < d2(p.px, p.py, q.x, q.y), available: false });
             }
             for (c, o) in self.deer.iter().enumerate().filter(|&(c, o)| c != k && o.caught.is_none() && o.escaped.is_none() && near(o.x, o.y)) {
                 seen.push(Seen { id: DEER_ID + c as u32, kind: Kind::Deer.k(), x: o.x, y: o.y, approaching: false, available: false });
             }
         }
-        Sense { tick: self.tick, seed: self.seed, body: Body { x: q.x, y: q.y, hunger: q.hunger, pain: 0, asleep: q.asleep, drowsy: 0 }, seen, cues: vec![], alarms: vec![] }
+        Sense { tick: self.tick, seed: self.seed, body: Body { x: q.x, y: q.y, hunger: q.hunger, pain: 0, asleep: q.asleep, drowsy: 0, hunger2: 0 }, seen, cues: vec![], alarms: vec![] }
+    }
+
+    /// Stage 5: what fox `k` senses: landmarks and bushes (with fruit or not), people, boars and
+    /// other foxes in sight.
+    pub fn sense_fox(&self, k: usize) -> Sense {
+        let v = self.village.as_ref().expect("a village");
+        let q = &v.foxes[k];
+        let near = |x: i32, y: i32| d2(x, y, q.x, q.y) <= SIGHT * SIGHT;
+        let mut seen = vec![];
+        if !q.asleep {
+            for t in self.things.iter().filter(|t| t.alive && near(t.x, t.y)) {
+                seen.push(Seen { id: t.id, kind: t.kind.k(), x: t.x, y: t.y, approaching: false, available: t.kind == Kind::Berry && self.servings(t.id) > 0 });
+            }
+            for (j, p) in self.people.iter().enumerate().filter(|(_, p)| !p.away && near(p.x, p.y)) {
+                seen.push(Seen { id: person_id(j), kind: person_kind(j), x: p.x, y: p.y, approaching: d2(p.x, p.y, q.x, q.y) < d2(p.px, p.py, q.x, q.y), available: false });
+            }
+            for (b, o) in self.boars.iter().enumerate().filter(|(_, o)| near(o.x, o.y)) {
+                seen.push(Seen { id: BOAR_ID + b as u32, kind: Kind::Boar.k(), x: o.x, y: o.y, approaching: d2(o.x, o.y, q.x, q.y) < d2(o.px, o.py, q.x, q.y), available: false });
+            }
+            for (c, o) in v.foxes.iter().enumerate().filter(|&(c, o)| c != k && near(o.x, o.y)) {
+                seen.push(Seen { id: FOX_ID + c as u32, kind: Kind::Fox.k(), x: o.x, y: o.y, approaching: false, available: false });
+            }
+        }
+        Sense { tick: self.tick, seed: self.seed, body: Body { x: q.x, y: q.y, hunger: q.hunger, pain: 0, asleep: q.asleep, drowsy: 0, hunger2: 0 }, seen, cues: vec![], alarms: vec![] }
     }
 
     /// The utterances in the air that person `i` catches this tick: (utterance, loudness,
@@ -319,6 +470,7 @@ impl World {
     pub fn heard(&self, i: usize) -> Vec<(Utterance, i32, bool)> {
         let p = &self.people[i];
         if p.asleep { return vec![]; }
+        if self.village.as_ref().is_some_and(|v| v.voice) { return self.heard_voice(i); }
         let mut out = vec![];
         for u in &self.air {
             if u.speaker == i { continue; }
@@ -333,17 +485,55 @@ impl World {
         out
     }
 
+    /// Stage 5, the voice model: each utterance's level here (`voice_level`) against the noise,
+    /// which is the background or the loudest other voice here, whichever is louder (one attends to
+    /// one voice; others mask it). Caught for certain at `SNR_CLEAR`, never below `SNR_MIN`, a
+    /// hashed roll between. The loudness passed on is the old scale's (`CLEAR` when clear), so the
+    /// layers that read it are unchanged.
+    pub fn heard_voice(&self, i: usize) -> Vec<(Utterance, i32, bool)> {
+        let p = &self.people[i];
+        let lv: Vec<i32> = self.air.iter().map(|u| if u.speaker == i { i32::MIN } else { voice_level(self, u, p.x, p.y) }).collect();
+        let mut out = vec![];
+        for (k, u) in self.air.iter().enumerate() {
+            if u.speaker == i { continue; }
+            let masker = lv.iter().enumerate().filter(|&(j, _)| j != k).map(|(_, &l)| l).max().unwrap_or(i32::MIN).max(AMBIENT);
+            let snr = lv[k] - masker;
+            if snr < SNR_MIN { continue; }
+            if snr < SNR_CLEAR {
+                let catch = (snr - SNR_MIN) * 1000 / (SNR_CLEAR - SNR_MIN);
+                if ((hash(self.seed, self.tick as u64, i as u64, 0x4ea3 ^ (k as u64) << 8 ^ u.speaker as u64) % 1000) as i32) >= catch { continue; }
+            }
+            let loud = HEAR_MIN + (snr - SNR_MIN).clamp(0, SNR_CLEAR - SNR_MIN) * (CLEAR - HEAR_MIN) / (SNR_CLEAR - SNR_MIN);
+            out.push((u.clone(), loud, u.to == Some(i)));
+        }
+        out
+    }
+    /// Stage 5: berries left on a bush (0 for anything else, or outside the village).
+    pub fn servings(&self, id: u32) -> i32 { self.village.as_ref().and_then(|v| v.bushes.iter().find(|b| b.id == id)).map_or(0, |b| b.servings) }
+
     /// Apply the script. Call before minds read the world.
     pub fn pre_step(&mut self) {
         self.night_now = false;
         for p in self.people.iter_mut() { p.px = p.x; p.py = p.y; }
         for q in self.boars.iter_mut() { q.px = q.x; q.py = q.y; }
         for q in self.deer.iter_mut() { q.px = q.x; q.py = q.y; }
+        if let Some(v) = &mut self.village { for q in v.foxes.iter_mut() { q.px = q.x; q.py = q.y; } }
         let evs: Vec<Event> = self.script.iter().filter(|(t, _)| *t == self.tick).map(|(_, e)| e.clone()).collect();
         for ev in evs {
             match ev {
                 Event::Dusk => { self.dusk = true; self.dusk_at = self.tick; }
-                Event::Night => { self.dusk = false; self.night_now = true; for p in self.people.iter_mut() { p.asleep = true; } for q in self.boars.iter_mut() { q.asleep = true; } for q in self.deer.iter_mut() { q.asleep = true; } self.log.push((self.tick, "night: everyone sleeps where they are".into())); }
+                Event::Night => { self.dusk = false; self.night_now = true; for p in self.people.iter_mut() { p.asleep = true; } for q in self.boars.iter_mut() { q.asleep = true; } for q in self.deer.iter_mut() { q.asleep = true; }
+                    if let Some(v) = &mut self.village {
+                        for q in v.foxes.iter_mut() { q.asleep = true; }
+                        // Wounds heal overnight, one a night; a caught deer is back on its meadow.
+                        if v.heal {
+                            for p in self.people.iter_mut() { p.gored = p.gored.saturating_sub(1); }
+                            // A boar that broke off has recovered by morning.
+                            for q in self.boars.iter_mut() { q.routed = None; q.struck = 0; q.braced = 0; q.pain = 0; }
+                        }
+                        for (k, q) in self.deer.iter_mut().enumerate() { if q.caught.is_some() { if let Some(&(x, y)) = v.deer_home.get(k) { q.caught = None; q.x = x; q.y = y; q.px = x; q.py = y; q.hunger = 300; } } }
+                    }
+                    self.log.push((self.tick, "night: everyone sleeps where they are".into())); }
                 Event::SetThirst { who, v } => { self.people[who].thirst = v; }
                 Event::DrySpring => {
                     let (x, y) = self.spring();
@@ -358,7 +548,7 @@ impl World {
                 Event::LoseNotes { who } => {
                     let (x, y) = (self.people[who].x, self.people[who].y);
                     for n in self.notes.iter_mut().filter(|n| n.holder == Some(who)) { n.holder = None; n.x = x; n.y = y; }
-                    self.log.push((self.tick, format!("{} drops a note without noticing", NAMES[who])));
+                    self.log.push((self.tick, format!("{} drops a note without noticing", name(who))));
                 }
                 Event::Away { who } => { let p = &mut self.people[who]; p.away = true; p.x = 63; p.y = 39; p.px = 63; p.py = 39; }
                 Event::Back { who, x, y } => { let p = &mut self.people[who]; p.away = false; p.x = x; p.y = y; p.px = x; p.py = y; }
@@ -375,8 +565,11 @@ impl World {
     /// boars'; every choice was made from the world as it was at the start of the tick.
     pub fn post_step_with(&mut self, deeds: &[Deed], boar_acts: &[Action]) { self.post_step_all(deeds, boar_acts, &[]); }
     /// Stage 4: with what each deer does too (applied after the boars').
-    pub fn post_step_all(&mut self, deeds: &[Deed], boar_acts: &[Action], deer_acts: &[Action]) {
+    pub fn post_step_all(&mut self, deeds: &[Deed], boar_acts: &[Action], deer_acts: &[Action]) { self.post_step_full(deeds, boar_acts, deer_acts, &[]); }
+    /// Stage 5: with what each fox does too (applied after the deer's).
+    pub fn post_step_full(&mut self, deeds: &[Deed], boar_acts: &[Action], deer_acts: &[Action], fox_acts: &[Action]) {
         let tick = self.tick;
+        let n = self.people.len();
         let mut air = vec![];
         for (i, d) in deeds.iter().enumerate() {
             if let Some(a) = d.action.filter(|_| self.people[i].gored < DOWN_AFTER) {
@@ -391,7 +584,7 @@ impl World {
                     Action::Snap { entity } if entity >= BOAR_ID && ((entity - BOAR_ID) as usize) < self.boars.len() => {
                         let (px, py) = (p.x, p.y);
                         let q = &mut self.boars[(entity - BOAR_ID) as usize];
-                        if (q.x - px).abs().max((q.y - py).abs()) <= 2 { q.pain = (q.pain + STRIKE).min(1000); q.struck += 1; self.log.push((tick, format!("{} strikes the boar", NAMES[i]))); }
+                        if (q.x - px).abs().max((q.y - py).abs()) <= 2 { q.pain = (q.pain + STRIKE).min(1000); q.struck += 1; self.log.push((tick, format!("{} strikes the boar", name(i)))); }
                     }
                     // Stage 4: a strike at a deer, or at another person.
                     Action::Snap { entity } if entity >= DEER_ID && ((entity - DEER_ID) as usize) < self.deer.len() => {
@@ -400,15 +593,28 @@ impl World {
                         let roll = (hash(self.seed, tick as u64, i as u64, 0xdee7) % 1000) as i32;
                         let q = &mut self.deer[k];
                         if q.caught.is_none() && q.escaped.is_none() && (q.x - px).abs().max((q.y - py).abs()) <= 2 {
-                            if roll < HIT { q.caught = Some((tick, i)); self.log.push((tick, format!("{} catches the deer", NAMES[i]))); } else { q.missed += 1; self.log.push((tick, format!("{} strikes at the deer and misses", NAMES[i]))); }
+                            if roll < HIT {
+                                q.caught = Some((tick, i)); self.log.push((tick, format!("{} catches the deer", name(i))));
+                                // Stage 5: a caught deer feeds everyone near it (a world rule).
+                                let (dx, dy) = (q.x, q.y);
+                                if let Some(v) = &mut self.village { for (j, o) in self.people.iter().enumerate() { if (o.x - dx).abs().max((o.y - dy).abs()) <= FEAST_R { v.hunger[j] = (v.hunger[j] - FEAST).max(0); v.feasts.push((tick, j as u32)); } } }
+                            } else { q.missed += 1; self.log.push((tick, format!("{} strikes at the deer and misses", name(i)))); }
                         }
                     }
-                    Action::Snap { entity } if entity >= 1 && entity as usize <= PEOPLE && entity as usize - 1 != i => {
-                        let j = entity as usize - 1;
+                    Action::Snap { entity } if person_of(entity, n).is_some_and(|j| j != i) => {
+                        let j = person_of(entity, n).unwrap();
                         let (px, py) = (p.x, p.y);
                         let q = &mut self.people[j];
                         // Three blows and a person is down (counted with gorings: wounds).
-                        if !q.away && q.gored < DOWN_AFTER && (q.x - px).abs().max((q.y - py).abs()) <= 2 { q.pain = (q.pain + STRIKE).min(1000); q.gored += 1; self.blows.push((tick, i, j)); self.log.push((tick, format!("{} strikes {}", NAMES[i], NAMES[j]))); }
+                        if !q.away && q.gored < DOWN_AFTER && (q.x - px).abs().max((q.y - py).abs()) <= 2 { q.pain = (q.pain + STRIKE).min(1000); q.gored += 1; self.blows.push((tick, i, j)); self.log.push((tick, format!("{} strikes {}", name(i), name(j)))); }
+                    }
+                    Action::Eat { entity } if self.village.is_some() && self.things.iter().any(|t| t.id == entity && t.kind == Kind::Berry) => {
+                        let (px, py) = (p.x, p.y);
+                        let near = self.things.iter().any(|t| t.id == entity && t.alive && (t.x - px).abs().max((t.y - py).abs()) <= 1);
+                        let v = self.village.as_mut().unwrap();
+                        if let Some(b) = v.bushes.iter_mut().find(|b| b.id == entity && b.servings > 0).filter(|_| near) {
+                            b.servings -= 1; v.hunger[i] = (v.hunger[i] - MEAL).max(0); v.meals[i] += 1;
+                        }
                     }
                     Action::Eat { entity } => {
                         let (px, py) = (p.x, p.y);
@@ -416,7 +622,7 @@ impl World {
                             let p = &mut self.people[i];
                             p.thirst = (p.thirst - 500).max(0); p.drinks += 1;
                             if p.first_drink.is_none() { p.first_drink = Some((tick, entity)); }
-                            self.log.push((tick, format!("{} drinks from {}", NAMES[i], self.thing(entity).name)));
+                            self.log.push((tick, format!("{} drinks from {}", name(i), self.thing(entity).name)));
                         }
                     }
                     _ => {}
@@ -425,20 +631,20 @@ impl World {
             if let Some((say, to, vol)) = &d.say {
                 let p = &self.people[i];
                 let u = Utterance { tick, speaker: i, x: p.x, y: p.y, vol: *vol, to: *to, say: say.clone() };
-                self.log.push((tick, format!("{} says to {}: {}", NAMES[i], to.map(|t| NAMES[t]).unwrap_or("anyone"), u.say.render())));
+                self.log.push((tick, format!("{} says to {}: {}", name(i), to.map(name).unwrap_or("anyone"), u.say.render())));
                 air.push(u);
             }
             if let Some((content, to)) = &d.write {
                 let id = self.next_id; self.next_id += 1;
                 let (x, y) = (self.people[*to].x, self.people[*to].y);
                 self.notes.push(Note { id, x, y, holder: Some(*to), content: content.clone(), writer: i });
-                self.log.push((tick, format!("{} writes a note and hands it to {}", NAMES[i], NAMES[*to])));
+                self.log.push((tick, format!("{} writes a note and hands it to {}", name(i), name(*to))));
             }
             if let Some(id) = d.pick_up {
                 let (x, y) = (self.people[i].x, self.people[i].y);
                 if let Some(n) = self.notes.iter_mut().find(|n| n.id == id && n.holder.is_none() && (n.x - x).abs().max((n.y - y).abs()) <= 1) {
                     n.holder = Some(i);
-                    self.log.push((tick, format!("{} picks up a note", NAMES[i])));
+                    self.log.push((tick, format!("{} picks up a note", name(i))));
                 }
             }
         }
@@ -451,8 +657,16 @@ impl World {
                 Action::WalkTo { x, y } => { let (nx, ny) = step_toward(q.x, q.y, x, y); q.x = nx.clamp(0, GRID_W - 1); q.y = ny.clamp(0, GRID_H - 1); }
                 Action::Charge { x, y, .. } => { for _ in 0..2 { if (q.x - x).abs().max((q.y - y).abs()) <= 1 { break; } let (nx, ny) = step_toward(q.x, q.y, x, y); q.x = nx.clamp(0, GRID_W - 1); q.y = ny.clamp(0, GRID_H - 1); } }
                 Action::Flee { from_x, from_y, .. } => { for _ in 0..2 { let (nx, ny) = step_toward(q.x, q.y, 2 * q.x - from_x, 2 * q.y - from_y); q.x = nx.clamp(0, GRID_W - 1); q.y = ny.clamp(0, GRID_H - 1); } }
-                Action::Snap { entity } if entity >= 1 && entity as usize <= self.people.len() => {
-                    let j = entity as usize - 1;
+                Action::Eat { entity } => {
+                    // Stage 5: a village boar eats from a bush within a cell.
+                    let (bx, by) = (q.x, q.y);
+                    let near = self.things.iter().any(|t| t.id == entity && t.alive && t.kind == Kind::Berry && (t.x - bx).abs().max((t.y - by).abs()) <= 1);
+                    if let Some(v) = &mut self.village {
+                        if let Some(bu) = v.bushes.iter_mut().find(|bu| bu.id == entity && bu.servings > 0).filter(|_| near) { bu.servings -= 1; if let Some(h) = v.boar_hunger.get_mut(b) { *h = (*h - MEAL).max(0); } if let Some(m) = v.boar_meals.get_mut(b) { *m += 1; } }
+                    }
+                }
+                Action::Snap { entity } if person_of(entity, n).is_some() => {
+                    let j = person_of(entity, n).unwrap();
                     let (qx, qy) = (q.x, q.y);
                     let p = &mut self.people[j];
                     if (p.x - qx).abs().max((p.y - qy).abs()) <= 2 && !p.away && p.gored < DOWN_AFTER {
@@ -460,8 +674,8 @@ impl World {
                         // (After review: a braced charge no longer counts as a goring: bracing is
                         // what protects the holder; it bruises, and hurts the boar.)
                         if !braced { p.gored += 1; }
-                        if braced { p.pain = (p.pain + BRACED_GORE).min(1000); q.pain = (q.pain + BRACE).min(1000); q.braced += 1; self.log.push((tick, format!("the boar charges {}, who holds braced", NAMES[j]))); }
-                        else { p.pain = (p.pain + GORE).min(1000); q.gored += 1; self.log.push((tick, format!("the boar gores {}", NAMES[j]))); }
+                        if braced { p.pain = (p.pain + BRACED_GORE).min(1000); q.pain = (q.pain + BRACE).min(1000); q.braced += 1; self.log.push((tick, format!("the boar charges {}, who holds braced", name(j)))); }
+                        else { p.pain = (p.pain + GORE).min(1000); q.gored += 1; self.log.push((tick, format!("the boar gores {}", name(j)))); }
                     }
                 }
                 _ => {}
@@ -486,6 +700,23 @@ impl World {
             q.hunger = if grazing { (q.hunger - GRAZE).max(0) } else { (q.hunger + 2).min(1000) };
             if q.asleep { q.asleep = false; }
         }
+        // Foxes act after deer (stage 5): walk, run, or eat from a bush within a cell.
+        if let Some(v) = &mut self.village {
+            for (k, a) in fox_acts.iter().enumerate() {
+                let q = &mut v.foxes[k];
+                match *a {
+                    Action::WalkTo { x, y } => { let (nx, ny) = step_toward(q.x, q.y, x, y); q.x = nx.clamp(0, GRID_W - 1); q.y = ny.clamp(0, GRID_H - 1); }
+                    Action::Flee { from_x, from_y, .. } => { for _ in 0..2 { let (nx, ny) = flee_step(q.x, q.y, from_x, from_y); q.x = nx; q.y = ny; } }
+                    Action::Eat { entity } => {
+                        let (fx, fy) = (q.x, q.y);
+                        let near = self.things.iter().any(|t| t.id == entity && t.alive && t.kind == Kind::Berry && (t.x - fx).abs().max((t.y - fy).abs()) <= 1);
+                        if let Some(b) = v.bushes.iter_mut().find(|b| b.id == entity && b.servings > 0).filter(|_| near) { b.servings -= 1; q.hunger = (q.hunger - MEAL).max(0); q.meals += 1; }
+                    }
+                    _ => {}
+                }
+            }
+            for q in v.foxes.iter_mut() { q.hunger = (q.hunger + 2).min(1000); if q.asleep { q.asleep = false; } }
+        }
         if self.cover {
             self.still.resize(self.people.len(), 0);
             for (j, p) in self.people.iter().enumerate() { if (p.x, p.y) == (p.px, p.py) { self.still[j] += 1; } else { self.still[j] = 0; } }
@@ -496,6 +727,11 @@ impl World {
             let (lx, ly) = (self.people[by].x, self.people[by].y);
             let p = &mut self.people[who];
             p.x = (lx - 1).max(0); p.y = ly;
+        }
+        if let Some(v) = &mut self.village {
+            for h in v.hunger.iter_mut() { *h = (*h + HUNGER_RATE).min(1000); }
+            for h in v.boar_hunger.iter_mut() { *h = (*h + 2).min(1000); }
+            for b in v.bushes.iter_mut() { if b.regrow > 0 && tick % b.regrow == 0 { b.servings = (b.servings + 1).min(b.max); } }
         }
         for (i, p) in self.people.iter_mut().enumerate() {
             if p.asleep { p.asleep = false; }
@@ -516,6 +752,7 @@ impl World {
             self.still.len().hash(h); for &x in &self.still { x.hash(h); }
             self.blows.len().hash(h); for &(t, a, b) in &self.blows { t.hash(h); (a as u64).hash(h); (b as u64).hash(h); }
         }
+        if let Some(v) = &self.village { v.hash(h); }
     }
     pub fn state_hash(&self) -> u64 { let mut h = StateHasher::new(self.seed); self.hash_into(&mut h); h.finish() }
 }

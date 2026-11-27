@@ -83,7 +83,7 @@ impl Setup {
             if i == BRYN && self.bryn_prior_dry > 0 { knows.push(SPRING); }
             let spring_dry = (i == ASH && self.ash_knows_dry) || (i == BRYN && self.bryn_prior_dry > 0);
             let dry_conf = if i == BRYN { self.bryn_prior_dry } else { 900 };
-            let f = Founding { knows, pacing: self.pacing, trust: self.trust[i], warmth: self.warmth[i], spring_dry, dry_conf, ally: self.ally[i], calls: self.calls[i] };
+            let f = Founding { knows, pacing: self.pacing, trust: self.trust[i].to_vec(), warmth: self.warmth[i].to_vec(), spring_dry, dry_conf, ally: self.ally[i].to_vec(), calls: self.calls[i] };
             let mut p = Person::new(&w, i, self.temperaments[i], &f);
             p.traits = self.traits[i];
             p.model_on = self.model_on;

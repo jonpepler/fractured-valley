@@ -31,7 +31,7 @@ use crate::graph::{lt, tag, Anchor};
 use crate::mind::{key, Action, Expect, Sense, BREACH_MISSING, IGNORE_BELOW};
 use crate::people::person::{strengthen, weight, Person};
 use crate::people::talk::{band_dir, from_ref, Plan, Ref, Role, Say, Target};
-use crate::people::world::{d2, dist, person_id, Kind, Utterance, World, DEER_ID, GRID_H, GRID_W, LOW, NAMES, PEOPLE, SHOUT, SPEAK, TALK, WHISPER};
+use crate::people::world::{d2, dist, name, person_id, Kind, Utterance, World, DEER_ID, GRID_H, GRID_W, LOW, SHOUT, SPEAK, TALK, WHISPER};
 use crate::store::Store;
 use crate::think::Form;
 
@@ -245,8 +245,8 @@ impl Person {
         let me = members.iter().find(|m| m.0 == self.i).copied()?;
         let ids = self.ids;
         let k = self.hunter().k;
-        let tname = match target { Target::Deer => "the deer".to_string(), Target::Person(j) => NAMES[j as usize].to_string() };
-        let name = if solo { format!("plan: hunt {tname} myself") } else if by == self.i { format!("plan #{rev} (mine): {tname}") } else { format!("plan #{rev} from {}: {tname}", NAMES[by]) };
+        let tname = match target { Target::Deer => "the deer".to_string(), Target::Person(j) => name(j as usize).to_string() };
+        let name = if solo { format!("plan: hunt {tname} myself") } else if by == self.i { format!("plan #{rev} (mine): {tname}") } else { format!("plan #{rev} from {}: {tname}", name(by as usize)) };
         let who = self.m.who;
         let node = self.m.store.add_node(&name, 200, 0, None, who);
         // A spot inside a place I already know (right by the rock) is that place: a new place there
@@ -337,7 +337,7 @@ impl Person {
                 }
                 Say::Decline(rev) => {
                     let h = self.hunt.as_mut().unwrap();
-                    if h.lead.is_some() && *rev == h.book.rev && !h.book.declined.contains(&a) { h.book.declined.push(a); h.log.events.push((tick, format!("{} declined", NAMES[a]))); }
+                    if h.lead.is_some() && *rev == h.book.rev && !h.book.declined.contains(&a) { h.book.declined.push(a); h.log.events.push((tick, format!("{} declined", name(a as usize)))); }
                 }
                 Say::Signal => {
                     let hp = self.hunter().plan.clone();
@@ -386,7 +386,7 @@ impl Person {
                     // The betrayal: a counter-intent of my own, to tell the target. Outwardly I
                     // agree if I'm not honest, and say nothing if I am.
                     let who = self.m.who;
-                    let wn = self.m.store.add_node(&format!("tell {} of the plan", NAMES[r]), 200, 0, None, who);
+                    let wn = self.m.store.add_node(&format!("tell {} of the plan", name(r as usize)), 200, 0, None, who);
                     for (u, v, wt) in [(wn, self.pnode[r], 700), (wn, hp.node, 500), (self.pnode[r], wn, 300)] { self.m.store.add_link(u, v, lt::ASSOC, wt, 0); }
                     self.m.form_intent(wn);
                     let honest = self.traits.honesty >= 500;
@@ -394,7 +394,7 @@ impl Person {
                     let h = self.hunt.as_mut().unwrap();
                     h.warn = Some((r, wn, to_tell));
                     h.log.decisions.push((tick, p.rev, false, fr - fp, if honest { 0 } else { 1 }));
-                    h.log.events.push((tick, format!("feels more for {} ({fr}) than for {} ({fp}): will warn", NAMES[r], NAMES[a])));
+                    h.log.events.push((tick, format!("feels more for {} ({fr}) than for {} ({fp}): will warn", name(r as usize), name(a as usize))));
                     if !honest { h.out.push((Say::Agree(p.rev), Some(a), if whispered { WHISPER } else { SPEAK })); }
                     return;
                 }
@@ -409,7 +409,7 @@ impl Person {
         h.log.decisions.push((tick, p.rev, accept, score, said));
         match said { 1 => h.out.push((Say::Agree(p.rev), Some(a), vol)), 2 => h.out.push((Say::Decline(p.rev), Some(a), vol)), _ => {} }
         if accept {
-            h.log.events.push((tick, format!("joins plan #{} from {} as {} (score {score})", p.rev, NAMES[a], crate::people::talk::ROLE_WORDS[hp.role.i()])));
+            h.log.events.push((tick, format!("joins plan #{} from {} as {} (score {score})", p.rev, name(a as usize), crate::people::talk::ROLE_WORDS[hp.role.i()])));
             let mut hp = hp;
             hp.agreed.push(a);
             if let Some(old) = h.plan.as_ref().filter(|o| o.by == a && o.signal.is_some()) { hp.signal = old.signal; }
@@ -448,13 +448,13 @@ impl Person {
         let ids = self.ids;
         let who = self.m.who;
         let by = p.via.unwrap_or(p.by) as usize;
-        let node = self.m.store.add_node(&format!("their plan against me ({})", NAMES[by]), -500, 0, None, who);
+        let node = self.m.store.add_node(&format!("their plan against me ({})", name(by as usize)), -500, 0, None, who);
         for &(j, _, _, _, _) in &members { if j != self.i { let n = self.pnode[j]; self.m.store.add_link(node, n, lt::ASSOC, PLAN_MEMBER, 0); } }
         self.m.store.add_link(node, ids.danger, lt::ASSOC, 500, 0);
         if !overheard { let lv = self.trust(a) - 500; strengthen(&mut self.m, node, self.pnode[a], lt::SOURCE, 700, Some(lv)); }
         let held = Held { node, rev: p.rev, by, target: p.target, role: Role::Wait, place: 0, at: (tgt.0, tgt.1, tgt.2), tgt, members: members.clone(), formed: tick, signal: None, agreed: vec![], solo: false };
         let h = self.hunt.as_mut().unwrap();
-        h.log.events.push((tick, format!("{} of the plan against me from {}", if overheard { "overhears" } else { "is warned" }, NAMES[a])));
+        h.log.events.push((tick, format!("{} of the plan against me from {}", if overheard { "overhears" } else { "is warned" }, name(a as usize))));
         h.log.warned_at = Some(tick);
         h.against_me = Some(held);
         // The counter-plan (if it was a friend who told me, and I believe them): we come round
@@ -477,7 +477,7 @@ impl Person {
             h.book = Lead { rev: 1, said_at: Some(tick), ..Lead::default() };
             h.plan = Some(hp.clone());
             h.out.push((Say::Propose(plan), Some(a), WHISPER));
-            h.log.events.push((tick, format!("counter-plan: come round behind {} with {}", NAMES[lead], NAMES[a])));
+            h.log.events.push((tick, format!("counter-plan: come round behind {} with {}", name(lead as usize), name(a as usize))));
             self.predict(&hp, tick);
         }
     }
@@ -488,7 +488,7 @@ impl Person {
         if p.target == Target::Person(self.i as u8) { self.hear_warning_from(a, p, tick, true); return; }
         let k = self.hunter().k;
         strengthen(&mut self.m, self.pnode[a], k.betrayal, lt::ASSOC, 900, None);
-        self.hunt.as_mut().unwrap().log.events.push((tick, format!("overheard {} whisper the plan away", NAMES[a])));
+        self.hunt.as_mut().unwrap().log.events.push((tick, format!("overheard {} whisper the plan away", name(a as usize))));
     }
 
     // ------------------------------------------------------------------------- the leader
@@ -497,7 +497,7 @@ impl Person {
     fn compose(&mut self, s: &Sense, tick: u32, exclude: &[usize]) -> Option<(Plan, Vec<(usize, Role, i32, i32, i32)>, (i32, i32, i32))> {
         let target = self.hunter().lead?;
         // Who is with me: the people I see (my percepts) within talking distance, not the target.
-        let mut with: Vec<(i32, usize)> = (0..PEOPLE).filter(|&j| j != self.i && Target::Person(j as u8) != target && !exclude.contains(&j))
+        let mut with: Vec<(i32, usize)> = (0..self.pnode.len()).filter(|&j| j != self.i && Target::Person(j as u8) != target && !exclude.contains(&j))
             .filter(|&j| self.m.last.percepts.iter().any(|p| p.node == self.pnode[j] && dist(p.x, p.y, s.body.x, s.body.y) <= TALK + 4))
             .map(|j| (-self.warmth(j), j)).collect();
         with.sort();
@@ -557,11 +557,11 @@ impl Person {
             if self.hunter().log.warned_at.is_none() && self.m.held.intent == Some(wn) {
                 let near_r = self.m.last.percepts.iter().any(|p| p.node == self.pnode[r] && dist(p.x, p.y, s.body.x, s.body.y) <= 1);
                 let caution = self.hunter().caution;
-                let watched = self.m.last.percepts.iter().any(|p| (0..PEOPLE).any(|j| j != r && j != self.i && self.pnode[j] == p.node) && dist(p.x, p.y, s.body.x, s.body.y) <= caution);
+                let watched = self.m.last.percepts.iter().any(|p| (0..self.pnode.len()).any(|j| j != r && j != self.i && self.pnode[j] == p.node) && dist(p.x, p.y, s.body.x, s.body.y) <= caution);
                 if near_r && !watched {
                     let h = self.hunt.as_mut().unwrap();
                     h.log.warned_at = Some(tick);
-                    h.log.events.push((tick, format!("whispers the plan to {}", NAMES[r])));
+                    h.log.events.push((tick, format!("whispers the plan to {}", name(r as usize))));
                     return Some((Say::Warn(plan), Some(r), WHISPER));
                 }
             }
@@ -585,7 +585,7 @@ impl Person {
             self.hunt.as_mut().unwrap().log.replan_at.push(tick);
             return self.signal(hp, tick, "the deer moved early: drive now");
         }
-        let missing: Vec<usize> = new_breaches.iter().filter(|b| b.3 == BREACH_MISSING).filter_map(|b| (0..PEOPLE).find(|&j| self.pnode[j] == b.1)).filter(|j| hp.members.iter().any(|m| m.0 == *j)).collect();
+        let missing: Vec<usize> = new_breaches.iter().filter(|b| b.3 == BREACH_MISSING).filter_map(|b| (0..self.pnode.len()).find(|&j| self.pnode[j] == b.1)).filter(|j| hp.members.iter().any(|m| m.0 == *j)).collect();
         let declined: Vec<usize> = book.declined.iter().copied().filter(|j| hp.members.iter().any(|m| m.0 == *j)).collect();
         if (!declined.is_empty() || !missing.is_empty()) && book.replans < 2 {
             if !missing.is_empty() { self.hunt.as_mut().unwrap().log.replan_at.push(tick); }
@@ -736,9 +736,9 @@ impl Person {
             let key = |what: u8| (tick, jn, what);
             let _ = key;
             if knew && weight(&self.m, jn, k.betrayal, lt::ASSOC) == 0 { strengthen(&mut self.m, jn, k.betrayal, lt::ASSOC, 200, None); }
-            if knew && reactions.iter().any(|x| x.1 == jn) && !self.hunter().log.events.iter().any(|e| e.1 == format!("missing: {}", NAMES[j])) {
+            if knew && reactions.iter().any(|x| x.1 == jn) && !self.hunter().log.events.iter().any(|e| e.1 == format!("missing: {}", name(j as usize))) {
                 strengthen(&mut self.m, jn, k.betrayal, lt::ASSOC, 300, None);
-                self.hunt.as_mut().unwrap().log.events.push((tick, format!("missing: {}", NAMES[j])));
+                self.hunt.as_mut().unwrap().log.events.push((tick, format!("missing: {}", name(j as usize))));
             }
             // Seen with the target before the ambush was sprung (before the signal), away from the
             // post the plan gave it.
@@ -747,9 +747,9 @@ impl Person {
             // comes into my sight with the target (within 4 cells of it), away from its post.
             let arrived = !self.hunter().in_sight.contains(&jn);
             if let (Some((rx, ry)), true) = (r_at, arrived) {
-                if self.m.last.percepts.iter().any(|p| p.node == jn && dist(p.x, p.y, rx, ry) <= 4 && post.is_none_or(|(x, y, t)| dist(p.x, p.y, x, y) > t + 2)) && !self.hunter().log.events.iter().any(|e| e.1 == format!("seen with {}: {}", NAMES[r], NAMES[j])) {
+                if self.m.last.percepts.iter().any(|p| p.node == jn && dist(p.x, p.y, rx, ry) <= 4 && post.is_none_or(|(x, y, t)| dist(p.x, p.y, x, y) > t + 2)) && !self.hunter().log.events.iter().any(|e| e.1 == format!("seen with {}: {}", name(r as usize), name(j as usize))) {
                     strengthen(&mut self.m, jn, k.betrayal, lt::ASSOC, 600, None);
-                    self.hunt.as_mut().unwrap().log.events.push((tick, format!("seen with {}: {}", NAMES[r], NAMES[j])));
+                    self.hunt.as_mut().unwrap().log.events.push((tick, format!("seen with {}: {}", name(r as usize), name(j as usize))));
                 }
             }
         }
@@ -768,7 +768,7 @@ impl Person {
                 let n = self.pnode[j]; let v = self.m.store.val(n) as i32; self.m.store.set_val(n, (v - 300).max(-1000) as i16);
                 let h = self.hunt.as_mut().unwrap();
                 h.verdict = Some(j); h.blamed = true;
-                h.log.events.push((tick, format!("concludes {} told", NAMES[j])));
+                h.log.events.push((tick, format!("concludes {} told", name(j as usize))));
             }
         }
     }

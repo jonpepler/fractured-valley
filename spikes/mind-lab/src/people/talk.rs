@@ -56,6 +56,9 @@ pub enum Say {
     Caught,
     /// Stage 4: passing a plan on to its target, in private ("they mean to wait for you by …").
     Warn(Plan),
+    /// Stage 5: gossip, "X is good to know" or "watch out for X": a feeling about a third person,
+    /// by name. What the hearer makes of it is its own (`village::life`).
+    Gossip { about: u8, good: bool },
 }
 
 /// Stage 4: a role in a plan.
@@ -82,8 +85,8 @@ pub struct Plan { pub rev: u8, pub by: u8, pub target: Target, pub at: Vec<Ref>,
 impl Plan {
     pub fn render(&self) -> String {
         let place = |r: &Vec<Ref>| r.iter().map(|r| format!("{} landmark {} (towards {})", BAND_WORDS[r.band as usize], r.landmark, DIR_WORDS[r.dir as usize])).collect::<Vec<_>>().join(", ");
-        let tgt = match self.target { Target::Deer => "the deer".to_string(), Target::Person(j) => super::world::NAMES[j as usize].to_string() };
-        let roles: Vec<String> = self.roles.iter().map(|(j, r, p)| format!("{} {} {}", super::world::NAMES[*j as usize], ROLE_WORDS[r.i()], place(p))).collect();
+        let tgt = match self.target { Target::Deer => "the deer".to_string(), Target::Person(j) => super::world::name(j as usize).to_string() };
+        let roles: Vec<String> = self.roles.iter().map(|(j, r, p)| format!("{} {} {}", super::world::name(*j as usize), ROLE_WORDS[r.i()], place(p))).collect();
         format!("{tgt} is {}; {}; drive on my whistle", place(&self.at), roles.join("; "))
     }
 }
@@ -115,7 +118,7 @@ impl Content {
     pub fn render(&self) -> String {
         let mut parts: Vec<String> = self.refs.iter().map(|r| format!("{} landmark {} (towards {})", BAND_WORDS[r.band as usize], r.landmark, DIR_WORDS[r.dir as usize])).collect();
         if !self.drawn.is_empty() { parts.push(format!("a drawing with {} landmarks", self.drawn.len())); }
-        let via = self.via.map(|v| format!(" ({} said so)", super::world::NAMES[v])).unwrap_or_default();
+        let via = self.via.map(|v| format!(" ({} said so)", super::world::name(v as usize))).unwrap_or_default();
         format!("{}water, {}{via}", if self.dry { "no " } else { "" }, parts.join(", "))
     }
 }
@@ -136,6 +139,7 @@ impl Say {
             Say::Signal => "(whistles)".into(),
             Say::Caught => "Got it!".into(),
             Say::Warn(p) => format!("(whispers) They have a plan: {}.", p.render()),
+            Say::Gossip { about, good } => if *good { format!("{} is good to know.", super::world::name(*about as usize)) } else { format!("Watch out for {}.", super::world::name(*about as usize)) },
         }
     }
     /// The content of a claim, if this is one.

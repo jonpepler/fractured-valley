@@ -4,7 +4,7 @@
 //! (`viewer/people-template.html`).
 
 use super::sim::Valley;
-use super::world::{GRID_H, GRID_W, NAMES};
+use super::world::{name, GRID_H, GRID_W};
 use crate::fox::viewer::{expand_any, Key};
 use crate::graph::{link_pos, link_src, lt, tag, LinkKey};
 use crate::mind::Action;
@@ -48,7 +48,7 @@ fn page_with(v: &Valley, title: &str, subtitle: &str, keys: &[Key], danger: bool
     let ex: Expanded = expand_any(&m.store);
     let li = |k: LinkKey| ex.offsets[link_src(k) as usize] as usize + link_pos(k);
     let mut j = String::with_capacity(1 << 20);
-    write!(j, "{{\"title\":\"{}\",\"subtitle\":\"{}\",\"form\":\"runtime (shared base + overlay), drawn expanded\",\"me\":\"{}\",\"drive\":\"{}\",\"grid\":[{},{}],", esc(title), esc(subtitle), &NAMES[who][..1], if danger { "pain" } else { "thirst" }, GRID_W, GRID_H).unwrap();
+    write!(j, "{{\"title\":\"{}\",\"subtitle\":\"{}\",\"form\":\"runtime (shared base + overlay), drawn expanded\",\"me\":\"{}\",\"drive\":\"{}\",\"grid\":[{},{}],", esc(title), esc(subtitle), &name(who as usize)[..1], if danger { "pain" } else { "thirst" }, GRID_W, GRID_H).unwrap();
     j.push_str("\"places\":[");
     let home = m.home();
     let mut first_p = true;

@@ -42,7 +42,7 @@ pub fn fox_sense(w: &World, body: usize, hunger: i32) -> Sense {
             _ => None,
         }).collect()
     };
-    Sense { tick: w.tick, seed: w.seed, body: crate::mind::Body { x: p.x, y: p.y, hunger, pain: 0, asleep: p.asleep, drowsy: 0 }, seen, cues: vec![], alarms: vec![] }
+    Sense { tick: w.tick, seed: w.seed, body: crate::mind::Body { x: p.x, y: p.y, hunger, pain: 0, asleep: p.asleep, drowsy: 0, hunger2: 0 }, seen, cues: vec![], alarms: vec![] }
 }
 
 /// After each night: (fox, shown person, told person), each as (the spring comes to mind from

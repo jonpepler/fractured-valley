@@ -19,9 +19,9 @@
 //! What is a rule here rather than an emergent effect is listed in the stage note: the encoding
 //! targets, the offloading discount, the trust updates and the lie/mistake evidence weights.
 
-use super::species::{found, people, Founding, Ids};
+use super::species::{people, Founding, Ids};
 use super::talk::{band_dir, from_ref, Content, Drawn, Ref, Say};
-use super::world::{d2, dist, Deed, Kind, World, NAMES, PEOPLE, PLACE_RADIUS, SPEAK, TALK};
+use super::world::{d2, dist, name, Deed, Kind, World, PLACE_RADIUS, SPEAK, TALK};
 use crate::graph::{lt, tag, Anchor};
 use crate::mind::{key, Action, Mind, Sense, Temperament};
 use crate::rng::hash;
@@ -79,7 +79,7 @@ pub struct Person {
     /// Landmark word → this person's own place node for it.
     pub lex: Vec<(u32, u32)>,
     /// This person's node for each other person.
-    pub pnode: [u32; PEOPLE],
+    pub pnode: Vec<u32>,
     pub told: Vec<Told>,
     /// (note id, own node for it, last tick read).
     pub notes: Vec<(u32, u32, u32)>,
@@ -102,9 +102,11 @@ pub struct Person {
     /// Staging only: this person is away (it neither thinks nor acts; the scenario has sent it off).
     pub away: bool,
     /// Stage 3: how far each other person was when last seen (for "came to me" or "left me").
-    pub seen_d: [i32; PEOPLE],
+    pub seen_d: Vec<i32>,
     /// Stage 4: the hunting layer (plans, roles, the betrayal), for those who hunt.
     pub hunt: Option<Box<crate::hunt::hunter::Hunter>>,
+    /// Stage 5: the village layer (its tier, gossip, the idea of a hunt), for villagers.
+    pub village: Option<Box<crate::village::life::Life>>,
 }
 
 pub const READ_AT: i32 = 60;
@@ -126,6 +128,7 @@ impl Hash for Person {
         // which made native and wasm32 hashes part as soon as someone owed thanks (stage 3).
         self.owe_thanks.len().hash(h); for &a in &self.owe_thanks { (a as u64).hash(h); } self.corrected_to.hash(h); self.model_on.hash(h); self.offload.hash(h); self.last_ask.hash(h); self.said.hash(h); self.pending.hash(h); self.curious.hash(h); self.away.hash(h); self.seen_d.hash(h);
         if let Some(x) = &self.hunt { x.hash(h); }
+        if let Some(x) = &self.village { x.hash(h); }
     }
 }
 
@@ -147,10 +150,13 @@ pub(crate) fn strengthen(m: &mut Mind<Runtime>, u: u32, v: u32, ty: u8, rate: i3
 pub(crate) fn weight(m: &Mind<Runtime>, u: u32, v: u32, ty: u8) -> i32 { m.store.find(u, v, ty).map(|k| m.store.slow(k) as i32).unwrap_or(0) }
 
 impl Person {
-    pub fn new(w: &World, i: usize, t: Temperament, f: &Founding) -> Person {
-        let (m, lex, pnode) = found(w, i, t, f);
-        Person { i, m, ids: people().ids, traits: Traits::default(), medium: Medium::Speak, lex, pnode, told: vec![], notes: vec![], owe_thanks: vec![], corrected_to: vec![],
-            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: [-1; PEOPLE], hunt: None }
+    pub fn new(w: &World, i: usize, t: Temperament, f: &Founding) -> Person { Person::new_in(&people(), w, i, t, f) }
+    /// Stage 5: a person of a given people species (the village's has more kinds and concepts).
+    pub fn new_in(sp: &super::species::People, w: &World, i: usize, t: Temperament, f: &Founding) -> Person {
+        let (m, lex, pnode) = super::species::found_in(sp, w, i, t, f);
+        let n = pnode.len();
+        Person { i, m, ids: sp.ids, traits: Traits::default(), medium: Medium::Speak, lex, pnode, told: vec![], notes: vec![], owe_thanks: vec![], corrected_to: vec![],
+            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: vec![-1; n], hunt: None, village: None }
     }
     pub fn state_hash(&self) -> u64 { let mut h = crate::rng::StateHasher::new(self.m.who); self.hash(&mut h); h.finish() }
 
@@ -208,7 +214,7 @@ impl Person {
         lm.sort();
         let conf = if self.told.iter().any(|t| t.thing == thing && t.confirmed.is_none()) { weight(&self.m, thing, self.ids.water, lt::KIND).min(900) } else { 900 };
         // "X said so": the strongest source link from the thing to a person who isn't the listener.
-        let via = (0..PEOPLE).filter(|&j| j != self.i && j != listener).map(|j| (weight(&self.m, thing, self.pnode[j], lt::SOURCE), j)).filter(|x| x.0 >= 150).max().map(|x| x.1);
+        let via = (0..self.pnode.len()).filter(|&j| j != self.i && j != listener).map(|j| (weight(&self.m, thing, self.pnode[j], lt::SOURCE), j)).filter(|x| x.0 >= 150).max().map(|x| x.1);
         if drawn {
             let d: Vec<Drawn> = lm.iter().filter(|x| x.0 <= 30 * 30).map(|&(_, wd, x, y)| Drawn { landmark: wd, dx: ((x - px) as f32 / 2.0).round() as i8, dy: ((y - py) as f32 / 2.0).round() as i8 }).collect();
             Content { refs: vec![], drawn: d, conf, via, dry }
@@ -260,7 +266,7 @@ impl Person {
         let pi = match known_water {
             Some(pi) => pi,
             None => {
-                let name = format!("water place, told by {}", from.map(|a| NAMES[a]).unwrap_or("a note"));
+                let name = format!("water place, told by {}", from.map(|a| name(a as usize)).unwrap_or("a note"));
                 self.m.add_place(&name, est.0, est.1, None)
             }
         };
@@ -269,7 +275,7 @@ impl Person {
         let s = match self.water_things().into_iter().find(|x| x.1 == pi) {
             Some((s, _)) => s,
             None => {
-                let s = self.m.store.add_node(&format!("water (from {})", from.map(|a| NAMES[a]).unwrap_or("a note")), 200, tag::FOOD, Some(Anchor::Place { x: est.0 as i16, y: est.1 as i16 }), self.m.who);
+                let s = self.m.store.add_node(&format!("water (from {})", from.map(|a| name(a as usize)).unwrap_or("a note")), 200, tag::FOOD, Some(Anchor::Place { x: est.0 as i16, y: est.1 as i16 }), self.m.who);
                 self.m.entity_nodes.push((0x8000_0000 | s, s)); self.m.entity_kinds.push(Kind::Water.k());
                 s
             }
@@ -354,7 +360,7 @@ impl Person {
 
     fn note_node(&mut self, id: u32, writer: usize, x: i32, y: i32) -> u32 {
         if let Some(&(_, n, _)) = self.notes.iter().find(|x| x.0 == id) { return n; }
-        let n = self.m.store.add_node(&format!("note from {}", NAMES[writer]), 150, tag::CREATURE, Some(Anchor::Entity { id, x: x as i16, y: y as i16 }), self.m.who);
+        let n = self.m.store.add_node(&format!("note from {}", name(writer as usize)), 150, tag::CREATURE, Some(Anchor::Entity { id, x: x as i16, y: y as i16 }), self.m.who);
         self.m.entity_nodes.push((id, n)); self.m.entity_kinds.push(Kind::Note.k());
         strengthen(&mut self.m, n, self.ids.note, lt::KIND, 600, None);
         self.notes.push((id, n, 0));
@@ -375,7 +381,10 @@ impl Person {
 
     /// One tick: hear, read, check, think, speak. Reads the world as it was at the start of the
     /// tick; writes only this person (and returns what it does to the world).
-    pub fn think(&mut self, w: &World) -> Deed {
+    pub fn think(&mut self, w: &World) -> Deed { let heard = w.heard(self.i); self.think_heard(w, heard) }
+    /// `think` with what was heard given (stage 5: a distant mind that thinks less often hears
+    /// on every tick, and takes in what it heard since its last think).
+    pub fn think_heard(&mut self, w: &World, heard: Vec<(super::world::Utterance, i32, bool)>) -> Deed {
         let i = self.i;
         let mut deed = Deed::default();
         if self.away || w.people[i].away { return deed; }
@@ -384,7 +393,6 @@ impl Person {
         let mut cues = vec![];
         let mut alarms = vec![];
         // Hearing.
-        let heard = w.heard(i);
         let mut asked_water: Vec<usize> = vec![];
         let mut asked_other: Vec<(usize, u32)> = vec![];
         for (u, loud, to_me) in &heard {
@@ -413,8 +421,9 @@ impl Person {
                         self.reappraise(s);
                     }
                 }
-                // Stage 4: plans, answers, signals and warnings are heard by the hunting layer.
-                Say::Propose(_) | Say::Agree(_) | Say::Decline(_) | Say::Signal | Say::Caught | Say::Warn(_) => {}
+                // Stage 4: plans, answers, signals and warnings are heard by the hunting layer;
+                // stage 5's gossip by the village layer.
+                Say::Propose(_) | Say::Agree(_) | Say::Decline(_) | Say::Signal | Say::Caught | Say::Warn(_) | Say::Gossip { .. } => {}
                 Say::TellOther(wd, c) => {
                     // A landmark I asked about: a place of my own where my map puts it.
                     if *to_me && self.lex_place(*wd).is_none() {
@@ -423,7 +432,7 @@ impl Person {
                         if !ests.is_empty() {
                             let k = ests.len() as i32;
                             let (x, y) = (ests.iter().map(|e| e.0).sum::<i32>() / k, ests.iter().map(|e| e.1).sum::<i32>() / k);
-                            let pi = self.m.add_place(&format!("landmark {wd} (told by {})", NAMES[a]), x, y, None);
+                            let pi = self.m.add_place(&format!("landmark {wd} (told by {})", name(a as usize)), x, y, None);
                             let pn = self.m.place_nodes[pi];
                             self.lex.push((*wd, pn));
                             let (an, lv) = (self.pnode[a], self.trust(a) - 500); strengthen(&mut self.m, pn, an, lt::SOURCE, 700, Some(lv));
@@ -461,9 +470,12 @@ impl Person {
         }
         // Seeing someone at a water place I know: they know it too (Ash learns it was overheard).
         if self.model_on {
+            // (Stage 5: the water this mind knows is read once, not once per person in sight; it
+            // doesn't change in this loop.)
+            let waters = self.water_things();
             for p in &self.m.last.percepts.clone() {
-                if let Some(j) = (0..PEOPLE).find(|&j| j != i && self.pnode[j] == p.node) {
-                    for (thing, pi) in self.water_things() {
+                if let Some(j) = (0..self.pnode.len()).find(|&j| j != i && self.pnode[j] == p.node) {
+                    for &(thing, pi) in &waters {
                         let (px, py) = self.place_xy(pi);
                         if d2(p.x, p.y, px, py) <= 2 * 2 { strengthen(&mut self.m, self.pnode[j], thing, lt::ASSOC, 700, None); }
                     }
@@ -483,7 +495,7 @@ impl Person {
         // `Mind::respond`), not a kind named here.
         let threat = self.m.last.percepts.iter().filter(|p| self.m.kinds[p.kind as usize].creature && self.m.store.val(p.node) < 0).map(|p| (p.x, p.y)).next();
         let in_danger = self.m.act(ids.danger) >= crate::mind::OPTION_AT && threat.is_some();
-        for j in (0..PEOPLE).filter(|&j| j != self.i) {
+        for j in (0..self.pnode.len()).filter(|&j| j != self.i) {
             let Some(p) = self.m.last.percepts.iter().find(|p| p.node == self.pnode[j]).cloned() else { self.seen_d[j] = -1; continue };
             let d = dist(p.x, p.y, s.body.x, s.body.y);
             if in_danger {
@@ -567,7 +579,7 @@ impl Person {
     fn roll(&self, w: &World, salt: u64) -> i32 { (hash(w.seed, w.tick as u64, self.i as u64, salt) % 1000) as i32 }
     fn near_people(&self, w: &World, r: i32) -> Vec<usize> {
         let me = &w.people[self.i];
-        let mut v: Vec<(i32, usize)> = (0..PEOPLE).filter(|&j| j != self.i && !w.people[j].asleep).map(|j| (d2(me.x, me.y, w.people[j].x, w.people[j].y), j)).filter(|x| x.0 <= r * r).collect();
+        let mut v: Vec<(i32, usize)> = (0..w.people.len()).filter(|&j| j != self.i && !w.people[j].asleep).map(|j| (d2(me.x, me.y, w.people[j].x, w.people[j].y), j)).filter(|x| x.0 <= r * r).collect();
         v.sort(); v.into_iter().map(|x| x.1).collect()
     }
 

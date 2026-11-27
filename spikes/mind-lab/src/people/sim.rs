@@ -5,7 +5,7 @@
 //! thoughts turn to rest, and those it pulls walk home on their own.
 
 use super::person::Person;
-use super::world::{Deed, Kind, World, PEOPLE};
+use super::world::{Deed, Kind, World};
 use crate::graph::LinkKey;
 use crate::mind::Action;
 use crate::rng::StateHasher;
@@ -50,10 +50,14 @@ pub struct Valley {
     pub beasts: Vec<crate::mind::Mind<crate::store::Runtime>>,
     /// Stage 4: the deer's minds (deer `k` is `w.deer[k]`), stepped in the same tick, after boars.
     pub deer_minds: Vec<crate::mind::Mind<crate::store::Runtime>>,
+    /// Stage 5: the foxes' minds (fox `k` is the village's fox `k`), stepped after the deer.
+    pub fox_minds: Vec<crate::mind::Mind<crate::store::Runtime>>,
+    /// Stage 5: wall time of the brains' pass (people, then animals), for measures; never hashed.
+    pub brain_ns: u64,
 }
 
 impl Valley {
-    pub fn new(w: World, folk: Vec<Person>) -> Valley { Valley { w, folk, record: None, frames: vec![], snapshots: vec![], beasts: vec![], deer_minds: vec![] } }
+    pub fn new(w: World, folk: Vec<Person>) -> Valley { Valley { w, folk, record: None, frames: vec![], snapshots: vec![], beasts: vec![], deer_minds: vec![], fox_minds: vec![], brain_ns: 0 } }
     pub fn at(&mut self, tick: u32, e: super::world::Event) { self.w.script.push((tick, e)); }
     pub fn recording(mut self, who: usize) -> Self {
         self.record = Some(who); self.folk[who].m.trace = true;
@@ -76,23 +80,33 @@ impl Valley {
             let ds: Vec<_> = (0..self.deer_minds.len()).map(|k| self.w.sense_deer(k)).collect();
             let dorder: Vec<usize> = (0..self.deer_minds.len()).collect();
             crate::fox::sim::run_minds(&mut self.deer_minds, threads, &dorder, |k, m| { m.night(&ds[k]); Action::Sleep });
+            let fs: Vec<_> = (0..self.fox_minds.len()).map(|k| self.w.sense_fox(k)).collect();
+            let forder: Vec<usize> = (0..self.fox_minds.len()).collect();
+            crate::fox::sim::run_minds(&mut self.fox_minds, threads, &forder, |k, m| { m.night(&fs[k]); Action::Sleep });
             if let Some(r) = self.record { let (w, v) = crate::fox::viewer::snapshot(&self.folk[r].m.store); self.snapshots.push((self.w.tick, w, v)); }
         }
         let w = &self.w;
-        let deeds = run(&mut self.folk, threads, order, |_, p| p.think(w));
+        // Stage 5: in the village the few animals are stepped on this thread (a thread per animal
+        // pass cost more than their thinking); their results don't depend on it.
+        let athreads = if self.fox_minds.is_empty() { threads } else { 1 };
+        let t0 = std::time::Instant::now();
+        let deeds = run(&mut self.folk, threads, order, |_, p| if p.village.is_some() { crate::village::life::think(p, w) } else { p.think(w) });
         // Boars read the same start-of-tick world (in reverse order, so order is exercised too).
         let border: Vec<usize> = (0..self.beasts.len()).rev().collect();
-        let boar_acts = crate::fox::sim::run_minds(&mut self.beasts, threads, &border, |b, m| { let s = w.sense_boar(b); let a = m.step(&s); m.commit(&s, a); a });
+        let boar_acts = crate::fox::sim::run_minds(&mut self.beasts, athreads, &border, |b, m| { let s = w.sense_boar(b); let a = m.step(&s); m.commit(&s, a); a });
         // Deer read the same start-of-tick world (people hidden by cover are not seen).
         let dorder: Vec<usize> = (0..self.deer_minds.len()).rev().collect();
-        let deer_acts = crate::fox::sim::run_minds(&mut self.deer_minds, threads, &dorder, |k, m| { let s = w.sense_deer(k); let a = m.step(&s); m.commit(&s, a); a });
+        let deer_acts = crate::fox::sim::run_minds(&mut self.deer_minds, athreads, &dorder, |k, m| { let s = w.sense_deer(k); let a = m.step(&s); m.commit(&s, a); a });
+        let forder: Vec<usize> = (0..self.fox_minds.len()).rev().collect();
+        let fox_acts = crate::fox::sim::run_minds(&mut self.fox_minds, athreads, &forder, |k, m| { let s = w.sense_fox(k); let a = m.step(&s); m.commit(&s, a); a });
+        self.brain_ns += t0.elapsed().as_nanos() as u64;
         if let Some(r) = self.record {
             let m = &self.folk[r].m;
             let rep = &m.last;
             let me = &self.w.people[r];
             self.frames.push(Frame {
                 tick: self.w.tick, me: (me.x, me.y),
-                others: (0..PEOPLE).filter(|&j| j != r).map(|j| (self.w.people[j].x, self.w.people[j].y, super::world::NAMES[j].to_string())).collect(),
+                others: (0..self.w.people.len()).filter(|&j| j != r).map(|j| (self.w.people[j].x, self.w.people[j].y, super::world::name(j as usize).to_string())).collect(),
                 things: self.w.things.iter().filter(|t| t.alive && t.kind != Kind::Hut).map(|t| (t.x, t.y, t.name.clone()))
                     .chain(self.w.notes.iter().filter(|n| n.holder.is_none()).map(|n| (n.x, n.y, "a note".to_string())))
                     .chain(self.w.deer.iter().filter(|d| d.caught.is_none()).map(|d| (d.x, d.y, "DEER".to_string()))).collect(),
@@ -102,7 +116,7 @@ impl Valley {
                 boar: self.w.boars.first().map(|q| (q.x, q.y)), focus: m.mods.focus, pain: me.pain,
             });
         }
-        self.w.post_step_all(&deeds, &boar_acts, &deer_acts);
+        self.w.post_step_full(&deeds, &boar_acts, &deer_acts, &fox_acts);
         if self.record.is_some() { if let Some(f) = self.frames.last_mut() { f.events = self.w.log[log0..].iter().map(|l| l.1.clone()).collect(); } }
     }
     pub fn run(&mut self, ticks: u32) { let order: Vec<usize> = (0..self.folk.len()).collect(); for _ in 0..ticks { self.step(1, &order); } }
@@ -114,6 +128,7 @@ impl Valley {
         for p in &self.folk { p.state_hash().hash(&mut h); }
         for m in &self.beasts { m.state_hash().hash(&mut h); }
         for m in &self.deer_minds { m.state_hash().hash(&mut h); }
+        for m in &self.fox_minds { m.state_hash().hash(&mut h); }
         h.finish()
     }
 }
@@ -134,4 +149,89 @@ where F: Fn(usize, &mut Person) -> Deed + Sync {
     });
     for (i, d) in results.into_iter().flatten() { out[i] = d; }
     out
+}
+
+// ------------------------------------------------------------------------- stage 5: a pool
+
+/// Stage 5: brains as their own pass (7.10) on persistent threads. A thread spawned for every
+/// tick cost about 100 µs for four, and, worse, freed each person's last-tick allocations on
+/// whichever thread's allocator arena it happened to get, so four threads ran *slower* than one.
+/// Here each worker lives for the whole run and always gets the same people (by their place in
+/// the stepping order), so what a person allocated is freed where it was allocated.
+pub struct Pool { tx: Vec<std::sync::mpsc::Sender<Job>>, rx: std::sync::mpsc::Receiver<(usize, Vec<(usize, Person, Deed)>)>, handles: Vec<std::thread::JoinHandle<()>> }
+enum Job { Think(std::sync::Arc<World>, Vec<(usize, Person)>), Night(std::sync::Arc<Vec<crate::mind::Sense>>, Vec<(usize, Person)>) }
+
+impl Pool {
+    pub fn new(threads: usize) -> Pool {
+        let (dtx, rx) = std::sync::mpsc::channel();
+        let mut tx = vec![];
+        let mut handles = vec![];
+        for k in 0..threads.max(1) {
+            let (jtx, jrx) = std::sync::mpsc::channel::<Job>();
+            let dtx = dtx.clone();
+            handles.push(std::thread::spawn(move || {
+                while let Ok(job) = jrx.recv() {
+                    let out = match job {
+                        Job::Think(w, ps) => ps.into_iter().map(|(i, mut p)| { let d = if p.village.is_some() { crate::village::life::think(&mut p, &w) } else { p.think(&w) }; (i, p, d) }).collect(),
+                        Job::Night(s, ps) => ps.into_iter().map(|(i, mut p)| { p.m.night(&s[i]); (i, p, Deed::default()) }).collect(),
+                    };
+                    if dtx.send((k, out)).is_err() { break; }
+                }
+            }));
+            tx.push(jtx);
+        }
+        Pool { tx, rx, handles }
+    }
+    pub fn threads(&self) -> usize { self.tx.len() }
+    /// Hand each worker its share of `folk` (by `order`), run `job` on them, and put them back.
+    fn run(&self, folk: &mut Vec<Person>, order: &[usize], job: impl Fn(Vec<(usize, Person)>) -> Job) -> Vec<Deed> {
+        let n = folk.len();
+        let mut slots: Vec<Option<Person>> = std::mem::take(folk).into_iter().map(Some).collect();
+        let chunk = n.div_ceil(self.tx.len()).max(1);
+        let mut sent = 0;
+        for (k, part) in order.chunks(chunk).enumerate() {
+            let ps: Vec<(usize, Person)> = part.iter().map(|&i| (i, slots[i].take().expect("order is a permutation"))).collect();
+            self.tx[k].send(job(ps)).expect("worker alive");
+            sent += 1;
+        }
+        let mut deeds = vec![Deed::default(); n];
+        for _ in 0..sent { let (_, out) = self.rx.recv().expect("worker alive"); for (i, p, d) in out { slots[i] = Some(p); deeds[i] = d; } }
+        *folk = slots.into_iter().map(|p| p.expect("every person back")).collect();
+        deeds
+    }
+}
+impl Drop for Pool {
+    fn drop(&mut self) { self.tx.clear(); for h in self.handles.drain(..) { let _ = h.join(); } }
+}
+
+impl Valley {
+    /// `step` with the people's pass on a `Pool` (the animals, few, on this thread). Gives the same
+    /// world and minds as `step` on any number of threads in any order. (No viewer recording.)
+    pub fn step_pooled(&mut self, pool: &Pool, order: &[usize]) {
+        assert!(self.record.is_none(), "recording uses `step`");
+        self.w.pre_step();
+        let one: Vec<usize> = vec![];
+        let _ = one;
+        if self.w.night_now {
+            let senses = std::sync::Arc::new((0..self.folk.len()).map(|i| self.w.sense(i, true)).collect::<Vec<_>>());
+            pool.run(&mut self.folk, order, |ps| Job::Night(senses.clone(), ps));
+            let bs: Vec<_> = (0..self.beasts.len()).map(|b| self.w.sense_boar(b)).collect();
+            for (b, m) in self.beasts.iter_mut().enumerate() { m.night(&bs[b]); }
+            let ds: Vec<_> = (0..self.deer_minds.len()).map(|k| self.w.sense_deer(k)).collect();
+            for (k, m) in self.deer_minds.iter_mut().enumerate() { m.night(&ds[k]); }
+            let fs: Vec<_> = (0..self.fox_minds.len()).map(|k| self.w.sense_fox(k)).collect();
+            for (k, m) in self.fox_minds.iter_mut().enumerate() { m.night(&fs[k]); }
+        }
+        let t0 = std::time::Instant::now();
+        let w = std::sync::Arc::new(std::mem::replace(&mut self.w, World::valley(0)));
+        let deeds = pool.run(&mut self.folk, order, |ps| Job::Think(w.clone(), ps));
+        let w = std::sync::Arc::try_unwrap(w).unwrap_or_else(|_| panic!("the world is shared after the pass"));
+        let step = |m: &mut crate::mind::Mind<crate::store::Runtime>, s: crate::mind::Sense| { let a = m.step(&s); m.commit(&s, a); a };
+        let boar_acts: Vec<Action> = (0..self.beasts.len()).rev().map(|b| (b, step(&mut self.beasts[b], w.sense_boar(b)))).collect::<Vec<_>>().into_iter().rev().map(|x| x.1).collect();
+        let deer_acts: Vec<Action> = (0..self.deer_minds.len()).rev().map(|k| (k, step(&mut self.deer_minds[k], w.sense_deer(k)))).collect::<Vec<_>>().into_iter().rev().map(|x| x.1).collect();
+        let fox_acts: Vec<Action> = (0..self.fox_minds.len()).rev().map(|k| (k, step(&mut self.fox_minds[k], w.sense_fox(k)))).collect::<Vec<_>>().into_iter().rev().map(|x| x.1).collect();
+        self.w = w;
+        self.brain_ns += t0.elapsed().as_nanos() as u64;
+        self.w.post_step_full(&deeds, &boar_acts, &deer_acts, &fox_acts);
+    }
 }

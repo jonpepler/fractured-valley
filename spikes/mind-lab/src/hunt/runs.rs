@@ -97,7 +97,7 @@ pub fn build(c: &Case) -> Valley {
     w.deer.push(Deer { x: m0.0, y: m0.1, px: m0.0, py: m0.1, hunger: 300, asleep: false, caught: None, ran: 0, missed: 0, escaped: None });
     let temps = temperaments(c.seed, c.set);
     let folk: Vec<Person> = (0..PEOPLE).map(|i| {
-        let f = Founding { knows: vec![STREAM, ROCK, WINDMILL, OAK], pacing: 2, trust: l.trust[i], warmth: l.warmth[i], spring_dry: false, dry_conf: 900, ally: [0; PEOPLE], calls: CALL_HABIT };
+        let f = Founding { knows: vec![STREAM, ROCK, WINDMILL, OAK], pacing: 2, trust: l.trust[i].to_vec(), warmth: l.warmth[i].to_vec(), spring_dry: false, dry_conf: 900, ally: vec![0; PEOPLE], calls: CALL_HABIT };
         Person::new(&w, i, temps[i], &f)
     }).collect();
     let mut v = Valley::new(w, folk);
@@ -226,7 +226,7 @@ pub fn build_betrayal(c: &BCase) -> Valley {
     let temps = temperaments(c.seed, c.set);
     let knows: [Vec<u32>; PEOPLE] = std::array::from_fn(|_| vec![STREAM, ROCK, WINDMILL, OAK]);
     let mut folk: Vec<Person> = (0..PEOPLE).map(|i| {
-        let f = Founding { knows: knows[i].clone(), pacing: 2, trust: trust[i], warmth: warmth[i], spring_dry: false, dry_conf: 900, ally: [0; PEOPLE], calls: CALL_HABIT };
+        let f = Founding { knows: knows[i].clone(), pacing: 2, trust: trust[i].to_vec(), warmth: warmth[i].to_vec(), spring_dry: false, dry_conf: 900, ally: vec![0; PEOPLE], calls: CALL_HABIT };
         Person::new(&w, i, temps[i], &f)
     }).collect();
     for p in folk.iter_mut() { hunter::found(p, &w, None, 2); }

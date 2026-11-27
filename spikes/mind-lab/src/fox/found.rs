@@ -61,7 +61,7 @@ pub fn species(w: &World) -> Fox {
     let anger = b.node("anger", -200, tag::ANGER, None);
     let loss = b.node("loss", -500, 0, None);
     let ids = Ids { hunger, fatigue, pain, food, water, fire, danger, rest, comfort, anger, loss };
-    let roles = Roles { hunger, fatigue, pain, food, danger, rest, anger, loss, comfort, resp: None };
+    let roles = Roles { hunger, fatigue, pain, food, danger, rest, anger, loss, comfort, resp: None, hunger2: u32::MAX, food2: u32::MAX };
     b.link(loss, anger, lt::WANTS, 100 + t.aggression / 4);
     b.both(danger, anger, lt::ASSOC, 100 + t.aggression * 6 / 10, 300);
     b.link(pain, anger, lt::WANTS, 100 + t.aggression / 2);
