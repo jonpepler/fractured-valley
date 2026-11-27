@@ -60,16 +60,19 @@ fn burning_twigs_and_their_embers_stay_at_real_temperatures() {
 }
 
 #[test]
-#[ignore = "open: spreads ~25 cm/min, 8x Rothermel; a 10 cm cell can't hold a front narrower than itself (burning zone R·τ ≈ 5 cm) (26 Nov)"]
+#[ignore = "open: spreads ~26 cm/min, 3.1x Rothermel (8.5 cm/min). Flame contact hands the unburnt fuel ~2x Rothermel's propagating flux; capping it at a flame's flux over the face brings twigs to 19.5 cm/min but stops grass, because a 10 cm cell must ignite whole within its neighbour's burn time. Needs the front tracked inside each cell (research 27 Nov, section 21)"]
 fn a_line_of_fire_creeps_through_twigs_at_rothermels_rate() {
-    // Rothermel's spread model (1972) for a line of fire, no wind or slope,
-    // in this bed: σ = 700/m (213/ft), 50 kg/m³ bulk, packing β = 0.04,
-    // 8 % moisture. Propagating flux ratio ξ ≈ 0.018 of a reaction
-    // intensity ≈ 600 kW/m² gives I_p ≈ 11 kW/m²; ignition takes
-    // Q_ig = 250 + 1116·M Btu/lb = 789 kJ/kg of the heated share
-    // ε = e^(−138/213) = 0.52: R = I_p/(ρ_b·ε·Q_ig) ≈ 0.54 mm/s, about
-    // 3 cm a minute. Lab beds scatter about ×3 around the model, so six
-    // minutes should carry the front 10–60 cm.
+    // Rothermel's spread model (1972, with Albini's 1976 forms) for a line
+    // of fire, no wind or slope, in this bed: σ = 700/m (213/ft), 50 kg/m³
+    // bulk (3.12 lb/ft³), 10 cm deep, packing β = 0.04 (β_op = 0.042),
+    // 8 % moisture (extinction 25 %). Reaction velocity Γ' = 4.57/min,
+    // η_M = 0.58, η_s = 0.42, h = 8 000 Btu/lb: I_R ≈ 8 500 Btu/(ft²·min)
+    // ≈ 1.6 MW/m². Propagating flux ratio ξ = 0.018 gives I_p ≈ 29 kW/m²;
+    // ignition takes Q_ig = 250 + 1116·M Btu/lb = 789 kJ/kg of the heated
+    // share ε = e^(−138/213) = 0.52: R = I_p/(ρ_b·ε·Q_ig) ≈ 0.28 ft/min,
+    // about 8.5 cm a minute. (This said 3 cm/min until 27 Nov, from a
+    // reaction intensity of 600 kW/m².) Lab beds scatter about ×3 around
+    // the model, so six minutes should carry the front 17–150 cm.
     let n = 24;
     let mut w = ground(n, 16);
     let subs = w.subs.clone();
@@ -84,7 +87,7 @@ fn a_line_of_fire_creeps_through_twigs_at_rothermels_rate() {
     let front = (4..20).filter(|&y| (6..18).any(|x| burning(w.get(x, y, 4)))).max().unwrap_or(0);
     let advanced = front.saturating_sub(4);
     eprintln!("front advanced {} cm in six minutes", advanced * 10);
-    assert!((1..=6).contains(&advanced), "the front advanced {} cm in six minutes", advanced * 10);
+    assert!((2..=15).contains(&advanced), "the front advanced {} cm in six minutes", advanced * 10);
 }
 
 #[test]
