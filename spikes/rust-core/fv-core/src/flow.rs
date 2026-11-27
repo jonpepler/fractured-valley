@@ -23,7 +23,10 @@ const BLOCK_FACE_MM2: i64 = (FR * FR) as i64 * crate::substance::FACE_MM2;
 const G: i64 = 9_807;
 /// Share of motion kept each tick (eddy viscosity), out of 256.
 const KEEP: i64 = 245;
-const PRESSURE_ROUNDS: usize = 30;
+/// Rounds of the pressure solve each tick. It starts from the last tick's
+/// pressure (a plume's draw changes little from one tick to the next), so
+/// ten rounds go as far as thirty from nothing.
+const PRESSURE_ROUNDS: usize = 10;
 /// The fastest the transport can carry: [`ADVECT_STEPS`] sub-steps of one
 /// cell each are 4 m/s at any cell size; a little under it.
 pub const MAX_SPEED: i64 = 3_800;
@@ -42,12 +45,14 @@ pub struct Flow {
     pub wind: [i64; 2],
     /// The wind's average, mm/s [x, y]: the scene sets it.
     pub wind_mean: [i64; 2],
+    /// Last tick's pressure per block, where this tick's solve starts.
+    pub pressure: Vec<i64>,
 }
 
 impl Flow {
     pub fn new(w: &World) -> Flow {
         let (cx, cy, cz) = (w.nx / FR, w.ny / FR, w.nz / FR);
-        Flow { cx, cy, cz, vel: vec![[0; 3]; cx * cy * cz], wind: [0, 0], wind_mean: [500, 120] }
+        Flow { cx, cy, cz, vel: vec![[0; 3]; cx * cy * cz], wind: [0, 0], wind_mean: [500, 120], pressure: vec![0; cx * cy * cz] }
     }
 
     #[inline]
@@ -179,7 +184,8 @@ impl Flow {
             // v [mm/s] = mL × 10³ mm³ / (2 × dt [s] × A [mm²]) (over/4 at 10 cm).
             d - over_ml[i] * 1_000_000 / (2 * TICK.0 * BLOCK_FACE_MM2)
         });
-        let mut p = vec![0i64; div.len()];
+        let mut p = core::mem::take(&mut self.pressure);
+        if p.len() != div.len() { p = vec![0; div.len()] }
         for _ in 0..PRESSURE_ROUNDS {
             p = self.per_block(&xyz, |i, x, y, z| {
                 if !open[i] { return 0 }
@@ -222,6 +228,7 @@ impl Flow {
             }
             vel
         });
+        self.pressure = p;
     }
 
     /// Every face's velocity after carrying the flow along itself for a tick:

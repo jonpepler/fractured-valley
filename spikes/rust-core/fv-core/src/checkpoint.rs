@@ -12,7 +12,7 @@ use crate::substance::GASES;
 use crate::units::*;
 use crate::world::World;
 
-const MAGIC: &[u8; 4] = b"FVR5";
+const MAGIC: &[u8; 4] = b"FVR6";
 
 struct W(Vec<u8>);
 impl W {
@@ -59,6 +59,7 @@ pub fn export(sim: &Sim) -> Vec<u8> {
     for v in sim.flow.wind_mean { w.i64(v) }
     for v in sim.flow.wind { w.i64(v) }
     for v in &sim.flow.vel { for a in v { w.i64(*a as i64) } }
+    for v in &sim.flow.pressure { w.i64(*v) }
     let b = &sim.books;
     totals(&mut w, &b.start);
     w.i128(b.edge_energy);
@@ -122,6 +123,7 @@ pub fn import(bytes: &[u8]) -> Sim {
     flow.wind_mean = [r.i64(), r.i64()];
     flow.wind = [r.i64(), r.i64()];
     for v in flow.vel.iter_mut() { for a in v.iter_mut() { *a = r.i64() as i32 } }
+    for v in flow.pressure.iter_mut() { *v = r.i64() }
     let mut books = Books { start: read_totals(&mut r), edge_energy: r.i128(), ..Books::default() };
     for k in 0..GASES { books.edge_gas[k] = r.i128() }
     books.radiation_in = r.i128();

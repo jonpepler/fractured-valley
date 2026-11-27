@@ -150,6 +150,7 @@ impl Sim {
     pub fn hash(&self) -> u64 {
         let mut h = crate::rng::Hasher::new(self.world.hash());
         for v in &self.flow.vel { for a in v { h.u64(*a as u64) } }
+        for v in &self.flow.pressure { h.u64(*v as u64) }
         for (pos, rot, c) in self.bodies.cells() {
             for v in pos.iter().chain(rot.iter()) { h.u64(v.to_bits() as u64) }
             h.cell(c);
