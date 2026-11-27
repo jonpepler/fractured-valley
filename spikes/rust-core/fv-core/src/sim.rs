@@ -19,6 +19,10 @@ pub enum Command {
     /// ~1–5 kW, so 50–250 J a tick). The flame touches the solid if there is
     /// one, else it heats the air.
     Heat { x: u16, y: u16, z: u16, energy: Energy },
+    /// Let burnable gas into a cell, as a gas burner does: `mass` of fuel
+    /// gas at the cell's gas temperature (its chemical energy and heat come
+    /// in with it). Only into a cell with room for gas.
+    Gas { x: u16, y: u16, z: u16, mass: Mass },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -143,6 +147,22 @@ fn apply(w: &mut World, books: &mut Books, c: Command) {
                 *c.surface_store(&subs) += energy;
                 let _ = subs;
                 books.commands += energy.0 as i128;
+            }
+        }
+        Command::Gas { x, y, z, mass } => {
+            let (x, y, z) = (x as usize, y as usize, z as usize);
+            if x < w.nx && y < w.ny && z < w.nz && mass.0 > 0 {
+                let subs = w.subs.clone();
+                let c = w.get_mut(x, y, z);
+                if c.gas_volume_ml(&subs) > 0 {
+                    let fuel = crate::substance::Gas::Fuel as usize;
+                    use crate::substance::{GAS_CHEMICAL, GAS_SPECIFIC_HEAT};
+                    let heat = (mass * GAS_SPECIFIC_HEAT[fuel]) * c.gas_temperature();
+                    c.gas[fuel] += mass;
+                    c.energy += heat;
+                    books.commands += (heat + mass * GAS_CHEMICAL[fuel]).0 as i128;
+                    books.commands_mass += mass.0 as i128;
+                }
             }
         }
     }

@@ -234,6 +234,20 @@ fn lay_crib(w: &mut World, cx: usize, cy: usize, g: usize, t: Temperature) -> Ve
     torch
 }
 
+/// A gas burner like McCaffrey's (1979): an open 0.3 m square (3×3 cells)
+/// just above a dry stone floor 40 cm thick, in an `n`×`n`×`nz` box at 15 °C.
+/// Returns the world and the burner's cells, the middle one fifth.
+pub fn burner(n: usize, nz: usize) -> (World, Vec<(usize, usize, usize)>) {
+    let mut w = World::new(n, n, nz, 7, celsius(15));
+    let subs = w.subs.clone();
+    let stone = Cell::solid_of(STONE, 1000, 2, celsius(15), &subs);
+    for z in 0..4 { for y in 0..n { for x in 0..n { w.set(x, y, z, stone) } } }
+    bond_all(&mut w, natural_bonds);
+    let (cx, cy) = (n / 2, n / 2);
+    let cells = (0..9).map(|k| (cx + k % 3 - 1, cy + k / 3 - 1, 4)).collect();
+    (w, cells)
+}
+
 /// A fire scene: the world, where a torch lights it, and the fire's
 /// footprint (its corner x, y and width in cells) on grass at z = 4.
 pub struct Fire {

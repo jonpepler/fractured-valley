@@ -190,7 +190,8 @@ pub fn flame_reach(world: &World) -> Vec<bool> {
 /// Whether a cell can light burnable gas: its gas is past ignition, or it
 /// holds fuel whose surface is (a burning or glowing surface is a pilot).
 pub fn lights(c: &Cell, subs: &[Substance]) -> bool {
-    (c.gas_capacity().0 > 0 && c.gas_temperature() >= IGNITION)
+    c.lit
+        || (c.gas_capacity().0 > 0 && c.gas_temperature() >= IGNITION)
         || (c.solid[VOLATILE].0 + c.solid[CHAR].0 > 0 && c.surface_temperature(subs) >= IGNITION)
 }
 
@@ -309,6 +310,8 @@ pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature,
 }
 
 fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool, wind: i64) -> Cell {
+    // Whether a flame burns here this tick is decided below, afresh.
+    c.lit = false;
     let ml = c.gas_volume_ml(subs);
     let s = &subs[c.substance as usize];
     let vap = Gas::Vapour as usize;
@@ -565,7 +568,7 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
             *c.surface_store(subs) += to_solid;
             c.energy += heat - to_solid;
             // A flame (not slow oxidation) glows: part of its heat leaves as light.
-            if mixed > 0 { c.flame += RADIATIVE_FRACTION.of_energy(heat).min(heat - to_solid) }
+            if mixed > 0 { c.flame += RADIATIVE_FRACTION.of_energy(heat).min(heat - to_solid); c.lit = true }
         }
     }
 

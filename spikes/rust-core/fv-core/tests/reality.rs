@@ -516,3 +516,78 @@ fn a_crib_of_logs_burns_at_the_rate_crib_tests_give() {
     eprintln!("crib: logs lose {lost_g_s:.1} g/s from {area_m2:.1} m², {per_m2:.2} g/(s·m²); Block–Heskestad {want:.2}");
     assert!(per_m2 >= want / 3.0 && per_m2 <= want * 3.0, "logs burn at {per_m2:.2} g/(s·m²), crib tests give {want:.2}");
 }
+
+// ── a gas burner, like McCaffrey's ─────────────────────────────────────────
+
+#[test]
+fn a_gas_burner_holds_its_flame_and_its_plume_is_as_hot_as_mccaffrey_measured() {
+    // McCaffrey's own setup (NBSIR 79-1910): gas from a 0.3 m square burner
+    // on the floor, still air, no fuel bed. 50 kW of net heat (wood gas at
+    // 16 MJ/kg gross, 14.7 net: its water's latent heat stays in the
+    // vapour). Three checks:
+    // - the flame holds for the whole run (before 27 Nov it blew out after
+    //   ~10 s: a cell's gas needed a neighbour at 350 °C to stay lit, and a
+    //   10 cm cell averages a flame to 300–550 °C);
+    // - most of the heat rises with the plume: a burner's flame radiates
+    //   ~20–35 %, so 55–80 % of the net heat crosses 1 m as sensible heat;
+    // - in the plume above the flames (z/Q^⅖ 0.2–0.3), the centreline rise
+    //   within ×2 of McCaffrey's (a 10 cm cell averages a plume a few cells
+    //   wide, so it reads low).
+    use fv_core::transport::FaceVelocity;
+    let net = 16.0 - 0.58 * 2.257; // MJ/kg
+    let (w, cells) = fv_core::scene::burner(32, 32);
+    let base = cells[0].2;
+    let mut sim = Sim::new(w, Sky::NIGHT);
+    sim.flow.wind_mean = [0, 0];
+    sim.flames = Some(Vec::new());
+    let per = (50e3 / (net * 1e6) * 0.05 * 1e9 / cells.len() as f64).round() as i64;
+    let (ticks, warm) = (700u64, 200u64);
+    let mut seq = 0;
+    for t in 0..ticks { for &(x, y, z) in &cells {
+        seq += 1;
+        sim.schedule(Scheduled { tick: t, peer: 0, seq, command: Command::Gas { x: x as u16, y: y as u16, z: z as u16, mass: Mass(per) } });
+        if t < 40 { seq += 1; sim.schedule(Scheduled { tick: t, peer: 0, seq, command: Command::Heat { x: x as u16, y: y as u16, z: z as u16, energy: joules(200) } }) }
+    }}
+    let (cx, cy) = (cells[4].0, cells[4].1);
+    let (mut released, mut plume, mut temps, mut last_100) = (0.0f64, 0.0f64, vec![0.0f64; 32], 0.0f64);
+    for tick in 1..=ticks {
+        sim.step();
+        assert_eq!(sim.energy_gap(), 0);
+        assert_eq!(sim.mass_gap(), 0);
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative");
+        if tick <= warm { continue }
+        let w = &sim.world;
+        let heat = sim.flames.as_ref().unwrap().iter().sum::<i64>() as f64 / 0.35 * 1e-6;
+        released += heat;
+        if tick > ticks - 100 { last_100 += heat }
+        for z in base..w.nz { temps[z] += w.get(cx, cy, z).gas_temperature().celsius_f64() }
+        let z = base + 9;
+        for y in 0..w.ny { for x in 0..w.nx {
+            let u = sim.flow.face(x as i64, y as i64, z as i64, 2) as f64 / 1000.0;
+            let d = if u > 0.0 { w.get(x, y, z) } else { w.get(x, y, z + 1) };
+            let ml = d.gas_volume_ml(&w.subs) as f64;
+            if ml <= 0.0 { continue }
+            plume += (d.energy.0 - d.latent().0 - (d.gas_capacity() * w.ambient).0) as f64 * 1e-6 * u * 0.01 / (ml * 1e-6);
+        }}
+    }
+    let n = (ticks - warm) as f64;
+    let q_net = released / (n * 0.05) / 1e3 * net / 16.0;
+    let fed = 50.0 * 16.0 / net;
+    let late = last_100 / (100.0 * 0.05) / 1e3;
+    let share = plume / n / 1e3 / q_net;
+    eprintln!("burner: {q_net:.1} kW net, last 5 s {late:.1} kW gross of {fed:.1} fed, plume share {:.0} %", share * 100.0);
+    assert!(late > 0.8 * fed, "the flame went out or burns low: {late:.1} kW of {fed:.1}");
+    assert!((0.55..=0.80).contains(&share), "plume carries {:.0} % of the net heat", share * 100.0);
+    let mut checked = 0;
+    for z in base..32 {
+        let h = (z - base) as f64 * 0.1 + 0.05;
+        let s = h / q_net.powf(0.4);
+        if !(0.2..=0.3).contains(&s) { continue }
+        let got = temps[z] / n - 15.0;
+        let want = mccaffrey_rise(h, q_net, 288.15);
+        eprintln!("burner z {h:.2} m: centreline +{got:.0} K, McCaffrey +{want:.0} K");
+        assert!(got >= want / 2.0 && got <= want * 2.0, "at {h:.2} m the centreline is +{got:.0} K; McCaffrey +{want:.0} K");
+        checked += 1;
+    }
+    assert!(checked > 0);
+}

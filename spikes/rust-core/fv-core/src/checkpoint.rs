@@ -71,11 +71,13 @@ pub fn export(sim: &Sim) -> Vec<u8> {
         w.u64(s.seq as u64);
         match s.command {
             Command::Heat { x, y, z, energy } => { w.u8(0); for v in [x, y, z] { w.u64(v as u64) } w.i64(energy.0) }
+            Command::Gas { x, y, z, mass } => { w.u8(1); for v in [x, y, z] { w.u64(v as u64) } w.i64(mass.0) }
         }
     }
     for c in &wd.cells {
         w.u8(c.substance);
         w.u8(c.bonds);
+        w.u8(c.lit as u8);
         for m in c.solid { w.i64(m.0) }
         w.i64(c.water.0);
         for m in c.gas { w.i64(m.0) }
@@ -115,12 +117,13 @@ pub fn import(bytes: &[u8]) -> Sim {
     for _ in 0..r.u64() {
         let (t, peer, seq) = (r.u64(), r.u64() as u16, r.u64() as u32);
         let kind = r.u8();
-        assert_eq!(kind, 0, "unknown command");
+        assert!(kind <= 1, "unknown command");
         let (x, y, z) = (r.u64() as u16, r.u64() as u16, r.u64() as u16);
-        queue.push(Scheduled { tick: t, peer, seq, command: Command::Heat { x, y, z, energy: Energy(r.i64()) } });
+        let command = if kind == 0 { Command::Heat { x, y, z, energy: Energy(r.i64()) } } else { Command::Gas { x, y, z, mass: Mass(r.i64()) } };
+        queue.push(Scheduled { tick: t, peer, seq, command });
     }
     for c in world.cells.iter_mut() {
-        let mut n = Cell { substance: r.u8(), bonds: r.u8(), ..Cell::default() };
+        let mut n = Cell { substance: r.u8(), bonds: r.u8(), lit: r.u8() != 0, ..Cell::default() };
         for m in n.solid.iter_mut() { *m = Mass(r.i64()) }
         n.water = Mass(r.i64());
         for m in n.gas.iter_mut() { *m = Mass(r.i64()) }

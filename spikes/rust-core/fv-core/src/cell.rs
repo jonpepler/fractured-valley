@@ -59,6 +59,11 @@ pub struct Cell {
     /// a flame, sent out by radiation the same tick, so always zero between
     /// ticks (not part of the saved or shared state). Held in the gas's energy.
     pub flame: Energy,
+    /// A flame burnt in this cell's gas last tick. A flame holds itself up:
+    /// its sheet is far hotter than the cell's average gas, so it lights
+    /// the gas it meets next tick without a hot neighbour (see
+    /// `chem::lights`). Saved and shared like the stores.
+    pub lit: bool,
 }
 
 impl Cell {

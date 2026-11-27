@@ -114,6 +114,7 @@ pub mod wire {
             for c in &p.cells {
                 o.push(c.substance);
                 o.push(c.bonds);
+                o.push(c.lit as u8);
                 for m in c.solid { i(&mut o, m.0) }
                 i(&mut o, c.water.0);
                 for m in c.gas { i(&mut o, m.0) }
@@ -144,7 +145,7 @@ pub mod wire {
             tally.radiation_out = r.i64()?;
             let mut cells = Vec::with_capacity(BRICK_CELLS);
             for _ in 0..BRICK_CELLS {
-                let mut c = Cell { substance: r.u8()?, bonds: r.u8()?, ..Cell::default() };
+                let mut c = Cell { substance: r.u8()?, bonds: r.u8()?, lit: r.u8()? != 0, ..Cell::default() };
                 for m in c.solid.iter_mut() { *m = Mass(r.i64()?) }
                 c.water = Mass(r.i64()?);
                 for m in c.gas.iter_mut() { *m = Mass(r.i64()?) }
