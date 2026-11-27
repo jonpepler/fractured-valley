@@ -19,7 +19,10 @@
 //!   beside them (Finney et al. 2015: fine fuel ignites by this contact, not
 //!   by radiation, which convective cooling defeats). A cell can't
 //!   hold the flame's shape, so its hot gas heats the neighbour's fuel
-//!   across the face for the share of the time a flame leans that way;
+//!   across the face for the share of the time a flame leans that way.
+//!   A dense face (a log's) is touched by any flame burning in the gas
+//!   beside it, over the share of the face that flame fills (its heat
+//!   release against a flame's ~1.2 MW/m³);
 //! - **carrying** (in [`advect`]): moving air takes a share of its contents
 //!   across each face it flows through.
 
@@ -51,6 +54,11 @@ pub struct Side {
     pub flame_t: Temperature,
     /// The most this cell's flame gas can give through one face this tick.
     pub flame_heat: Energy,
+    /// Share of this cell's gas the flame burning in it fills, per mille:
+    /// what it will release this tick against a flame's own heat release
+    /// per volume (zero where no flame holds). A dense face bounding the
+    /// cell is wetted by flame over that share of its area.
+    pub flame_fill: i64,
     /// Conductance from gas to this cell's fuel surface (h·A), µW/K, if it
     /// has fuel that can catch; zero otherwise.
     pub fuel_g: i64,
@@ -86,6 +94,12 @@ const FLAME_CONTACT: Temperature = Temperature(1_173_000);
 /// thick flame's radiation; e.g. crib and wall-fire measurements, Babrauskas,
 /// Ignition Handbook): about 80 W/(m²·K) at flame temperature, mW/(m²·K).
 const FLAME_ON_FACE: i64 = 80_000;
+/// Heat a turbulent flame releases per volume of flame: about 1.2 MW/m³,
+/// whatever the fuel or the fire's size (Orloff & De Ris, from pool fires,
+/// as cited with a recalibration to 1.5 ± 0.2 MW/m³ in Fire Technology
+/// 2022, doi 10.1007/s10694-022-01341-z), µJ per mL per tick:
+/// 1 200 µW/mL × the tick.
+const FLAME_UJ_PER_ML: i64 = 1_200 * TICK.0 / 1_000;
 
 /// Thermal conductivity of liquid water, mW/(m·K) (0.59 W/(m·K) at 20 °C:
 /// e.g. Incropera, Fundamentals of Heat and Mass Transfer, table A.6).
@@ -107,7 +121,11 @@ const MIX_QUANTUM_UL: i64 = CELL_VOLUME_ML;
 /// Gas seeps through non-permeable porous solids this many times slower.
 const SEEP_DIVISOR: i64 = 20;
 
-pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
+pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side { side_lit(c, subs, ambient, false) }
+
+/// A cell's side, given whether a flame reaches its gas this tick
+/// ([`crate::chem::flame_reach`]).
+pub fn side_lit(c: &Cell, subs: &[Substance], ambient: Temperature, pilot: bool) -> Side {
     let s = &subs[c.substance as usize];
     let share = c.solid_share(subs);
     let k = share.of(s.conductivity) + AIR_CONDUCTIVITY - share.of(AIR_CONDUCTIVITY);
@@ -130,7 +148,17 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
     // What touches the fuel is the flame itself, not the cell's average gas:
     // the continuous flame region averages ~900 °C (McCaffrey 1979).
     let flame_t = if flaming { FLAME_CONTACT } else { Temperature(0) };
-    let flame_heat = if flaming { Energy(((c.energy - c.latent()).0 - (c.gas_capacity() * ambient).0).max(0) / 6) } else { Energy::ZERO };
+    // A flame in the open gas between fuel (the shafts of a crib, the air
+    // over a bed) fills part of its cell: the part its heat release needs
+    // at a flame's heat per volume.
+    let release = if pilot && gas_ml > 0 { crate::chem::flame_release(c, subs, true).0 } else { 0 };
+    let flame_fill = (release as i128 * 1_000 / (FLAME_UJ_PER_ML as i128 * gas_ml.max(1) as i128)).min(1_000) as i64;
+    // What a flame can give the faces around it: its gas's heat above the
+    // surroundings, and the heat it releases this tick (a flame against a
+    // wall gives the wall part of its own heat, not just the gas's), a
+    // sixth through each face.
+    let excess = ((c.energy - c.latent()).0 - (c.gas_capacity() * ambient).0).max(0);
+    let flame_heat = if flaming || flame_fill > 0 { Energy((excess + release) / 6) } else { Energy::ZERO };
     let sigma = s.surface_per_volume;
     let fuel_g = if volatile && sigma > 0 {
         let area = if c.permeable(subs) { c.inner_surface_mm2(subs) } else { FACE_MM2 };
@@ -139,7 +167,7 @@ pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side {
         (h as i128 * area as i128 / 1_000) as i64
     } else { 0 };
     Side {
-        flame_t, flame_heat, fuel_g, wet, water_g,
+        flame_t, flame_heat, flame_fill, fuel_g, wet, water_g,
         t, t_cond, t_skin, gas_ml, permeable: c.permeable(subs),
         // k × face / half an edge = k·L²/(L/2) = 2·k·L: k [mW/(m·K)] × L [mm]
         // is µW/K (200·k at 10 cm).
@@ -192,19 +220,24 @@ fn carried(k: usize, m: Mass, t: Temperature) -> Energy {
 /// `speed` is the air speed at the face (mm/s, unsigned).
 pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: usize) -> Flux {
     let mut f = Flux::default();
-    // Flame contact.
-    // Sideways, a flame leans over its neighbour part of the time; upward,
-    // a solid face above a flame is always bathed (gas can't flow into it,
-    // so the plume itself doesn't carry the heat); downward, never.
+    // Flame contact. Into fine fuel: sideways, a flame in burning fuel
+    // leans over its neighbour part of the time. Into a dense face: any
+    // flame beside it, wherever it is, over the share of the face it fills.
     {
-        let touch = |from: &Side, to: &Side, up: bool| -> i64 {
-            if from.flame_t.0 == 0 || to.fuel_g == 0 || to.t_skin >= from.flame_t { return 0 }
-            let share = if axis != 2 { FLAME_LEAN_PERMILLE } else if up && !to.permeable { 1_000 } else { 0 };
-            if share == 0 { return 0 }
+        let touch = |from: &Side, to: &Side| -> i64 {
+            if to.fuel_g == 0 { return 0 }
+            // A dense face (a log's) has no pores for flame gas to enter: a
+            // flame reaches it only across the face, over the share of the
+            // face the flame next to it fills. Fine fuel takes the flame
+            // through its own gas, and the leaning flame of fuel beside it.
+            let share = if !to.permeable { from.flame_fill }
+                else if from.flame_t.0 == 0 { 0 }
+                else if axis != 2 { FLAME_LEAN_PERMILLE } else { 0 };
+            if share == 0 || to.t_skin >= FLAME_CONTACT { return 0 }
             let g = Conductance(to.fuel_g * share / 1_000);
-            ((g * (from.flame_t - to.t_skin)) * TICK).0.min(from.flame_heat.0)
+            ((g * (FLAME_CONTACT - to.t_skin)) * TICK).0.min(from.flame_heat.0)
         };
-        f.flame = Energy(touch(a, b, true) - touch(b, a, false));
+        f.flame = Energy(touch(a, b) - touch(b, a));
     }
     // Conduction: two half-cells in series; a solid meeting air goes through the film.
     let (ga, gb) = (a.half.0.max(1) as i128, b.half.0.max(1) as i128);
@@ -292,17 +325,18 @@ pub fn sides(world: &World) -> Vec<Side> {
     let subs = &world.subs;
     let amb = world.ambient;
     let cells = &world.cells;
+    let lit = crate::chem::flame_reach(world);
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
         if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
-            out.par_chunks_mut(BRICK_CELLS).zip(cells.par_chunks(BRICK_CELLS)).for_each(|(o, c)| {
-                for i in 0..BRICK_CELLS { o[i] = side(&c[i], subs, amb) }
+            out.par_chunks_mut(BRICK_CELLS).zip(cells.par_chunks(BRICK_CELLS)).zip(lit.par_chunks(BRICK_CELLS)).for_each(|((o, c), l)| {
+                for i in 0..BRICK_CELLS { o[i] = side_lit(&c[i], subs, amb, l[i]) }
             });
             return out;
         }
     }
-    for (o, c) in out.iter_mut().zip(cells) { *o = side(c, subs, amb) }
+    for ((o, c), &l) in out.iter_mut().zip(cells).zip(&lit) { *o = side_lit(c, subs, amb, l) }
     out
 }
 

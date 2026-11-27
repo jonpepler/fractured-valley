@@ -187,22 +187,51 @@ pub fn crib_and_tree(seed: u64, n: usize, nz: usize, dead: bool) -> (World, Vec<
         for k in 1..6i64 { put(&mut w, (c.0 + bx * k) as usize, (c.1 + by * k) as usize, (c.2 - 5 + k / 2) as usize, trunk) }
     }
     // The crib: kindling below, 2×2 dry logs with 2-cell gaps in alternating layers.
+    let torch = lay_crib(&mut w, tx - 4, ty - 8, g, t);
+    bond_all(&mut w, natural_bonds);
+    (w, torch)
+}
+
+/// The dead tree's crib on its own: a bed of kindling under four layers of
+/// 20 cm dry logs (2×2 cells, 2-cell gaps, alternating), kindling laid in
+/// the gaps, on stone, soil and grass. Returns the world, the torch points
+/// and the crib's corner `(x, y, z)` of its kindling bed.
+pub fn crib(n: usize, nz: usize, seed: u64) -> (World, Vec<[usize; 3]>, (usize, usize, usize)) {
+    let mut w = World::new(n, n, nz, seed, celsius(18));
+    let subs = w.subs.clone();
+    let t = celsius(18);
+    let stone = Cell::solid_of(STONE, 1000, 2, t, &subs);
+    let soil = Cell::solid_of(SOIL, 1000, 150, t, &subs);
+    let grass = Cell::solid_of(GRASS, 1000, 600, t, &subs);
+    let g = 3;
+    for y in 0..n { for x in 0..n {
+        for z in 0..g { put(&mut w, x, y, z, if z < 1 { stone } else { soil }) }
+        put(&mut w, x, y, g, grass);
+    }}
+    let (cx, cy) = (n / 2 - 5, n / 2 - 4);
+    let torch = lay_crib(&mut w, cx, cy, g, t);
+    bond_all(&mut w, natural_bonds);
+    (w, torch, (cx, cy, g + 1))
+}
+
+/// Kindling below, 2×2 dry logs with 2-cell gaps in alternating layers, and
+/// kindling in the gaps (10 × 8 cells, 0.9 m tall) on ground top `g`.
+fn lay_crib(w: &mut World, cx: usize, cy: usize, g: usize, t: Temperature) -> Vec<[usize; 3]> {
+    let subs = w.subs.clone();
     let dry = Cell::solid_of(WOOD, 1000, 100, t, &subs);
     let kindling = Cell::solid_of(KINDLING, 1000, 80, t, &subs);
-    let (cx, cy) = (tx - 4, ty - 8);
     let mut torch = Vec::new();
-    for y in cy..cy + 8 { for x in cx..cx + 10 { put(&mut w, x, y, g + 1, kindling); if (x + y) % 3 == 0 { torch.push([x, y, g + 1]) } } }
+    for y in cy..cy + 8 { for x in cx..cx + 10 { put(w, x, y, g + 1, kindling); if (x + y) % 3 == 0 { torch.push([x, y, g + 1]) } } }
     for layer in 0..4 {
         let z = g + 2 + layer * 2;
         for k in 0..3 { for a in 0..10 { for t2 in 0..2 { for dz in 0..2 {
             let (x, y) = if layer % 2 == 0 { (cx + a, cy + k * 3 + t2) } else { (cx + k * 4 + t2, cy + a.min(7)) };
-            put(&mut w, x, y, z + dz, dry);
+            put(w, x, y, z + dz, dry);
         }}}}
         // Kindling in the gaps of each layer, as a fire is laid.
-        for y in cy..cy + 8 { for x in cx..cx + 10 { if w.get(x, y, z).substance == NONE && (x + y + layer) % 2 == 0 { put(&mut w, x, y, z, kindling) } } }
+        for y in cy..cy + 8 { for x in cx..cx + 10 { if w.get(x, y, z).substance == NONE && (x + y + layer) % 2 == 0 { put(w, x, y, z, kindling) } } }
     }
-    bond_all(&mut w, natural_bonds);
-    (w, torch)
+    torch
 }
 
 /// A fire scene: the world, where a torch lights it, and the fire's

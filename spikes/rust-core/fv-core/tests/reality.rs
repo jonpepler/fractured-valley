@@ -465,3 +465,51 @@ fn a_clear_night_chills_grass_below_the_air_and_dew_forms() {
     assert!((0.013..0.21).contains(&clear.1), "dew forms on it in humid air (≤ 0.04–0.07 mm/h, ×3): {:+.4} mm/h", clear.1);
     assert!(dry.1 <= 0.0, "but not in drier air: {:+.4} mm/h", dry.1);
 }
+
+// ── a crib of logs burns on its logs ───────────────────────────────────────
+
+#[test]
+fn a_crib_of_logs_burns_at_the_rate_crib_tests_give() {
+    // A loosely packed crib burns on its sticks' surfaces, at a rate per
+    // exposed area set by the stick thickness b: R/A_s ≈ 1.1×10⁻³·b^−½
+    // g/(s·cm²), b in cm (Block 1971 and Heskestad 1973's correlation of
+    // Gross's and Block's cribs; the plateau of McAllister & Finney 2015,
+    // Fire Technology 52, table 2). For 20 cm logs that's 2.5 g/(s·m²). The
+    // correlation was measured on sticks up to 4 cm, so ×3 either way.
+    // Before the fix the logs never caught: their faces sat at 100 °C
+    // boiling the whole log's water, and flames in the crib's open shafts
+    // didn't touch them (~4 g/s from 7 m² of logs at two minutes).
+    let (w, torch, (cx, cy, z0)) = fv_core::scene::crib(24, 32, 4);
+    let mut sim = Sim::new(w, Sky::afternoon());
+    for t in 0..200 { for (i, p) in torch.iter().enumerate().filter(|(i, _)| i % 3 == 0) {
+        sim.schedule(Scheduled { tick: t, peer: 0, seq: i as u32, command: Command::Heat { x: p[0] as u16, y: p[1] as u16, z: p[2] as u16, energy: joules(500) } })
+    } }
+    let logs = |sim: &Sim| -> (i64, usize) {
+        let w = &sim.world; let s = &w.subs;
+        let (mut mass, mut faces) = (0, 0);
+        for z in z0..z0 + 9 { for y in cy..cy + 8 { for x in cx..cx + 10 {
+            let c = w.get(x, y, z);
+            if c.substance != WOOD { continue }
+            mass += c.solid[0].0 + c.solid[1].0;
+            for (dx, dy, dz) in [(1i64, 0i64, 0i64), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)] {
+                if w.get((x as i64 + dx) as usize, (y as i64 + dy) as usize, (z as i64 + dz) as usize).permeable(s) { faces += 1 }
+            }
+        }}}
+        (mass, faces)
+    };
+    let (_, faces) = logs(&sim);
+    let area_m2 = faces as f64 * 0.01;
+    let (from, to) = (240 * 20, 300 * 20);
+    let mut before = 0;
+    for tick in 1..=to {
+        sim.step();
+        assert_eq!(sim.world.first_impossible(), None, "a store went negative at tick {tick}");
+        if tick % 200 == 0 { assert_eq!(sim.energy_gap(), 0); assert_eq!(sim.mass_gap(), 0) }
+        if tick == from { before = logs(&sim).0 }
+    }
+    let lost_g_s = (before - logs(&sim).0) as f64 / 1e6 / ((to - from) as f64 / 20.0);
+    let per_m2 = lost_g_s / area_m2;
+    let want = 1.1e-3 * 20f64.powf(-0.5) * 1e4;
+    eprintln!("crib: logs lose {lost_g_s:.1} g/s from {area_m2:.1} m², {per_m2:.2} g/(s·m²); Block–Heskestad {want:.2}");
+    assert!(per_m2 >= want / 3.0 && per_m2 <= want * 3.0, "logs burn at {per_m2:.2} g/(s·m²), crib tests give {want:.2}");
+}

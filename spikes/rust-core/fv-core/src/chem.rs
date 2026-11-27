@@ -257,6 +257,40 @@ pub fn pyrolysis_rate(c: &Cell, subs: &[Substance], t: &Tables) -> Mass {
     t.pyrolysis[k_index(c.surface_temperature(subs).0)].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)))
 }
 
+/// Whether a flame holds in a cell's gas, how much fuel it could burn (as
+/// much as its oxygen allows) and the temperature it burns at (see the flame
+/// step in `react_inner`). Needs fuel, oxygen and open gas.
+fn flame_holds(c: &Cell, subs: &[Substance], pilot: bool) -> (bool, i64, Temperature) {
+    let (fuel, o2) = (Gas::Fuel as usize, Gas::Oxygen as usize);
+    let tg = c.gas_temperature();
+    let could = c.gas[fuel].0.min(c.gas[o2].0 * 1_000 / O2_PER_FUEL);
+    // The flame sheet holds fuel and just the air it needs to burn, with
+    // whatever that air carries along (nitrogen, and in a smoky cell,
+    // smoke): FDS checks that mix, not the cell's average, which at 10 cm
+    // is always too thin to burn.
+    let o2_needed = could as i128 * O2_PER_FUEL as i128 / 1_000;
+    let air_cap = (c.gas_capacity() - c.gas[fuel] * GAS_SPECIFIC_HEAT[fuel]).0 as i128;
+    let sheet_cap = (Mass(could) * GAS_SPECIFIC_HEAT[fuel]).0 as i128 + air_cap * o2_needed / c.gas[o2].0.max(1) as i128;
+    let rise = Mass(could) * GAS_CHEMICAL[fuel] / HeatCapacity(sheet_cap.max(1) as i64);
+    // Gas coming off a hot surface ignites at that surface (a flame
+    // anchored to the fuel), so the reaction runs at the hotter of the gas
+    // and the solid it's leaving.
+    let anchored = if c.has_solid() { tg.max(c.surface_temperature(subs)) } else { tg };
+    let holds = (anchored >= IGNITION || pilot) && tg.0 + rise.0 >= CRITICAL_FLAME.0;
+    (holds, could, anchored)
+}
+
+/// Heat a cell's flame will release this tick, from its state now: the fuel
+/// and air that mix in a tick, if a flame holds (zero otherwise). `pilot`
+/// is whether a flame reaches its gas ([`flame_reach`]).
+pub fn flame_release(c: &Cell, subs: &[Substance], pilot: bool) -> Energy {
+    let (fuel, o2) = (Gas::Fuel as usize, Gas::Oxygen as usize);
+    if c.gas[fuel].0 <= 0 || c.gas[o2].0 <= 0 || !c.permeable(subs) || c.gas_volume_ml(subs) <= 0 { return Energy::ZERO }
+    let (holds, could, _) = flame_holds(c, subs, pilot);
+    if !holds { return Energy::ZERO }
+    MIXING.of_mass(Mass(could)) * GAS_CHEMICAL[fuel]
+}
+
 /// `wind`: horizontal air speed through the cell, mm/s (only open water uses it).
 pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool, wind: i64) -> Cell {
     let core_before = c.core_capacity(subs);
@@ -344,7 +378,13 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     // Each µg boiled takes its latent heat, plus its own sensible heat at 100 °C.
     let per_ug = LATENT_HEAT_VAPOUR.0 + (Mass(1) * WATER_SPECIFIC_HEAT * BOIL).0;
     let skin_cap = c.skin_capacity(subs);
-    if c.water.0 > 0 && ts > BOIL {
+    // A dense solid's water boils at its drying front, inside, not from the
+    // surface layer: a fire dries a log's outer millimetres within seconds
+    // and its face passes 100 °C while its heart stays wet and at 100 °C
+    // (the evaporation front runs ahead of the char front; e.g. Di Blasi,
+    // Prog. Energy Combust. Sci. 34, 2008). Its water leaves as the core's
+    // heat boils it, below. Fine fuel boils from its surface.
+    if c.water.0 > 0 && ts > BOIL && !c.opaque(subs) {
         let excess = surface_cap(&c) * (ts - BOIL);
         let held = if skin_cap.0 > 0 { (c.water.0 as i128 * skin_cap.0 as i128 / c.solid_capacity(subs).0.max(1) as i128) as i64 } else { c.water.0 };
         let dm = Mass((excess.0 / per_ug.max(1)).min(held.max(1)).min(c.water.0));
@@ -488,22 +528,8 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
     // its char and burns outside it, as flame, in the open air around it
     // (the pore gas is pushed out by its own pressure).
     if c.gas[fuel].0 > 0 && c.gas[o2].0 > 0 && c.permeable(subs) {
-        let tg = c.gas_temperature();
-        let could = c.gas[fuel].0.min(c.gas[o2].0 * 1_000 / O2_PER_FUEL);
-        // The flame sheet holds fuel and just the air it needs to burn, with
-        // whatever that air carries along (nitrogen, and in a smoky cell,
-        // smoke): FDS checks that mix, not the cell's average, which at 10 cm
-        // is always too thin to burn.
-        let o2_needed = could as i128 * O2_PER_FUEL as i128 / 1_000;
-        let air_cap = (c.gas_capacity() - c.gas[fuel] * GAS_SPECIFIC_HEAT[fuel]).0 as i128;
-        let sheet_cap = (Mass(could) * GAS_SPECIFIC_HEAT[fuel]).0 as i128 + air_cap * o2_needed / c.gas[o2].0.max(1) as i128;
-        let rise = Mass(could) * GAS_CHEMICAL[fuel] / HeatCapacity(sheet_cap as i64);
-        // Gas coming off a hot surface ignites at that surface (a flame
-        // anchored to the fuel), so the reaction runs at the hotter of the gas
-        // and the solid it's leaving.
-        let anchored = if c.has_solid() { tg.max(c.surface_temperature(subs)) } else { tg };
+        let (holds, could, anchored) = flame_holds(&c, subs, pilot);
         let kinetic = t.gas_burn[k_index(anchored.0)].of_mass(c.gas[fuel]).0;
-        let holds = (anchored >= IGNITION || pilot) && tg.0 + rise.0 >= CRITICAL_FLAME.0;
         // Fuel and air must meet before they burn, however fast the
         // chemistry: no more than mixing brings together burns in a tick.
         let mixable = MIXING.of_mass(Mass(could)).0;
