@@ -55,7 +55,7 @@ fn block_face(base: u32, p: vec3<i32>, axis: u32) -> i32 {
 // The pool cell at world coordinates (x, y, z).
 fn pool_cell(x: u32, y: u32, z: u32) -> u32 {
     let b = ((z / 8u) * FP.by + y / 8u) * FP.bx + x / 8u;
-    return aux[FP.map + b] * 512u + ((z % 8u) * 8u + y % 8u) * 8u + x % 8u;
+    return table[RP.map + b] * 512u + ((z % 8u) * 8u + y % 8u) * 8u + x % 8u;
 }
 
 // rng::mix and rng::hash (splitmix64), in emulated 64 bits.

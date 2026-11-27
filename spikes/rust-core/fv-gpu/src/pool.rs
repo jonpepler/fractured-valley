@@ -26,14 +26,18 @@ fn react_constants() -> String {
 const C_IGNITION: i32 = {};\nconst C_FRESH_O2: i32 = {};\nconst C_RESIDENCE: i32 = {};\nconst C_CHAR_UM_PER_MIN: i32 = {};\nconst C_O2_PER_FUEL: i32 = {};\n\
 const C_GAS_CHEM_FUEL: i32 = {};\nconst C_GAS_CHEM_SOOT: i32 = {};\nconst C_CRITICAL_FLAME: i32 = {};\nconst C_BOIL: i32 = {};\nconst C_FINE_SIGMA: i32 = {};\n\
 const C_O2_PER_C_NUM: i32 = {};\nconst C_O2_PER_C_DEN: i32 = {};\nconst C_CHAR_CHEM: i32 = {};\nconst C_CHAR_TO_CO: i32 = {};\nconst C_MIXING: u32 = {}u;\n\
-const C_FRESH_TOTAL: i32 = {};\nconst C_AIR_COND: i32 = {};\nconst C_WATER_COND: i32 = {};\nconst C_FLAME_UJ_PER_ML: i32 = {};\nconst C_FLAME_ON_FACE: i32 = {};\nconst C_CO2_SHARE: i32 = {};\nconst C_FEEDBACK_MAX: u32 = {}u;\nconst C_FEEDBACK_HALF: i32 = {};\nconst C_RADIATIVE: u32 = {}u;\nconst C_SURFACE_H_PER_SIGMA: i32 = {};\n",
+const C_FRESH_TOTAL: i32 = {};\nconst C_MAX_EDDY_CM: u32 = {}u;\nconst C_AIR_COND: i32 = {};\nconst C_WATER_COND: i32 = {};\nconst C_FLAME_UJ_PER_ML: i32 = {};\nconst C_FLAME_ON_FACE: i32 = {};\nconst C_CO2_SHARE: i32 = {};\nconst C_FEEDBACK_MAX: u32 = {}u;\nconst C_FEEDBACK_HALF: i32 = {};\nconst C_RADIATIVE: u32 = {}u;\nconst C_SURFACE_H_PER_SIGMA: i32 = {};\n",
         c(su::CHAR_SPECIFIC_HEAT.0), c(su::WATER_SPECIFIC_HEAT.0), c(su::CELL_VOLUME_ML), c(su::FACE_MM2), c(fv_core::cell::SKIN_PERMILLE),
         c(ch::IGNITION.0), c(su::FRESH_AIR[su::Gas::Oxygen as usize].0), c(ch::RESIDENCE_S_PER_SIGMA), c(ch::CHAR_UM_PER_MIN), c(ch::O2_PER_FUEL),
         c(su::GAS_CHEMICAL[su::Gas::Fuel as usize].0), c(su::GAS_CHEMICAL[su::Gas::Soot as usize].0), c(ch::CRITICAL_FLAME.0), c(ch::BOIL.0), c(ch::FINE_SIGMA),
         c(ch::O2_PER_CARBON_NUM), c(ch::O2_PER_CARBON_DEN), c(su::CHAR_CHEMICAL.0), c(ch::CHAR_TO_CO_HEAT.0), u(ch::MIXING.0),
-        c(su::FRESH_AIR.iter().map(|m| m.0).sum()), c(fv_core::transport::AIR_CONDUCTIVITY), c(fv_core::transport::WATER_CONDUCTIVITY),
+        c(su::FRESH_AIR.iter().map(|m| m.0).sum()), MAX_EDDY_CM as u32, c(fv_core::transport::AIR_CONDUCTIVITY), c(fv_core::transport::WATER_CONDUCTIVITY),
         c(fv_core::transport::FLAME_UJ_PER_ML), c(fv_core::transport::FLAME_ON_FACE), c(ch::CO2_SHARE), u(ch::FEEDBACK_MAX.0), c(ch::FEEDBACK_HALF_MM2 as i64), u(ch::RADIATIVE_FRACTION.0), c(ch::SURFACE_H_PER_SIGMA))
 }
+
+/// Largest flame eddy the fire-size mixing tables cover, cm (as the D* patch's
+/// `tables::MAX_EDDY_CM`).
+const MAX_EDDY_CM: usize = 1_000;
 
 /// Words per substance in the table buffer (see react.wgsl's `subst`).
 const SUB_WORDS: usize = 16;
@@ -78,7 +82,7 @@ pub struct PoolDiffusion {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter_info: wgpu::AdapterInfo,
-    pipelines: [wgpu::ComputePipeline; 20],
+    pipelines: [wgpu::ComputePipeline; 26],
     bind_group: wgpu::BindGroup,
     params: wgpu::Buffer,
     state: wgpu::Buffer,
@@ -107,12 +111,14 @@ pub struct PoolDiffusion {
     resident: Option<(u64, u32)>,
     /// Carrying works out each face once (else each cell works out its own six).
     pub carry_once: bool,
+    /// The flame patches' atomic scratch (held by the bind group).
+    #[allow(dead_code)]
     aux: wgpu::Buffer,
     rparams: wgpu::Buffer,
     fparams: wgpu::Buffer,
     /// Work out each cell's side on the GPU (else the CPU's are uploaded).
     pub gpu_sides: bool,
-    rp: [u32; 12],
+    rp: [u32; 16],
     /// Rounds the last flame-reach fill took.
     pub reach_rounds: u32,
     /// Read back only the tallies after diffusion and carrying, and the
@@ -120,6 +126,12 @@ pub struct PoolDiffusion {
     /// between those phases, so set it only when all four (diffusion, the
     /// flow, carrying, reaction) run here, every tick.
     pub lazy: bool,
+    /// Fire-size mixing (the fire session's D* patch, on hold): each flame
+    /// patch stirs with eddies of its own D*. Off, as fv-core is now, every
+    /// reached cell mixes at a cell's size. Must match fv-core.
+    pub fire_size_mixing: bool,
+    /// The copy holding the state the last phase left.
+    newest: Option<u32>,
 }
 
 impl PoolDiffusion {
@@ -151,10 +163,10 @@ impl PoolDiffusion {
         let sides_b = buf("sides", cells * SIDE_WORDS, U::STORAGE | U::COPY_DST);
         let vel = buf("vel", slots * 3 * (BRICK_CELLS + 64), U::STORAGE | U::COPY_DST);
         let table = buf("table", Self::table_words(w, slots, &slot_of).0.len(), U::STORAGE | U::COPY_DST);
-        // The pilot bits, then the brick → slot map (for the flow's dense block grid).
-        let aux = buf("aux", cells / 32 + 1 + slots, U::STORAGE | U::COPY_DST);
+        // Atomic scratch for the flame patches: 6 words a cell.
+        let aux = buf("acc", cells * 6, U::STORAGE | U::COPY_DST);
         let fparams = buf("flow params", 16, U::UNIFORM | U::COPY_DST);
-        let rparams = buf("react params", 12, U::UNIFORM | U::COPY_DST);
+        let rparams = buf("react params", 16, U::UNIFORM | U::COPY_DST);
         let lim = buf("limits", cells * 2, U::STORAGE | U::COPY_SRC);
         // The face scratch also holds the flow's block arrays (25 words per block).
         let flow_words = w.cells.len() / 8 * 25;
@@ -168,18 +180,19 @@ impl PoolDiffusion {
         let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..11u32).map(|b| wgpu::BindGroupLayoutEntry {
             binding: b, visibility: wgpu::ShaderStages::COMPUTE, count: None,
             ty: wgpu::BindingType::Buffer {
-                ty: if b == 0 || b >= 9 { wgpu::BufferBindingType::Uniform } else { wgpu::BufferBindingType::Storage { read_only: matches!(b, 3 | 4 | 8) } },
+                ty: if b == 0 || b >= 9 { wgpu::BufferBindingType::Uniform } else { wgpu::BufferBindingType::Storage { read_only: matches!(b, 3 | 4) } },
                 has_dynamic_offset: false, min_binding_size: None,
             },
         }).collect();
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("pool"), entries: &entries });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("pool"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
         let names = ["limits_pass", "apply_pass", "faces_scratch", "limits_scratch", "apply_scratch", "carry_prepare", "carry_apply", "carry_prepare2", "carry_faces", "carry_apply2", "react_main",
-            "flow_gather", "flow_carried", "flow_forced", "flow_div", "flow_pressure", "flow_project", "sides_main", "reach_init", "reach_round"];
+            "flow_gather", "flow_carried", "flow_forced", "flow_div", "flow_pressure", "flow_project", "sides_main", "reach_init", "reach_round", "brick_hash_main",
+            "label_init", "label_round", "release_sum", "dstar_root", "eddy_scale"];
         let pipelines = names.map(|e| device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&layout), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: None }));
         let bge: Vec<wgpu::BindGroupEntry> = (0..11).map(|b| wgpu::BindGroupEntry { binding: b as u32, resource: all[b].as_entire_binding() }).collect();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("pool"), layout: &bgl, entries: &bge });
-        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, limits: lim.clone(), faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new(), resident: None, carry_once: true, aux, rparams, fparams, gpu_sides: true, rp: [0; 12], reach_rounds: 0, lazy: false };
+        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, limits: lim.clone(), faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new(), resident: None, carry_once: true, aux, rparams, fparams, gpu_sides: true, rp: [0; 16], reach_rounds: 0, lazy: false, fire_size_mixing: false, newest: None };
         p.write_table(w);
         Ok(p)
     }
@@ -195,7 +208,7 @@ impl PoolDiffusion {
         self.rp = rp;
     }
 
-    fn table_words(w: &World, slots: usize, slot_of: &[usize]) -> (Vec<u32>, [u32; 12]) {
+    fn table_words(w: &World, slots: usize, slot_of: &[usize]) -> (Vec<u32>, [u32; 16]) {
         let mut t = vec![NONE_SLOT; slots * 26];
         let steps = neighbour_steps();
         for b in 0..slots {
@@ -212,7 +225,7 @@ impl PoolDiffusion {
         crate::pack_cell(&mut words, &w.outside_air);
         pack_side(&mut words, &side(&w.outside_air, &w.subs, w.ambient));
         let p64 = |v: &mut Vec<u32>, x: i64| { v.push(x as u32); v.push((x as u64 >> 32) as u32) };
-        let mut rp = [0u32; 12];
+        let mut rp = [0u32; 16];
         rp[0] = words.len() as u32;
         for s in &w.subs {
             let start = words.len();
@@ -233,6 +246,16 @@ impl PoolDiffusion {
         rp[7] = words.len() as u32;
         for (sigma, row) in &t.surface_g { p64(&mut words, *sigma); words.extend(row.iter().copied()) }
         rp[8] = t.surface_g.len() as u32;
+        // The brick → slot map (the flow's blocks and the brick hashes), and
+        // the flame patches' mixing and D* tables.
+        rp[12] = words.len() as u32;
+        words.extend(slot_of.iter().map(|&s| s as u32));
+        // (Placeholders until fv-core has fire-size mixing: read only with
+        // `fire_size_mixing` on.)
+        rp[13] = words.len() as u32;
+        words.extend(std::iter::repeat_n(0u32, 2 * (MAX_EDDY_CM + 1)));
+        rp[14] = words.len() as u32;
+        words.extend(std::iter::repeat_n(0u32, 2 * (MAX_EDDY_CM + 1)));
         (words, rp)
     }
 
@@ -476,14 +499,39 @@ impl PoolDiffusion {
         let t0 = Instant::now();
         let p = self.params(w, copy, 1, false);
         self.run(&[(18, p)]);
+        let rounds = self.rounds_until_still(19, p);
+        // The last round wrote word 1 − its input, unchanged from it.
+        self.rp[11] = 1 - (rounds - 1) % 2;
+        self.reach_rounds = rounds;
+        // Each flame patch's eddy size: labels, the release forecast at a
+        // cell's mixing and at its first D*, then each cell's scale. Without
+        // fire-size mixing, every reached cell stirs at a cell's size.
+        self.queue.write_buffer(&self.rparams, 0, bytemuck::cast_slice(&self.rp));
+        let p1 = self.params(w, copy, 1, true);
+        if self.fire_size_mixing {
+            self.run(&[(21, p)]);
+            let lr = self.rounds_until_still(22, p);
+            self.rp[15] = 1 - (lr - 1) % 2;
+            self.queue.write_buffer(&self.rparams, 0, bytemuck::cast_slice(&self.rp));
+            self.run(&[(23, p), (24, p), (23, p1), (24, p1), (25, p)]);
+        } else {
+            self.run(&[(25, p1)]);
+        }
+        // The scale went into the other word.
+        self.rp[11] = 1 - self.rp[11];
+        self.queue.write_buffer(&self.rparams, 0, bytemuck::cast_slice(&self.rp));
+        t.compute += ms(t0);
+    }
+
+    /// Runs a round kernel (parity in rp[10]) until no tile changes; the rounds it took.
+    fn rounds_until_still(&mut self, k: usize, p: [u32; 16]) -> u32 {
         let flags = self.slots * 8 * 16;
         let mut round = 0u32;
         loop {
             self.rp[10] = round % 2;
             self.queue.write_buffer(&self.rparams, 0, bytemuck::cast_slice(&self.rp));
-            self.run(&[(19, p)]);
+            self.run(&[(k, p)]);
             round += 1;
-            // Did any tile change? (One word per workgroup, every 16th of the tallies.)
             let mut enc = self.device.create_command_encoder(&Default::default());
             enc.copy_buffer_to_buffer(&self.tallies, 0, &self.read, 0, (flags * 4) as u64);
             self.queue.submit([enc.finish()]);
@@ -492,18 +540,13 @@ impl PoolDiffusion {
             self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
             let changed = bytemuck::cast_slice::<u8, u32>(&slice.get_mapped_range().expect("mapped")).iter().step_by(16).any(|&v| v != 0);
             self.read.unmap();
-            if !changed { break }
+            if !changed { return round }
         }
-        // The last round wrote word 1 − its input, unchanged from it.
-        self.rp[11] = 1 - (round - 1) % 2;
-        self.queue.write_buffer(&self.rparams, 0, bytemuck::cast_slice(&self.rp));
-        self.reach_rounds = round;
-        t.compute += ms(t0);
     }
 
     /// `chem::flame_reach` worked out on the GPU from `w` (uploaded), as one
     /// flag per cell in world order: for checking against the CPU's.
-    pub fn flame_reach(&mut self, w: &World) -> Vec<bool> {
+    pub fn flame_reach(&mut self, w: &World) -> Vec<u32> {
         let mut t = Timings::default();
         self.upload(w, &mut t);
         self.resident = None;
@@ -520,8 +563,32 @@ impl PoolDiffusion {
         let word = self.rp[11] as usize;
         (0..w.cells.len()).map(|i| {
             let c = self.slot_of[i / BRICK_CELLS] * BRICK_CELLS + i % BRICK_CELLS;
-            data[2 * c + word] & 1 != 0
+            data[2 * c + word]
         }).collect()
+    }
+
+    /// Each brick's hash (`World::brick_hash`) worked out on the GPU from the
+    /// state the last phase left there: only 8 bytes a brick come back.
+    pub fn brick_hashes(&mut self, w: &World) -> Vec<u64> {
+        let copy = self.newest.expect("a phase has run");
+        let p = self.params(w, copy, 1, false);
+        self.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&p));
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("hash"), timestamp_writes: None });
+            pass.set_pipeline(&self.pipelines[20]);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.dispatch_workgroups((self.slots as u32).div_ceil(64), 1, 1);
+        }
+        let bytes = (self.slots * 8) as u64;
+        enc.copy_buffer_to_buffer(&self.tallies, 0, &self.read, 0, bytes);
+        self.queue.submit([enc.finish()]);
+        let slice = self.read.slice(..bytes);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
+        let data: Vec<u64> = bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped")).to_vec();
+        self.read.unmap();
+        data
     }
 
     /// One diffusion phase: leaves `w` exactly as `transport::diffuse` would.
@@ -589,13 +656,11 @@ impl PoolDiffusion {
         let nb = flow.vel.len();
         let t0 = Instant::now();
         let vel: Vec<i32> = flow.vel.iter().flat_map(|v| v.iter().copied()).collect();
-        let map_at = self.slots * BRICK_CELLS / 32 + 1;
-        let map: Vec<u32> = self.slot_of.iter().map(|&s| s as u32).collect();
+        let map_at = 0usize;
         self.queue.write_buffer(&self.faces, 0, bytemuck::cast_slice(&vel));
         // Last tick's pressure, where this tick's solve starts (Flow::step).
         if flow.pressure.len() != nb { flow.pressure = vec![0; nb] }
         self.queue.write_buffer(&self.faces, (21 * nb * 4) as u64, bytemuck::cast_slice(&flow.pressure));
-        self.queue.write_buffer(&self.aux, (map_at * 4) as u64, bytemuck::cast_slice(&map));
         let p = self.params(w, cur, 1, false);
         self.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&p));
         let tick3 = w.tick / 3;
@@ -666,6 +731,7 @@ impl PoolDiffusion {
         self.run(&[(10, p)]);
         t.compute = self.kernel_ms.iter().sum();
         self.read_back(w, 1 - cur, &mut t, false, true);
+        self.newest = Some(1 - cur);
         self.last = t;
     }
 }

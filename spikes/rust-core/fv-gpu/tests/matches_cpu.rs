@@ -220,7 +220,7 @@ fn a_campfire_burns_the_same_with_the_flow_on_the_gpu_too() { compare_phases(bur
 #[test]
 fn a_windy_puddle_is_the_same_with_the_flow_on_the_gpu_too() { compare_phases(puddle_in_wind, 40, false, true) }
 
-/// The GPU's flame-reach fill reaches exactly the cells the CPU's does, every
+/// The GPU's flame-reach fill reaches exactly the cells the CPU's does, with the same eddy size, every
 /// tick of a burning campfire (and some do get reached).
 #[test]
 fn the_flame_reach_fill_is_the_same_on_the_gpu() {
@@ -234,11 +234,55 @@ fn the_flame_reach_fill_is_the_same_on_the_gpu() {
     for t in 0..60 {
         sim.step();
         let cpu = fv_core::chem::flame_reach(&sim.world);
-        assert_eq!(g.flame_reach(&sim.world), cpu, "tick {t}: flame reach differs");
-        reached += cpu.iter().filter(|&&b| b).count();
+        assert_eq!(g.flame_reach(&sim.world).iter().map(|&r| r > 0).collect::<Vec<_>>(), cpu, "tick {t}: flame reach differs");
+        reached += cpu.iter().filter(|&&r| r).count();
     }
     assert!(reached > 0, "no flame reached any gas");
 }
 
 #[test]
 fn a_campfire_burns_the_same_with_the_state_read_back_once_a_tick() { compare_phases_lazy(burning_campfire, 60, true, true, true) }
+
+/// Each brick's hash worked out on the GPU equals World::brick_hash, after
+/// the reaction of every tick of a burning campfire (shuffled slots).
+#[test]
+fn brick_hashes_are_the_same_on_the_gpu() {
+    let mut sim = burning_campfire();
+    let n = sim.world.bricks();
+    let g = match fv_gpu::pool::PoolDiffusion::with_mode(&sim.world, fv_gpu::pool::shuffled(n, 17), fv_gpu::pool::Mode::Scratch, true) {
+        Ok(g) => Arc::new(Mutex::new(g)),
+        Err(e) => { no_gpu(e); return }
+    };
+    let checked = Arc::new(Mutex::new(0usize));
+    let (g2, c2) = (g.clone(), checked.clone());
+    sim.react_hook = Some(Box::new(move |w, flow| {
+        let mut p = g2.lock().unwrap();
+        p.react(w, flow);
+        let gpu = p.brick_hashes(w);
+        let cpu: Vec<u64> = (0..w.bricks()).map(|b| w.brick_hash(b)).collect();
+        assert_eq!(gpu, cpu, "tick {}: brick hashes differ", w.tick);
+        *c2.lock().unwrap() += 1;
+    }));
+    for _ in 0..30 { sim.step() }
+    assert_eq!(*checked.lock().unwrap(), 30);
+}
+
+/// A 50 kW gas burner (as examples/burner.rs): a fire big enough that its
+/// flame patch's D* is more than a cell, so the eddy sizes come from the
+/// patch's own release.
+fn burner_50kw() -> Sim {
+    let (w, cells) = fv_core::scene::burner(24, 24);
+    let mut sim = Sim::new(w, Sky::NIGHT);
+    sim.flow.wind_mean = [0, 0];
+    let per = (50e3 / ((16.0 - 0.58 * 2.257) * 1e6) * 0.05 * 1e9 / cells.len() as f64).round() as i64;
+    let mut seq = 0;
+    for t in 0..200 { for &(x, y, z) in &cells {
+        seq += 1;
+        sim.schedule(Scheduled { tick: t, peer: 0, seq, command: Command::Gas { x: x as u16, y: y as u16, z: z as u16, mass: Mass(per) } });
+        if t < 40 { seq += 1; sim.schedule(Scheduled { tick: t, peer: 0, seq, command: Command::Heat { x: x as u16, y: y as u16, z: z as u16, energy: joules(200) } }) }
+    }}
+    sim
+}
+
+#[test]
+fn a_burner_is_the_same_with_four_phases_on_the_gpu() { compare_phases_lazy(burner_50kw, 80, true, true, true) }

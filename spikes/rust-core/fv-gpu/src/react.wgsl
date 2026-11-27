@@ -8,10 +8,17 @@
 // each), then the tables (offsets in RP). Each cell's pilot flag (a flame
 // reaches its gas, chem::flame_reach) is a bit in `aux`.
 
-@group(0) @binding(8) var<storage, read> aux: array<u32>;
+// Atomic scratch: per cell, 6 words for the flame patches (labels
+// ping-ponged, the patch's release sum at its root, its D* twice).
+@group(0) @binding(8) var<storage, read_write> acc: array<atomic<u32>>;
 
 // Where things are in `table` (set by the host).
-struct ReactParams { subs: u32, heating: u32, pyro: u32, char_b: u32, gas_b: u32, soot_b: u32, sat: u32, surface_g: u32, n_sigma: u32, solid_base: u32, pad0: u32, pad1: u32 }
+struct ReactParams {
+    subs: u32, heating: u32, pyro: u32, char_b: u32,
+    gas_b: u32, soot_b: u32, sat: u32, surface_g: u32,
+    n_sigma: u32, solid_base: u32, pad0: u32, pad1: u32,
+    map: u32, mixing: u32, dstar: u32, label_final: u32,
+}
 @group(0) @binding(9) var<uniform> RP: ReactParams;
 
 const SUB_WORDS: u32 = 16u;
@@ -251,7 +258,15 @@ fn flame_holds(x: C, s: S, pilot: bool) -> Holds {
     return h;
 }
 
-fn react_inner(x: ptr<function, C>, s: S, ambient: I, pilot: bool, wind: I) {
+// chem::mixing_at: the share of a flammable mix that burns per tick with
+// eddies of `scale` mm (a cell's own mixing up to a cell).
+fn mixing_at(scale: u32) -> I {
+    if (i32(scale) <= C_CELL_MM) { return I(C_MIXING, 0u); }
+    return tw(RP.mixing + 2u * min(scale / 10u, C_MAX_EDDY_CM));
+}
+
+fn react_inner(x: ptr<function, C>, s: S, ambient: I, reach: u32, wind: I) {
+    let pilot = reach > 0u;
     (*x).lit = false;
     advance_front(x, s, ambient);
     let ml = gas_volume_ml(*x, s);
@@ -402,7 +417,7 @@ fn react_inner(x: ptr<function, C>, s: S, ambient: I, pilot: bool, wind: I) {
     if (gt0((*x).gas[FUEL]) && gt0((*x).gas[O2]) && permeable(*x, s)) {
         let fh = flame_holds(*x, s, pilot);
         let kinetic = of_f(rate(RP.gas_b, k_index(fh.anchored)), (*x).gas[FUEL]);
-        var mixable = of_f(I(C_MIXING, 0u), fh.could);
+        var mixable = of_f(mixing_at(reach), fh.could);
         if (fine_fuel(*x, s) && gt0((*x).solid[VOLATILE]) && (*x).front < 65535u && lt(surface_temperature(*x, s), i_(C_IGNITION))) {
             mixable = narrow(wdiv(mulw(mixable, i_(i32((*x).front))), widen(i_(65535))));
         }
@@ -484,9 +499,9 @@ fn react_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (!inert_air(x, s)) {
         var wind = I(0u, 0u);
         if (open_water(x)) { wind = wind_over(c); }
-        let pilot = (limits[2u * c + RP.pad1] & 1u) != 0u;
+        let reach = limits[2u * c + RP.pad1];
         let core_before = core_capacity(x, s);
-        react_inner(&x, s, ambient(), pilot, wind);
+        react_inner(&x, s, ambient(), reach, wind);
         let core_after = core_capacity(x, s);
         if (lt(core_after, core_before) && gt0(core_before)) {
             let keep = narrow(wdiv(mulw(x.solid_energy, core_after), widen(core_before)));
@@ -502,11 +517,12 @@ fn react_main(@builtin(global_invocation_id) id: vec3<u32>) {
 // What diffusion's faces need of a cell, worked out from the state on the
 // GPU instead of uploaded: the same integers as side_lit. The pilot flags
 // (flame_reach) are bits in `aux`, as for the reaction.
-fn flame_release_gpu(x: C, s: S) -> I {
+// chem::flame_release with `reach` the eddy size, mm (zero: no flame reaches).
+fn flame_release_gpu(x: C, s: S, reach: u32) -> I {
     if (!gt0(x.gas[FUEL]) || !gt0(x.gas[O2]) || !permeable(x, s) || !gt0(gas_volume_ml(x, s))) { return I(0u, 0u); }
-    let fh = flame_holds(x, s, true);
+    let fh = flame_holds(x, s, reach > 0u);
     if (!fh.holds) { return I(0u, 0u); }
-    return muli(of_f(I(C_MIXING, 0u), fh.could), C_GAS_CHEM_FUEL);
+    return muli(of_f(mixing_at(reach), fh.could), C_GAS_CHEM_FUEL);
 }
 
 fn put_side(c: u32, v: array<I, 12>, flags: u32) {
@@ -522,7 +538,7 @@ fn sides_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let x = load(c);
     let s = subst(x.substance);
     let amb = ambient();
-    let pilot = (limits[2u * c + RP.pad1] & 1u) != 0u;
+    let reach = limits[2u * c + RP.pad1];
     let share = solid_share(x, s);
     let k = sub(add(of_f(share, s.conductivity), i_(C_AIR_COND)), of_f(share, i_(C_AIR_COND)));
     let t = gas_temp(x);
@@ -543,7 +559,7 @@ fn sides_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let flaming = has_vol && ((!lt(t_skin, i_(C_IGNITION)) && !lt(t, i_(C_IGNITION))) || (x.front > 0u && x.lit && fine_fuel(x, s)));
     let flame_t = select(I(0u, 0u), i_(C_FLAME_CONTACT), flaming);
     var release = I(0u, 0u);
-    if (pilot && gt0(gas_ml)) { release = flame_release_gpu(x, s); }
+    if (reach > 0u && gt0(gas_ml)) { release = flame_release_gpu(x, s, reach); }
     let flame_fill = mn(narrow(wdiv(mulw(release, i_(1000)), mulw(i_(C_FLAME_UJ_PER_ML), mx(gas_ml, i_(1))))), i_(1000));
     let excess_e = mx(sub(sub(x.energy, latent(x)), cap_t(gas_capacity(x), amb)), I(0u, 0u));
     let flame_heat = select(I(0u, 0u), divi(excess_e, 6), flaming || gt0(flame_fill));
@@ -648,4 +664,188 @@ fn reach_round(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
     }
     workgroupBarrier();
     if (t == 0u && live) { tallies[w * 16u] = atomicLoad(&wany); }
+}
+
+// ── brick hashes (World::brick_hash), one thread per brick ──────────────────
+// rng::Hasher over the brick's cells in order, from a seed of the brick's
+// index in the world (not its pool slot: the map in `aux` turns one into
+// the other). Written to `tallies` (two words a brick).
+fn hstep(h: I, v: I) -> I { return add(mix64(xor64(h, v)), I(0x7f4a7c15u, 0x9e3779b9u)); }
+
+@compute @workgroup_size(64)
+fn brick_hash_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let b = id.x;
+    if (b >= P.slots) { return; }
+    let slot = table[RP.map + b];
+    var h = mix64(I(b, 0u));
+    for (var l = 0u; l < 512u; l++) {
+        let x = load(slot * 512u + l);
+        h = hstep(h, I(x.substance | (x.bonds << 8u) | (select(0u, 1u, x.lit) << 16u) | (x.front << 24u), x.front >> 8u));
+        for (var j = 0u; j < 3u; j++) { h = hstep(h, x.solid[j]); }
+        h = hstep(h, x.water);
+        for (var k = 0u; k < 7u; k++) { h = hstep(h, x.gas[k]); }
+        h = hstep(h, x.energy);
+        h = hstep(h, x.solid_energy);
+        h = hstep(h, x.skin);
+        h = hstep(h, x.nuclear);
+    }
+    h = mix64(h);
+    tallies[2u * b] = h.x;
+    tallies[2u * b + 1u] = h.y;
+}
+
+// ── each flame patch's eddy size (chem::flame_reach's second half) ──────────
+// A joined patch of reached gas stirs with eddies of the D* of its heat
+// release (forecast at a cell's mixing, then once more at that D*), never
+// less than a cell, never more than the patch's narrower horizontal run
+// through the cell. Patches are labelled by their lowest pool address
+// (repeated min over lit neighbours, as for the reach). Each patch's release
+// is an integer sum into its root by atomics (with the carry by hand), the
+// same total in any order. The result, per cell, is the eddy size in mm (0:
+// not reached), in the limits word the sides and the reaction read.
+
+fn reached(c: u32) -> bool { return (limits[2u * c + RP.pad1] & 1u) != 0u; }
+fn lab(c: u32, k: u32) -> u32 { return atomicLoad(&acc[6u * c + k]); }
+
+@compute @workgroup_size(64)
+fn label_init(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    let l = select(0xffffffffu, c, reached(c));
+    atomicStore(&acc[6u * c], l);
+    atomicStore(&acc[6u * c + 1u], l);
+    atomicStore(&acc[6u * c + 2u], 0u);
+    atomicStore(&acc[6u * c + 3u], 0u);
+}
+
+var<workgroup> wlab: array<u32, 64>;
+
+@compute @workgroup_size(64)
+fn label_round(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
+    let w = wg.x + wg.y * P.tiles_x;
+    let live = w < P.slots * 8u;
+    let pin = RP.pad0;
+    var c = 0u;
+    var v = 0xffffffffu;
+    var me_lit = false;
+    if (live) { c = my_cell(wg, t); v = lab(c, pin); me_lit = reached(c); }
+    let start = v;
+    wlab[t] = v;
+    if (t == 0u) { atomicStore(&wany, 0u); }
+    var nb = array<u32, 6>(NONE, NONE, NONE, NONE, NONE, NONE);
+    var nt = array<i32, 6>(-1, -1, -1, -1, -1, -1);
+    if (live) {
+        for (var f = 0u; f < 6u; f++) {
+            let axis = f / 2u; let up = (f & 1u) == 1u;
+            let n = step(c, axis, up, false);
+            if (n == OUT || n == NONE) { continue; }
+            let tp = tile_pos(t, axis);
+            if ((up && tp < 3u) || (!up && tp > 0u)) { nt[f] = select(i32(t) - i32(stride(axis)), i32(t + stride(axis)), up); }
+            else { nb[f] = n; }
+        }
+    }
+    loop {
+        workgroupBarrier();
+        if (t == 0u) { atomicStore(&wchanged, 0u); }
+        workgroupBarrier();
+        if (live && me_lit) {
+            var m = v;
+            for (var f = 0u; f < 6u; f++) {
+                if (nt[f] >= 0) { m = min(m, wlab[u32(nt[f])]); }
+                else if (nb[f] != NONE) { m = min(m, lab(nb[f], pin)); }
+            }
+            if (m < v) { v = m; atomicStore(&wchanged, 1u); }
+        }
+        workgroupBarrier();
+        wlab[t] = v;
+        if (workgroupUniformLoad(&wchanged) == 0u) { break; }
+    }
+    if (live) {
+        atomicStore(&acc[6u * c + 1u - pin], v);
+        if (v != start) { atomicStore(&wany, 1u); }
+    }
+    workgroupBarrier();
+    if (t == 0u && live) { tallies[w * 16u] = atomicLoad(&wany); }
+}
+
+fn add64_at(i: u32, v: I) {
+    let old = atomicAdd(&acc[i], v.x);
+    let carry = select(0u, 1u, old + v.x < old);
+    atomicAdd(&acc[i + 1u], v.y + carry);
+}
+
+// Pass 0: every reached cell's release at a cell's mixing into its root;
+// pass 1: at the patch's first D*, where that is more than a cell.
+@compute @workgroup_size(64)
+fn release_sum(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u || !reached(c)) { return; }
+    let root = lab(c, RP.label_final);
+    var mix = u32(C_CELL_MM);
+    if (P.accumulate != 0u) {
+        mix = atomicLoad(&acc[6u * root + 4u]);
+        if (i32(mix) <= C_CELL_MM) { return; }
+    }
+    let x = load(c);
+    add64_at(6u * root + 2u, flame_release_gpu(x, subst(x.substance), mix));
+}
+
+// D* in mm for a heat release of `release` µJ a tick (the table's partition point).
+fn dstar_mm(release: I) -> u32 {
+    let q = narrow(wdiv(mulw(release, i_(1000)), widen(i_(C_TICK))));
+    // How many entries are ≤ q (the table rises with D*).
+    var lo = 0u; var hi = C_MAX_EDDY_CM + 1u;
+    while (lo < hi) {
+        let mid = (lo + hi) / 2u;
+        if (le(tw(RP.dstar + 2u * mid), q)) { lo = mid + 1u; } else { hi = mid; }
+    }
+    return (max(lo, 1u) - 1u) * 10u;
+}
+
+// At each patch's root: pass 0 sets its first D* (and clears the sum for
+// pass 1), pass 1 its D*.
+@compute @workgroup_size(64)
+fn dstar_root(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u || !reached(c) || lab(c, RP.label_final) != c) { return; }
+    let sum = I(atomicLoad(&acc[6u * c + 2u]), atomicLoad(&acc[6u * c + 3u]));
+    if (P.accumulate == 0u) {
+        atomicStore(&acc[6u * c + 4u], dstar_mm(sum));
+        atomicStore(&acc[6u * c + 2u], 0u);
+        atomicStore(&acc[6u * c + 3u], 0u);
+    } else {
+        let first = atomicLoad(&acc[6u * c + 4u]);
+        atomicStore(&acc[6u * c + 5u], select(first, dstar_mm(sum), i32(first) > C_CELL_MM));
+    }
+}
+
+// Each cell's eddy size, into the other limits word (the one the readers
+// will read): the patch's D*, capped by its narrower horizontal run here.
+@compute @workgroup_size(64)
+fn eddy_scale(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    var scale = 0u;
+    // Without fire-size mixing (P.accumulate set), a reached cell stirs at a cell's own size.
+    if (reached(c) && P.accumulate != 0u) { scale = u32(C_CELL_MM); }
+    else if (reached(c)) {
+        let d = i32(atomicLoad(&acc[6u * lab(c, RP.label_final) + 5u]));
+        var width = 0x7fffffff;
+        for (var axis = 0u; axis < 2u; axis++) {
+            var run = 1;
+            for (var dir = 0u; dir < 2u; dir++) {
+                var q = c;
+                loop {
+                    let n = step(q, axis, dir == 1u, false);
+                    if (n == OUT || n == NONE) { break; }
+                    if (!reached(n) || run * C_CELL_MM >= d) { break; }
+                    run += 1;
+                    q = n;
+                }
+            }
+            width = min(width, run * C_CELL_MM);
+        }
+        scale = u32(max(min(d, width), C_CELL_MM));
+    }
+    limits[2u * c + 1u - RP.pad1] = scale;
 }
