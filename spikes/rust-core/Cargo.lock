@@ -308,6 +308,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fv-gpu"
+version = "0.0.0"
+dependencies = [
+ "bytemuck",
+ "fv-core",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "fv-render"
 version = "0.0.0"
 dependencies = [
