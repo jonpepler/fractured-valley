@@ -184,3 +184,18 @@ fn foxes_thinking_every_4_ticks_give_one_hash() {
     println!("12 foxes thinking every 4 ticks: {hs:x?}");
     assert!(hs.iter().all(|&x| x == hs[0]));
 }
+
+/// (Review) A run long enough to hold cold state gives one hash on 1 and 4 threads, in order and
+/// reversed (the short pinned runs hold none).
+#[test]
+fn cold_state_is_deterministic_across_threads() {
+    let mut s = VSetup::new(1, 30, 70); s.think_every = 1;
+    let rev: Vec<usize> = (0..30).rev().collect();
+    let (r1, v) = run(&s, 1, None);
+    let r4 = run(&s, 4, Some(&rev)).0;
+    let cold: usize = v.folk.iter().map(|p| p.m.cold.len()).sum();
+    let went: u32 = v.folk.iter().map(|p| p.m.dormancy.0).sum();
+    println!("70 days: {went} went cold, {cold} cold now; hashes {:x} {:x}", r1.hash, r4.hash);
+    assert!(went > 0, "the run holds cold state");
+    assert_eq!(r1.hash, r4.hash);
+}

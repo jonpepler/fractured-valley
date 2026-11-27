@@ -247,7 +247,10 @@ impl Person {
             for x in [&mut r.rt, &mut r.st, &mut r.rw, &mut r.sw] { *x = (*x as i64 * REP_KEEP / 1000) as i32; }
             self.write_rel(j);
         }
-        if !self.m.cold.is_empty() { let m = &self.m; self.told.retain(|t| !m.is_cold(t.thing)); }
+        // (Review: a verdict's evidence fades with the evidence it sits in, so a later verdict
+        // replaces only what is left of it.)
+        for t in self.told.iter_mut() { t.verdict_ev = (t.verdict_ev as i64 * REP_KEEP / 1000) as i32; }
+        if !self.m.cold.is_empty() { let m = &self.m; self.told.retain(|t| !m.is_cold(t.thing) && !m.is_cold(m.place_nodes[t.place])); }
     }
     pub fn state_hash(&self) -> u64 { let mut h = crate::rng::StateHasher::new(self.m.who); self.hash(&mut h); h.finish() }
 

@@ -279,7 +279,7 @@ pub struct Config {
     /// response scores in `respond`.
     pub courage_spread: bool,
     /// Round 2 (9.4): **sleep keeps more of a novel day.** The share of plain fast weight kept in
-    /// consolidation runs from 1/8 on a day with no surprise to 1/3 on a day of
+    /// consolidation runs from nothing on a day with no surprise to 1/3 on a day of
     /// `NOVEL_DAY` worth of prediction error (`Mind::day_novelty`). Off: the fixed `sleep_keep`.
     pub novelty_keep: bool,
     /// Round 2 (9.8): **dormant memories.** A node learnt in the mind's life whose every
@@ -1167,7 +1167,8 @@ impl<S: Store> Mind<S> {
             pz.strength = (pz.strength + gain).min(1000);
         }
         // Round 2 (9.4): the day's novelty is its summed prediction error.
-        self.day_novelty = (self.day_novelty + percepts.iter().filter(|p| p.error >= IGNORE_BELOW).map(|p| p.error as i64).sum::<i64>() + absent.iter().map(|x| x.2 as i64).sum::<i64>()).min(1 << 40);
+        // (Review: per tick. What is in sight now counts here; each buffered tick's sight counts below.)
+        self.day_novelty = (self.day_novelty + percepts.iter().filter(|p| p.error >= IGNORE_BELOW && (buffered.is_empty() || s0.seen.iter().any(|e| e.id == p.entity))).map(|p| p.error as i64).sum::<i64>() + absent.iter().map(|x| x.2 as i64).sum::<i64>()).min(1 << 40);
         if let Some(pz) = &mut self.puzzle {
             if percepts.iter().any(|p| p.kind == pz.kind && p.place != Some(pz.place)) { pz.strength -= pz.strength / 8 + 20; }
             for _ in 0..dt { pz.strength -= pz.strength / 400 + 1; }
@@ -1227,7 +1228,7 @@ impl<S: Store> Mind<S> {
         let tg = self.temperament.stress_gain() as i64 * (1000 + self.mods.fatigue as i64 / 2) / 1000;
         // Stage 3: companions linked to "ally" buffer the stress a tick adds (social buffering).
         let buffer = self.roles.resp.filter(|r| r.ally != u32::MAX).map_or(0, |r| st.act[r.ally as usize] as i64 * BUFFER as i64 / 1000);
-        let stressor = (pain_rise as i64 + surprise as i64 / 2 + st.act[self.roles.danger as usize] as i64 / 16 * dt as i64 - buffer).max(0);
+        let stressor = (pain_rise as i64 + surprise as i64 / 2 + (st.act[self.roles.danger as usize] as i64 / 16 - buffer) * dt as i64).max(0);
         self.mods.stress = (self.mods.stress as i64 + stressor * tg / 1000).min(1000) as i32;
         if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
 
@@ -1268,11 +1269,16 @@ impl<S: Store> Mind<S> {
             // familiarity as it would have tick by tick.
             for b in &buffered {
                 let ps = self.perceive(b);
+                self.day_novelty = (self.day_novelty + ps.iter().filter(|p| p.error >= IGNORE_BELOW).map(|p| p.error as i64).sum::<i64>()).min(1 << 40);
                 self.learn_expectations(b, &ps);
                 if self.cfg.habituate { self.habituate_grow(&ps); }
             }
-            if self.cfg.habituate { self.habituate(&percepts); }
-            self.learn_expectations(s, &percepts);
+            // (Review: things merged in from the buffer were learnt twice, and at their old places
+            // as if seen now. Learning reads only what is in sight now; the buffer taught the rest.)
+            let now: Vec<Percept> = if buffered.is_empty() { vec![] } else { percepts.iter().filter(|p| s0.seen.iter().any(|e| e.id == p.entity)).cloned().collect() };
+            let learn_from: &[Percept] = if buffered.is_empty() { &percepts } else { &now };
+            if self.cfg.habituate { self.habituate(learn_from); }
+            self.learn_expectations(s0, learn_from);
             // Stage 5: which foods are in sight at the place the body is at (for `food_contingent`).
             let food_here: Vec<u32> = if self.cfg.food_contingent { percepts.iter().filter(|p| p.place == here && here.is_some() && self.kinds[p.kind as usize].edible).flat_map(|p| [p.node, self.concept(p.kind)]).collect() } else { vec![] };
             self.hebbian(st, &ws, here.map(|pi| self.place_nodes[pi]), s.tick, &food_here, dt);
@@ -1377,8 +1383,8 @@ impl<S: Store> Mind<S> {
         spent
     }
 
-    /// Round 2 (9.4): the share (per mille) of plain fast weight that consolidation keeps today: 1/8
-    /// on a day with no surprise, rising with the day's novelty to 1/3 (`Config::novelty_keep`).
+    /// Round 2 (9.4): the share (per mille) of plain fast weight that consolidation keeps today:
+    /// with no surprise nothing, rising with the day's novelty to 1/3 (`Config::novelty_keep`).
     pub fn keep_share(&self) -> i64 { if self.cfg.novelty_keep { KEEP_PLAIN + (KEEP_NOVEL - KEEP_PLAIN) * self.day_novelty.min(NOVEL_DAY) / NOVEL_DAY } else { 1000 / self.cfg.sleep_keep.max(1) } }
 
     /// Replay one episode into the slow links between its nodes and the feelings of its anchored
@@ -1762,6 +1768,8 @@ impl<S: Store> Mind<S> {
                 if l.fast < 0 { continue; }
                 // Round 2 (9.4): feelings about people are moved only by episodes, not by co-activation.
                 if self.cfg.protect_social && self.is_rel(u, v) { continue; }
+                // (Review: a record of what was said to whom is written only by saying it.)
+                if l.ty == lt::TOLD { continue; }
                 let place = |n: u32| self.store.tags(n) & tag::PLACE != 0;
                 if (place(u) && Some(u) != here) || (place(v) && Some(v) != here) { continue; }
                 // Stage 5 (`food_contingent`): a place learns a link to a food only while that food

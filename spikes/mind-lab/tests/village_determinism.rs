@@ -14,7 +14,7 @@ use fv_mind_lab::village::runs::{run, Setup};
 // the village's fixes are the default (9.6), sleep keeps a share set by the day's novelty (9.4),
 // dormancy and feelings by evidence (9.4, 9.8), graded choices (9.6), and the link-type table
 // grew by one (`told`). Native and wasm32 agree on every one (`tools/wasm-hashes.sh`).
-const PINNED: [u64; 4] = [0xc9b54feb108806cb, 0x702c8714a3645c0c, 0x71404496eacf6bc7, 0xc0cc1747db16d46b];
+const PINNED: [u64; 4] = [0x6a5e27791fd19343, 0xedc5d33cfb0c038f, 0x42d87ed2b116d7a2, 0x85edc880afbfff5c];
 
 #[test]
 fn village_runs_give_identical_pinned_hashes() {
