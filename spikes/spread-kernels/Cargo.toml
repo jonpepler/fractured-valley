@@ -1,0 +1,16 @@
+[package]
+name = "fv-spread-kernels"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: batched, exact and redefined kernels for bounded integer propagation"
+
+[dependencies]
+mc = { package = "fv-mind-compaction", path = "../mind-compaction" }
+
+[profile.release]
+debug = 1
+codegen-units = 1
+
+[profile.test]
+opt-level = 3
