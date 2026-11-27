@@ -59,6 +59,21 @@ jobs:
       - name: fv-wasm tests (a tick in parts == Sim::step)
         working-directory: spikes/rust-core
         run: cargo test --release -p fv-wasm
+      # The GPU path (fv-gpu) must equal the CPU bit for bit. On Linux it runs
+      # on Mesa's lavapipe (software Vulkan) and must not be skipped; on the
+      # full check's macOS runner it runs on that machine's GPU (Metal) where
+      # there is one. If this fails after a change to fv-core, port the change
+      # to fv-gpu's shaders.
+      - name: Software Vulkan for the GPU path (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mesa-vulkan-drivers
+          echo "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json" >> "$GITHUB_ENV"
+          echo "FV_GPU_REQUIRED=1" >> "$GITHUB_ENV"
+      - name: fv-gpu tests (the GPU path equals the CPU every tick)
+        working-directory: spikes/rust-core
+        run: cargo test --release -p fv-gpu
       - name: Build the WebAssembly and the pages
         working-directory: spikes/rust-core/web
         run: |
@@ -70,6 +85,13 @@ jobs:
       - name: Determinism (Chromium, Firefox, WebKit vs native)
         working-directory: spikes/rust-core/web
         run: node tests/determinism.mjs --out ../../../results
+      - name: GPU path in the browser (Chromium WebGPU equals the CPU, word for word)
+        if: runner.os == 'Linux'
+        working-directory: spikes/rust-core
+        run: |
+          mkdir -p fv-gpu/web/data
+          SCENE=campfire cargo run --release -p fv-gpu --example dump_phase -- fv-gpu/web/data
+          QUERY='?reps=1' NODE_PATH=web/node_modules node fv-gpu/web/test.cjs
       - name: Threads (4 workers via the service worker, Chromium)
         if: runner.os == 'Linux'
         working-directory: spikes/rust-core/web

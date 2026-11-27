@@ -77,7 +77,7 @@ pub struct Side {
 /// flicker at a few hertz and touch the fuel ahead intermittently: Finney
 /// et al. 2015).
 /// Experiments can set it at build time: `FV_FLAME_LEAN_PERMILLE=300`.
-const FLAME_LEAN_PERMILLE: i64 = parse_permille(option_env!("FV_FLAME_LEAN_PERMILLE"), 500);
+pub const FLAME_LEAN_PERMILLE: i64 = parse_permille(option_env!("FV_FLAME_LEAN_PERMILLE"), 500);
 
 /// A build-time number, or the default when it's unset.
 const fn parse_permille(v: Option<&str>, default: i64) -> i64 {
@@ -93,46 +93,46 @@ const fn parse_permille(v: Option<&str>, default: i64) -> i64 {
     n
 }
 /// Mean temperature of a flame's continuous region (McCaffrey 1979).
-const FLAME_CONTACT: Temperature = Temperature(1_173_000);
+pub const FLAME_CONTACT: Temperature = Temperature(1_173_000);
 /// A solid face inside a flame takes ~50–150 kW/m² (its convection plus the
 /// thick flame's radiation; e.g. crib and wall-fire measurements, Babrauskas,
 /// Ignition Handbook): about 80 W/(m²·K) at flame temperature, mW/(m²·K).
-const FLAME_ON_FACE: i64 = 80_000;
+pub const FLAME_ON_FACE: i64 = 80_000;
 /// That over one face, µW/K: the most a flame beside a cell can hand the
 /// fuel across the face between them (its flux into a surface in flame
 /// times the face's area, not into every blade of a 10 cm tuft at once).
-const FLAME_FACE_G: i64 = FLAME_ON_FACE * FACE_MM2 / 1_000;
+pub const FLAME_FACE_G: i64 = FLAME_ON_FACE * FACE_MM2 / 1_000;
 /// Heat a turbulent flame releases per volume of flame: about 1.2 MW/m³,
 /// whatever the fuel or the fire's size (Orloff & De Ris, from pool fires,
 /// as cited with a recalibration to 1.5 ± 0.2 MW/m³ in Fire Technology
 /// 2022, doi 10.1007/s10694-022-01341-z), µJ per mL per tick:
 /// 1 200 µW/mL × the tick.
-const FLAME_UJ_PER_ML: i64 = 1_200 * TICK.0 / 1_000;
+pub const FLAME_UJ_PER_ML: i64 = 1_200 * TICK.0 / 1_000;
 
 /// A buoyant plume's entrainment coefficient: air is drawn in sideways at
 /// α times its rising speed (Morton, Taylor & Turner 1956: α ≈ 0.09–0.12
 /// for round plumes), per mille.
-const ENTRAINMENT_PERMILLE: i64 = 100;
+pub const ENTRAINMENT_PERMILLE: i64 = 100;
 
 /// Thermal conductivity of liquid water, mW/(m·K) (0.59 W/(m·K) at 20 °C:
 /// e.g. Incropera, Fundamentals of Heat and Mass Transfer, table A.6).
-const WATER_CONDUCTIVITY: i64 = 590;
+pub const WATER_CONDUCTIVITY: i64 = 590;
 /// Thermal conductivity of still air, mW/(m·K).
-const AIR_CONDUCTIVITY: i64 = 26;
+pub const AIR_CONDUCTIVITY: i64 = 26;
 /// Film coefficient where a solid surface meets air: ~15 W/(m²·K) over one
 /// face (W/(m²·K) × mm² = µW/K).
-const FILM: Conductance = Conductance(15 * FACE_MM2);
+pub const FILM: Conductance = Conductance(15 * FACE_MM2);
 /// Exchange of gas across a face per tick in still air, in µL: eddies of a
 /// few mm/s, effective diffusivity D ~1×10⁻³ m²/s, so D·A/L·dt, which grows
 /// with the cell's edge (5 mL at 10 cm).
-const STILL_MIX_UL: i64 = 50 * CELL_MM;
+pub const STILL_MIX_UL: i64 = 50 * CELL_MM;
 /// Extra exchange per mm/s of air speed at the face, in nL: turbulent eddies
 /// carry ≈ 10 % of the flow through the face's area (50 µL at 10 cm).
-const TURBULENT_MIX_NL_PER_MM_S: i64 = 50_000 * FACE_MM2 / 10_000;
+pub const TURBULENT_MIX_NL_PER_MM_S: i64 = 50_000 * FACE_MM2 / 10_000;
 /// Mixed volumes are counted in thousandths of a cell (1 mL at 10 cm).
-const MIX_QUANTUM_UL: i64 = CELL_VOLUME_ML;
+pub const MIX_QUANTUM_UL: i64 = CELL_VOLUME_ML;
 /// Gas seeps through non-permeable porous solids this many times slower.
-const SEEP_DIVISOR: i64 = 20;
+pub const SEEP_DIVISOR: i64 = 20;
 
 pub fn side(c: &Cell, subs: &[Substance], ambient: Temperature) -> Side { side_lit(c, subs, ambient, false) }
 
@@ -351,7 +351,7 @@ pub fn sides(world: &World) -> Vec<Side> {
 }
 
 /// One per million: a face's gas flows at full strength.
-const FULL: i64 = 1_000_000;
+pub const FULL: i64 = 1_000_000;
 
 /// Scales a face's gas flow (and the heat it carries) by `ppm` per million.
 fn scale_gas(f: &mut Flux, ppm: i64) {

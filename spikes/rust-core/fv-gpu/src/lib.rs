@@ -16,24 +16,10 @@ use fv_core::transport::{side, sides, FaceVelocity, Side};
 use fv_core::world::{World, BRICK_CELLS, TICK};
 use std::time::Instant;
 
-/// transport.rs's private constants, from the same sources.
-const fn parse_permille(v: Option<&str>, default: i64) -> i64 {
-    let Some(v) = v else { return default };
-    let b = v.as_bytes();
-    let (mut i, mut n) = (0, 0i64);
-    while i < b.len() { n = n * 10 + (b[i] - b'0') as i64; i += 1 }
-    n
-}
-const FLAME_LEAN_PERMILLE: i64 = parse_permille(option_env!("FV_FLAME_LEAN_PERMILLE"), 500);
-const FLAME_CONTACT: i64 = 1_173_000;
-const FLAME_ON_FACE: i64 = 80_000;
-const FLAME_FACE_G: i64 = FLAME_ON_FACE * FACE_MM2 / 1_000;
-const FILM: i64 = 15 * FACE_MM2;
-const STILL_MIX_UL: i64 = 50 * CELL_MM;
-const TURBULENT_MIX_NL_PER_MM_S: i64 = 50_000 * FACE_MM2 / 10_000;
-const MIX_QUANTUM_UL: i64 = CELL_VOLUME_ML;
-const SEEP_DIVISOR: i64 = 20;
-const ENTRAINMENT_PERMILLE: i64 = 100;
+// transport.rs's constants, read from fv-core itself so they can't drift.
+use fv_core::transport::{ENTRAINMENT_PERMILLE, FILM as FILM_G, FLAME_CONTACT as FLAME_T, FLAME_FACE_G, FLAME_LEAN_PERMILLE, MIX_QUANTUM_UL, SEEP_DIVISOR, STILL_MIX_UL, TURBULENT_MIX_NL_PER_MM_S};
+const FLAME_CONTACT: i64 = FLAME_T.0;
+const FILM: i64 = FILM_G.0;
 
 /// The shader with fv-core's constants in front of it.
 pub fn shader_source() -> String { constants() + include_str!("common.wgsl") + include_str!("diffuse.wgsl") }

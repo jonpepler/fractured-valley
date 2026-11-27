@@ -10,12 +10,18 @@ use fv_core::units::*;
 use fv_gpu::GpuDiffusion;
 use std::sync::{Arc, Mutex};
 
+/// No adapter: skip, unless FV_GPU_REQUIRED is set (CI), where it fails.
+fn no_gpu(e: String) {
+    if std::env::var_os("FV_GPU_REQUIRED").is_some() { panic!("FV_GPU_REQUIRED, but {e}") }
+    eprintln!("skipped: {e}");
+}
+
 fn compare(make: impl Fn() -> Sim, ticks: usize, burning: bool) {
     let mut cpu = make();
     let mut gpu = make();
     let g = match GpuDiffusion::new(&gpu.world) {
         Ok(g) => Arc::new(Mutex::new(g)),
-        Err(e) => { eprintln!("skipped: {e}"); return }
+        Err(e) => { no_gpu(e); return }
     };
     gpu.diffuse_hook = Some(Box::new(move |w, flow| g.lock().unwrap().diffuse(w, flow)));
     for t in 0..ticks {
@@ -59,7 +65,7 @@ fn compare_pool(make: impl Fn() -> Sim, ticks: usize) {
     let n = gpu.world.bricks();
     let g = match fv_gpu::pool::PoolDiffusion::from_world(&gpu.world, fv_gpu::pool::shuffled(n, 99)) {
         Ok(g) => Arc::new(Mutex::new(g)),
-        Err(e) => { eprintln!("skipped: {e}"); return }
+        Err(e) => { no_gpu(e); return }
     };
     gpu.diffuse_hook = Some(Box::new(move |w, flow| g.lock().unwrap().diffuse(w, flow)));
     for t in 0..ticks {
