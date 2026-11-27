@@ -52,7 +52,7 @@ pub struct ToolConfig {
     pub on: bool,
     /// Ticks in a day (the mind's sense of time).
     pub day_len: u32,
-    /// Fuel for one tell, and a night's tool-making.
+    /// Fuel for one tell (at least; a tool's own observe bound if higher), and a night's tool-making.
     pub tell_fuel: i64,
     pub sleep_fuel: i64,
     /// What each brain may reach for (static bound ceilings).
@@ -94,7 +94,9 @@ pub type Question = (i32, i32, i32, i32);
 pub struct Belt {
     pub cfg: ToolConfig,
     pub tools: Vec<Tool>,
-    /// Each tool's static bounds (with the tools before it as its sub-tools).
+    /// Each tool's static bounds, with all the mind's tools as its sub-tools (as a call resolves
+    /// them). Worked out again whenever a tool is added or replaced, since a sub-tool may arrive
+    /// later, be replaced by a dearer one, or be the tool itself.
     pub bounds: Vec<Bound>,
     pub binds: Vec<Bind>,
     pub maker: Option<Tool>,
@@ -112,9 +114,13 @@ impl Belt {
     pub fn with_maker(cfg: ToolConfig, maker_src: &str) -> Belt { let mut b = Belt::new(cfg); b.maker = Some(Tool::from(kit::load(maker_src))); b }
 
     pub fn stamp(&self, r: &mut Rec, tick: u32) { stamp(r, tick, self.cfg.day_len) }
-    fn bound_of(&self, d: &Desc) -> Bound { let env: Vec<&Desc> = self.tools.iter().map(|t| &*t.desc).collect(); cost::bound(d, &env) }
-    pub fn add(&mut self, d: Desc) -> usize { let b = self.bound_of(&d); self.tools.push(Tool::new(Arc::new(d))); self.bounds.push(b); self.tools.len() - 1 }
-    fn replace(&mut self, i: usize, t: Tool) { let b = self.bound_of(&t.desc); self.tools[i] = t; self.bounds[i] = b; }
+    /// Every tool's bound again, over the tools the mind has now. (Review: bounds were worked out
+    /// once, over the tools added before, so a tool asking a map made later kept a bound of 3
+    /// against 16 measured, and its calls ran out of fuel.)
+    fn rebound(&mut self) { let env: Vec<&Desc> = self.tools.iter().map(|t| &*t.desc).collect(); self.bounds = self.tools.iter().map(|t| cost::bound(&t.desc, &env)).collect(); }
+    fn push(&mut self, t: Tool) -> usize { self.tools.push(t); self.rebound(); self.tools.len() - 1 }
+    pub fn add(&mut self, d: Desc) -> usize { self.push(Tool::new(Arc::new(d))) }
+    fn replace(&mut self, i: usize, t: Tool) { self.tools[i] = t; self.rebound(); }
     pub fn find(&self, name: &str) -> Option<usize> { self.tools.iter().position(|t| t.desc.name == name) }
 
     /// May this mind, in this state, reach for this tool?
@@ -124,8 +130,13 @@ impl Belt {
     pub fn tell(&mut self, mut r: Rec, tick: u32) {
         if !self.cfg.on { return; }
         self.stamp(&mut r, tick);
+        // Each tool is told with at least its own observe bound, so a tell is never cut short
+        // half-way through (review: who-knows's observe can cost 720 when full, over the old
+        // flat 400, which would have left its two tables out of step).
         let lim = self.cfg.tell_fuel;
-        for t in self.tools.iter_mut().chain(self.maker.iter_mut()) {
+        let maker_lim = self.maker.as_ref().map_or(0, |m| cost::bound(&m.desc, &[]).observe);
+        let lims: Vec<i64> = self.bounds.iter().map(|b| b.observe.max(lim)).chain(std::iter::once(maker_lim.max(lim))).collect();
+        for (t, &lim) in self.tools.iter_mut().chain(self.maker.iter_mut()).zip(&lims) {
             self.stats.tells += 1;
             match t.observe(&r, lim) { Ok(u) => self.stats.tell_fuel += u as u64, Err(_) => { self.stats.tell_fuel += lim as u64; self.stats.spent += 1; } }
         }
@@ -187,10 +198,11 @@ impl Belt {
     }
 
     fn filled(&self, d: Desc) -> Tool {
+        let lim = cost::bound(&d, &[]).observe.max(self.cfg.tell_fuel);
         let mut t = Tool::new(Arc::new(d));
         if let Some(log) = self.maker.as_ref().and_then(|m| m.slots.iter().find_map(|s| match s { super::run::St::R(r) => Some(r.clone()), _ => None })) {
             let mut day = NONE;
-            for r in log.iter() { if r[F::Day as usize] != day { if day != NONE { let _ = t.forget(r[F::Tick as usize], 1_000_000); } day = r[F::Day as usize]; } let _ = t.observe(r, self.cfg.tell_fuel); }
+            for r in log.iter() { if r[F::Day as usize] != day { if day != NONE { let _ = t.forget(r[F::Tick as usize], 1_000_000); } day = r[F::Day as usize]; } let _ = t.observe(r, lim); }
         }
         t
     }
@@ -219,10 +231,10 @@ impl Belt {
         d.name = role(&made);
         let cheap = cheap.map(|c| { let mut c = *c; c.0.name = format!("{}-quick", role(&made)); c });
         let t = self.filled(d);
-        let idx = match prev { Some((_, _, pi, _)) => { self.replace(pi, t); pi } None => { let b = self.bound_of(&t.desc); self.tools.push(t); self.bounds.push(b); self.tools.len() - 1 } };
+        let idx = match prev { Some((_, _, pi, _)) => { self.replace(pi, t); pi } None => self.push(t) };
         let cheap_idx = cheap.map(|c| {
             let t = self.filled(c.0);
-            match prev.and_then(|p| p.3) { Some(ci) => { self.replace(ci, t); ci } None => { let b = self.bound_of(&t.desc); self.tools.push(t); self.bounds.push(b); self.tools.len() - 1 } }
+            match prev.and_then(|p| p.3) { Some(ci) => { self.replace(ci, t); ci } None => self.push(t) }
         });
         self.made.push((tick, made, idx, cheap_idx, name, cheap_name));
         if let Some((_, pat)) = self.questions.iter().find(|q| q.0 == key) {

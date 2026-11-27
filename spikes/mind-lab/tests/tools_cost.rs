@@ -129,3 +129,41 @@ fn the_bound_covers_nasty_tools() {
     }
     for (d, w) in ds.iter().zip(&worst) { println!("{}: worst {w}, bound {}", d.name, cost::bound(d, &envr).ask); }
 }
+
+/// Review: a tool's bound must hold whatever order the mind's tools arrive in. A tool that asks a
+/// map it does not have yet (or itself), and a sub-tool replaced by a dearer one, must not leave
+/// a stale, too-small bound: the call would run out of fuel, and reach would be decided wrongly.
+#[test]
+fn the_bound_follows_the_tools_a_mind_has_now() {
+    let mut b = Belt::new(ToolConfig { on: true, ..ToolConfig::default() });
+    // near-goal first: no map yet.
+    let ng = b.add(kit::load(kit::NEAR_GOAL));
+    let before = b.bounds[ng].ask;
+    // Then the map it asks for (found by its role name), and one that asks itself.
+    let mut m = build(F::Next, kind::MOVED, &Shape::Map { both: true, avoid: true, journeys: false }, 512); m.name = "map".into();
+    let mi = b.add(m);
+    let selfish = b.add(fv_mind_lab::tools::lang::parse(r#"(tool "selfish" (uses selfish map)
+        (ask (blend (1 (sub map "route" ((place place) (goal goal)))) (1 (sub selfish "" ((place place) (goal goal)))))))"#).unwrap());
+    for k in 0..40 { b.tell(rec_of(&[(F::Kind, kind::MOVED), (F::Place, k % 20), (F::Next, (k * 7 + 3) % 20)]), k as u32); }
+    println!("near-goal bound {before} before the map, {} after; map {}; selfish {}", b.bounds[ng].ask, b.bounds[mi].ask, b.bounds[selfish].ask);
+    for (t, q) in [(ng, rec_of(&[(F::Goal, 3)])), (selfish, rec_of(&[(F::Place, 0), (F::Goal, 19)]))] {
+        // Measured without a limit, against the bound the belt holds now.
+        let (_, used) = b.tools[t].query("", &q, i64::MAX / 4, &b.tools);
+        assert!(used <= b.bounds[t].ask, "{}: used {used} > held bound {}", b.tools[t].desc.name, b.bounds[t].ask);
+        let env: Vec<&Desc> = b.tools.iter().map(|t| &*t.desc).collect();
+        assert_eq!(b.bounds[t].ask, cost::bound(&b.tools[t].desc, &env).ask, "the held bound is the bound over the tools the mind has now");
+        let spent = b.stats.spent;
+        b.ask(t, q, 50, Reach::calm(Brain::Idle)).unwrap();
+        assert_eq!(b.stats.spent, spent, "{}: a call limited to its bound does not run out", b.tools[t].desc.name);
+    }
+}
+
+/// Review: a tell is never cut short half-way through a tool's observe block, even when a table
+/// is full and every new entry evicts (who-knows costs up to about 720 then).
+#[test]
+fn a_tell_is_never_cut_short() {
+    let mut b = Belt::new(ToolConfig { on: true, ..ToolConfig::default() });
+    for d in tools() { b.add(d); }
+    for i in 0..6000u64 { let mut r = random_rec(21, i); r[F::Kind as usize] = [kind::TOLD, kind::SEEN, kind::MOVED][i as usize % 3]; b.tell(r, i as u32); }
+    assert_eq!(b.stats.spent, 0, "no tell ran out of fuel");
+}
