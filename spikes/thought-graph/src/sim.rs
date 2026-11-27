@@ -27,6 +27,11 @@ pub struct Frame {
     /// (node, prediction error) for each thing in sight.
     pub percepts: Vec<(u32, i32)>,
     pub slept: bool,
+    /// The consolidation backlog after this tick, and the budget units spent consolidating.
+    pub backlog: i64,
+    pub consolidated: i64,
+    /// Burrows in the world (where they really are).
+    pub burrows: Vec<(i32, i32)>,
 }
 
 pub struct Sim {
@@ -60,7 +65,10 @@ impl Sim {
         self.w.pre_step();
         let slept = self.w.night_now;
         if slept {
-            self.m.sleep();
+            // The fox spends the night where its mind believes home is (it doesn't walk there).
+            let (x, y) = self.m.home_xy();
+            self.w.fox.x = x; self.w.fox.y = y;
+            self.m.night(&self.w);
             self.nights.push(self.w.tick);
             self.slow_snapshots.push((self.w.tick, self.m.g.slow.clone(), self.m.g.val.clone()));
         }
@@ -77,7 +85,8 @@ impl Sim {
                 hops: r.hops.clone(), ws: r.ws.clone(), action: a, why: r.why.clone(),
                 events: self.w.log[log_before..].iter().map(|l| l.1.clone()).collect(),
                 fast: self.m.fast.iter().enumerate().filter(|(_, &f)| f >= 20).map(|(l, &f)| (l as u32, f)).collect(),
-                percepts: r.percepts.iter().map(|p| (p.node, p.error)).collect(), slept,
+                percepts: r.percepts.iter().map(|p| (p.node, p.error)).collect(), slept, backlog: r.backlog, consolidated: r.consolidated,
+                burrows: self.w.entities.iter().filter(|e| e.alive && e.kind == Kind::Den).map(|e| (e.x, e.y)).collect(),
             });
         }
         let log_now = self.w.log.len();

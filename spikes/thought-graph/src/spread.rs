@@ -13,7 +13,8 @@ pub struct Mods {
     pub arousal: i32,
     /// -1000..1000, a slow average of the workspace's valence. Low mood favours negative paths.
     pub mood: i32,
-    /// 0..1000. Favours rest; damps all spreading a little.
+    /// 0..1000, read from the mind's consolidation backlog (sleep pressure, not a timer). Favours
+    /// rest and anger; damps all spreading a little.
     pub fatigue: i32,
     /// 0..1000, separate from mood. Shortens thinking (the mind sets fewer hops and a smaller
     /// frontier from it), damps slow associative links, and favours anger.
@@ -99,7 +100,8 @@ pub fn gain(m: &Mods, ty: u8, tags_to: u8, val: i32) -> i32 {
     let val = val.clamp(-1000, 1000) as i64;
     let s = m.stress as i64;
     if ty == lt::NEAR || ty == lt::LIKE || ty == lt::ASSOC { g = g * (1000 - a / 2) / 1000 * (1000 - s / 2) / 1000; }
-    if tags_to & tag::ANGER != 0 { g += g * s * 2 / 1000; }
+    // Stress favours anger; so does fatigue (a tired mind is irritable).
+    if tags_to & tag::ANGER != 0 { g += g * s * 2 / 1000 + g * f / 1000; }
     if tags_to & tag::FOOD != 0 { g += g * h / 1000; }
     if tags_to & tag::REST != 0 { g += g * f / 1000; }
     if val < 0 {

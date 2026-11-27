@@ -16,13 +16,16 @@ pub const DOG_NOTICE: i32 = 8;
 
 /// The kinds of thing a fox can perceive.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum Kind { Dog, Hen, Berry, Water, Fire }
+pub enum Kind { Dog, Hen, Berry, Water, Fire, Den }
 impl Kind {
-    pub const ALL: [Kind; 5] = [Kind::Dog, Kind::Hen, Kind::Berry, Kind::Water, Kind::Fire];
+    pub const ALL: [Kind; 6] = [Kind::Dog, Kind::Hen, Kind::Berry, Kind::Water, Kind::Fire, Kind::Den];
     pub fn idx(self) -> usize { self as usize }
     pub fn name(self) -> &'static str {
-        match self { Kind::Dog => "dog", Kind::Hen => "hen", Kind::Berry => "berry", Kind::Water => "water", Kind::Fire => "fire" }
+        match self { Kind::Dog => "dog", Kind::Hen => "hen", Kind::Berry => "berry", Kind::Water => "water", Kind::Fire => "fire", Kind::Den => "den" }
     }
+    /// Landmarks are fixed things that define a place: seeing one where the mind knows no place
+    /// makes it learn a new place. Creatures move and fires come and go, so they are not.
+    pub fn landmark(self) -> bool { matches!(self, Kind::Hen | Kind::Berry | Kind::Water | Kind::Den) }
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -59,9 +62,16 @@ pub enum Event {
     DogChase,
     /// The dog is taken away (control runs).
     NoDog,
-    /// Night: the fox is put in its den (it doesn't walk home; see README) and sleeps.
+    /// Night: the fox is put where its *mind* believes home is (the driver does this; it doesn't
+    /// walk there, see README) and sleeps.
     Night,
     SetHunger(i32),
+    /// The supernatural events of the home experiment. The fox's burrow (the earth it sleeps in)
+    /// is moved to a cell, removed, or joined by a second, identical-looking burrow. The world's
+    /// own "den" label moves with the original burrow; the fox's mind is not told anything.
+    MoveDen { x: i32, y: i32 },
+    RemoveDen,
+    AddDen { x: i32, y: i32 },
 }
 
 /// What the fox does this tick.
@@ -96,6 +106,8 @@ pub struct World {
 }
 
 pub const DOG: u32 = 1;
+/// The fox's burrow: the physical earth at its den.
+pub const BURROW: u32 = 6;
 
 pub fn d2(ax: i32, ay: i32, bx: i32, by: i32) -> i32 { (ax - bx) * (ax - bx) + (ay - by) * (ay - by) }
 pub fn dist(ax: i32, ay: i32, bx: i32, by: i32) -> i32 { (d2(ax, ay, bx, by) as u32).isqrt() as i32 }
@@ -127,6 +139,7 @@ impl World {
             e(3, Kind::Berry, "the berries", 52, 9, 6),
             e(4, Kind::Water, "the stream water", 12, 17, 0),
             e(5, Kind::Fire, "the campfire", 23, 26, 0),
+            e(BURROW, Kind::Den, "the burrow", 8, 31, 0),
         ];
         World {
             seed, tick: 0, places, entities,
@@ -175,12 +188,25 @@ impl World {
                 Event::DogChase => { self.dog_mode = DogMode::Chase { ticks: 0 }; self.log.push((self.tick, "the dog gives chase".into())); }
                 Event::NoDog => { if let Some(d) = self.entity_mut(DOG) { d.alive = false; } }
                 Event::Night => {
-                    let den = self.places.iter().find(|p| p.home).cloned().unwrap();
-                    self.fox.x = den.x; self.fox.y = den.y; self.fox.asleep = true; self.night_now = true;
+                    self.fox.asleep = true; self.night_now = true;
                     for e in self.entities.iter_mut().filter(|e| e.kind == Kind::Berry) { e.servings = 6; }
-                    self.log.push((self.tick, "night: the fox sleeps in its den".into()));
+                    self.log.push((self.tick, "night: the fox sleeps where it believes home is".into()));
                 }
                 Event::SetHunger(h) => self.fox.hunger = h,
+                Event::MoveDen { x, y } => {
+                    if let Some(b) = self.entity_mut(BURROW) { b.x = x; b.y = y + 1; }
+                    if let Some(p) = self.places.iter_mut().find(|p| p.home) { p.x = x; p.y = y; }
+                    self.log.push((self.tick, format!("the burrow is moved to ({x}, {y})")));
+                }
+                Event::RemoveDen => {
+                    if let Some(b) = self.entity_mut(BURROW) { b.alive = false; }
+                    self.log.push((self.tick, "the burrow vanishes".into()));
+                }
+                Event::AddDen { x, y } => {
+                    let id = self.next_id; self.next_id += 1;
+                    self.entities.push(Entity { id, kind: Kind::Den, name: "a second burrow".into(), x, y: y + 1, servings: 0, alive: true, approaching: false });
+                    self.log.push((self.tick, format!("a second burrow appears at ({x}, {y})")));
+                }
             }
         }
         self.move_dog();

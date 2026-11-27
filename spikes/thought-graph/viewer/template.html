@@ -81,7 +81,7 @@
 </div>
 <div class="wrap" style="grid-template-columns: 1fr; padding-top: 0">
   <div class="panel">
-    <h2>Over time: mood (teal), arousal (red), hunger (amber), stress (violet); events marked</h2>
+    <h2>Over time: mood (teal), arousal (red), hunger (amber), stress (violet), fatigue = consolidation backlog (grey); events marked</h2>
     <svg id="timeline" viewBox="0 0 980 80"></svg>
   </div>
 </div>
@@ -164,6 +164,7 @@ D.places.forEach(p => {
 });
 const sight = el("circle", { r: 70, fill: "#f59e0b", opacity: 0.07 }, M);
 const trail = el("polyline", { fill: "none", stroke: "#ea580c", "stroke-width": 1.5, opacity: 0.5 }, M);
+const gBurrows = el("g", {}, M);
 const gFires = el("g", {}, M);
 const dogEl = el("g", {}, M); el("circle", { r: 6, fill: "#4b5563" }, dogEl); const dogT = el("text", { y: -9, "text-anchor": "middle", "font-size": 10, fill: "#374151" }, dogEl);
 const foxEl = el("g", {}, M); el("circle", { r: 6.5, fill: "#ea580c", stroke: "#fff", "stroke-width": 1.5 }, foxEl);
@@ -171,7 +172,7 @@ el("text", { y: 3.5, "text-anchor": "middle", "font-size": 9, fill: "#fff", "fon
 
 // ---------- bars ----------
 const B = $("bars");
-const barDefs = [["hunger", 0, 1000, "#d97706"], ["arousal", 0, 1000, "#dc2626"], ["mood", -1000, 1000, "#0f766e"], ["fatigue", 0, 1000, "#6b7280"], ["pain", 0, 1000, "#9f1239"], ["stress", 0, 1000, "#7c3aed"]];
+const barDefs = [["hunger", 0, 1000, "#d97706"], ["arousal", 0, 1000, "#dc2626"], ["mood", -1000, 1000, "#0f766e"], ["fatigue (backlog)", 0, 1000, "#6b7280"], ["pain", 0, 1000, "#9f1239"], ["stress", 0, 1000, "#7c3aed"]];
 const barEls = barDefs.map(([name, lo, hi, col], i) => {
   const y = 6 + i * 22;
   el("text", { x: 0, y: y + 11, "font-size": 12, fill: "#374151" }, B).textContent = name;
@@ -196,6 +197,7 @@ line(f => f.m[2], -1000, 1000, "#0f766e");
 line(f => f.m[1], 0, 1000, "#dc2626");
 line(f => f.m[0], 0, 1000, "#d97706");
 line(f => f.m[5], 0, 1000, "#7c3aed");
+line(f => f.m[3], 0, 1000, "#6b7280");
 const cursor = el("line", { y1: 0, y2: 80, stroke: "#111827", "stroke-width": 1.5 }, T);
 T.addEventListener("click", e => { const r = T.getBoundingClientRect(); const i = Math.round(((e.clientX - r.left) / r.width * 980 - 10) / 960 * (F.length - 1)); go(Math.max(0, Math.min(F.length - 1, i)), -1); });
 
@@ -257,6 +259,12 @@ function render() {
   sight.setAttribute("cx", mx(f.fox[0])); sight.setAttribute("cy", my(f.fox[1]));
   trail.setAttribute("points", F.slice(Math.max(0, fi - 40), fi + 1).map(x => `${mx(x.fox[0])},${my(x.fox[1])}`).join(" "));
   if (f.dog) { dogEl.style.display = ""; dogEl.setAttribute("transform", `translate(${mx(f.dog[0])},${my(f.dog[1])})`); dogT.textContent = "dog " + f.dog[2]; } else dogEl.style.display = "none";
+  gBurrows.innerHTML = "";
+  for (const [x, y] of (f.burrows || [])) {
+    const g = el("g", { transform: `translate(${mx(x)},${my(y)})` }, gBurrows);
+    el("path", { d: "M-7,3 A7,7 0 0 1 7,3 Z", fill: "#78350f", stroke: "#451a03", "stroke-width": 0.8 }, g);
+    const t = el("text", { y: 14, "text-anchor": "middle", "font-size": 9, fill: "#451a03" }, g); t.textContent = "burrow";
+  }
   gFires.innerHTML = "";
   for (const [x, y, exp] of f.fires) {
     const g = el("g", { transform: `translate(${mx(x)},${my(y)})` }, gFires);
