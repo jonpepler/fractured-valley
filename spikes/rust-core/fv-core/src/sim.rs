@@ -44,6 +44,12 @@ pub struct Sim {
     /// of sub-steps), e.g. with the GPU's. It must leave the world exactly as
     /// `advect` would.
     pub advect_hook: Option<Box<dyn FnMut(&mut World, &Flow, i64) + Send>>,
+    /// Replaces the reaction phase (`chem::react_in`, given the flow). It
+    /// must leave the world exactly as `react_in` would.
+    pub react_hook: Option<Box<dyn FnMut(&mut World, &Flow) + Send>>,
+    /// Replaces the flow's step (`Flow::step`, given the world as diffusion
+    /// left it). It must leave the flow exactly as `step` would.
+    pub flow_hook: Option<Box<dyn FnMut(&World, &mut Flow) + Send>>,
     /// Pieces that came loose and are falling.
     pub bodies: Bodies,
     /// Look at what holds things up every this many ticks.
@@ -60,7 +66,7 @@ impl Sim {
         let flow = Flow::new(&world);
         let books = Books::open(&world);
         let light = Light::new(world.cells.len());
-        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: crate::flow::ADVECT_STEPS, diffuse_hook: None, advect_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default(), flames: None }
+        Sim { world, flow, books, light, sky, queue: Vec::new(), advect_steps: crate::flow::ADVECT_STEPS, diffuse_hook: None, advect_hook: None, react_hook: None, flow_hook: None, bodies: Bodies::new(), structure_every: 10, radiation: Radiation::default(), flames: None }
     }
 
     pub fn schedule(&mut self, s: Scheduled) {
@@ -101,14 +107,20 @@ impl Sim {
         // Heat crosses faces (diffusion) before the air moves: a flame's
         // heat, released into its gas at the end of the last tick, reaches
         // the fuel beside it before the plume carries that gas away.
-        self.flow.step(w);
+        match self.flow_hook.as_mut() {
+            Some(h) => h(w, &mut self.flow),
+            None => self.flow.step(w),
+        }
         // As few carrying sub-steps as the flow allows this tick (CFL).
         let steps = advect_steps(w, &self.flow, self.advect_steps);
         match self.advect_hook.as_mut() {
             Some(h) => h(w, &self.flow, steps),
             None => advect(w, &self.flow, steps),
         }
-        chem::react_in(w, &self.flow);
+        match self.react_hook.as_mut() {
+            Some(h) => h(w, &self.flow),
+            None => chem::react_in(w, &self.flow),
+        }
         if let Some(f) = self.flames.as_mut() {
             f.resize(w.cells.len(), 0);
             for (o, c) in f.iter_mut().zip(&w.cells) { *o = c.flame.0 }

@@ -21,20 +21,20 @@ use crate::units::*;
 use crate::world::{World, BRICK_CELLS, TICK};
 
 /// Boiling point at sea level.
-const BOIL: Temperature = Temperature(373_150);
+pub const BOIL: Temperature = Temperature(373_150);
 /// Oxygen per wood gas burnt (CH₁.₆O₀.₇ + 1.05 O₂ → CO₂ + 0.8 H₂O), per mille.
-const O2_PER_FUEL: i64 = 1_355;
+pub const O2_PER_FUEL: i64 = 1_355;
 /// Of the burnt products, the share that's CO₂ by mass (44 / 58.4), per mille.
-const CO2_SHARE: i64 = 753;
+pub const CO2_SHARE: i64 = 753;
 /// Oxygen per carbon burnt (C + O₂ → CO₂): 32/12.
-const O2_PER_CARBON_NUM: i64 = 8;
-const O2_PER_CARBON_DEN: i64 = 3;
+pub const O2_PER_CARBON_NUM: i64 = 8;
+pub const O2_PER_CARBON_DEN: i64 = 3;
 /// Surface area per volume at which water leaves a fuel as fast as it can
 /// (thin blades); thicker fuel dries in proportion to its σ.
-const FINE_SIGMA: i64 = 4_000;
+pub const FINE_SIGMA: i64 = 4_000;
 /// The lowest flame temperature a fuel–air mix can sustain (FDS default
 /// critical flame temperature, 1427 °C).
-const CRITICAL_FLAME: Temperature = Temperature(1_700_000);
+pub const CRITICAL_FLAME: Temperature = Temperature(1_700_000);
 /// Below this, burnable gas can't catch: a pilot flame lights wood gas off
 /// a surface at about 350 °C (Babrauskas, Ignition Handbook, 2003). The
 /// gas or the surface it leaves must be this hot.
@@ -62,16 +62,16 @@ pub const FLAME_GLOW: Temperature = Temperature(1_400_000);
 /// Guide, §5.1), 0.143 s at 10 cm, so 1 − e^(−0.05/0.143) = 0.295 a tick;
 /// 0.101 s at 5 cm (0.391).
 #[cfg(not(feature = "cell-5cm"))]
-const MIXING: Fraction = Fraction(1_268_733_232);
+pub const MIXING: Fraction = Fraction(1_268_733_232);
 #[cfg(feature = "cell-5cm")]
-const MIXING: Fraction = Fraction(1_677_276_774);
+pub const MIXING: Fraction = Fraction(1_677_276_774);
 /// Anderson's flame residence time: τ [s] = this / σ [1/m].
-const RESIDENCE_S_PER_SIGMA: i64 = 75_600;
+pub const RESIDENCE_S_PER_SIGMA: i64 = 75_600;
 /// Charring rate of a dense solid's exposed face, µm per minute.
-const CHAR_UM_PER_MIN: i64 = 1_500;
+pub const CHAR_UM_PER_MIN: i64 = 1_500;
 /// Heat released at the surface when carbon burns to carbon monoxide:
 /// 110.5 kJ/mol over 12 g.
-const CHAR_TO_CO_HEAT: SpecificEnergy = kj_per_kg(9_200);
+pub const CHAR_TO_CO_HEAT: SpecificEnergy = kj_per_kg(9_200);
 /// The outer surface oxygen reaches on a dense solid: one face.
 const OUTER_FACE_MM2: i64 = FACE_MM2;
 /// Most of a flame's heat that can go straight into the fuel it wraps, and
@@ -79,11 +79,11 @@ const OUTER_FACE_MM2: i64 = FACE_MM2;
 /// tuft (~14 000 mm²) gets ~30 %, open air none. The half-point is a surface
 /// per volume (10 000 mm² per litre), so the same fuel gets the same share
 /// whatever the cell's size.
-const FEEDBACK_MAX: Fraction = Fraction(1_288_490_189); // 30 %
-const FEEDBACK_HALF_MM2: i128 = 10 * CELL_VOLUME_ML as i128;
+pub const FEEDBACK_MAX: Fraction = Fraction(1_288_490_189); // 30 %
+pub const FEEDBACK_HALF_MM2: i128 = 10 * CELL_VOLUME_ML as i128;
 /// Heat transfer between a solid's surface and the gas around it, in
 /// mW/(m²·K) per 1/m of σ: h = Nu·k/d with d = 4/σ, Nu ≈ 2, k ≈ 0.05 W/(m·K).
-const SURFACE_H_PER_SIGMA: i64 = 25;
+pub const SURFACE_H_PER_SIGMA: i64 = 25;
 
 /// Heat transfer between open water's surface and the air over it, in
 /// mW/(m²·K), at an air speed over it in mm/s: h = 5.7 + 3.8·v W/(m²·K)

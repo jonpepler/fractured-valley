@@ -1,6 +1,6 @@
-//! Diffusion and carrying on the GPU for whole ticks of the dead tree, the
-//! state staying on the GPU between the two phases: hashes against the
-//! CPU every tick, and where the time goes.
+//! Diffusion, the flow, carrying and reaction on the GPU for whole ticks of the dead
+//! tree, the state staying on the GPU from one phase to the next: hashes
+//! against the CPU every tick, and where the time goes.
 //!
 //!     cargo run --release -p fv-gpu --example resident
 //! (no GPU: VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json)
@@ -29,28 +29,38 @@ fn main() {
     pool.carry_once = std::env::var("CARRY_TWICE").is_err();
     println!("adapter: {} ({:?})", pool.adapter_info.name, pool.adapter_info.device_type);
     let g = Arc::new(Mutex::new(pool));
-    let (g1, g2) = (g.clone(), g.clone());
+    let (g1, g2, g3, g4) = (g.clone(), g.clone(), g.clone(), g.clone());
     let log: Arc<Mutex<Vec<(String, f64, Vec<f64>, fv_gpu::Timings)>>> = Arc::new(Mutex::new(Vec::new()));
-    let (l1, l2) = (log.clone(), log.clone());
+    let (l1, l2, l3, l4) = (log.clone(), log.clone(), log.clone(), log.clone());
+    b.flow_hook = Some(Box::new(move |w, flow| { let mut p = g4.lock().unwrap(); let t0 = Instant::now(); p.flow_step(w, flow); l4.lock().unwrap().push(("flow".into(), t0.elapsed().as_secs_f64() * 1e3, p.kernel_ms.clone(), p.last)) }));
     b.diffuse_hook = Some(Box::new(move |w, flow| { let mut p = g1.lock().unwrap(); let t0 = Instant::now(); p.diffuse(w, flow); l1.lock().unwrap().push(("diffuse".into(), t0.elapsed().as_secs_f64() * 1e3, p.kernel_ms.clone(), p.last)) }));
     b.advect_hook = Some(Box::new(move |w, flow, steps| { let mut p = g2.lock().unwrap(); let t0 = Instant::now(); p.advect(w, flow, steps); l2.lock().unwrap().push(("advect".into(), t0.elapsed().as_secs_f64() * 1e3, p.kernel_ms.clone(), p.last)) }));
+    b.react_hook = Some(Box::new(move |w, flow| { let mut p = g3.lock().unwrap(); let t0 = Instant::now(); p.react(w, flow); l3.lock().unwrap().push(("react".into(), t0.elapsed().as_secs_f64() * 1e3, p.kernel_ms.clone(), p.last)) }));
     let mut same = 0;
-    let mut cpu_adv = f64::MAX;
+    let (mut cpu_adv, mut cpu_react, mut cpu_flow) = (f64::MAX, f64::MAX, f64::MAX);
     for _ in 0..ticks {
         // The CPU's carrying alone, timed on a copy of the state it starts from.
         a.step();
         b.step();
-        if a.hash() == b.hash() { same += 1 }
+        if a.hash() == b.hash() && a.flow == b.flow { same += 1 }
     }
     for _ in 0..5 {
         let mut w = a.world.clone();
         let t0 = Instant::now();
         fv_core::transport::advect(&mut w, &a.flow, a.advect_steps);
         cpu_adv = cpu_adv.min(t0.elapsed().as_secs_f64() * 1e3);
+        let mut w = a.world.clone();
+        let t0 = Instant::now();
+        fv_core::chem::react_in(&mut w, &a.flow);
+        cpu_react = cpu_react.min(t0.elapsed().as_secs_f64() * 1e3);
+        let mut f = a.flow.clone();
+        let t0 = Instant::now();
+        f.step(&a.world);
+        cpu_flow = cpu_flow.min(t0.elapsed().as_secs_f64() * 1e3);
     }
-    println!("{ticks} ticks from tick {at}: {same} hashes equal; gaps {} {}", b.energy_gap(), b.mass_gap());
+    println!("{ticks} ticks from tick {at}: {same} hashes and flows equal; gaps {} {}", b.energy_gap(), b.mass_gap());
     let log = log.lock().unwrap();
-    for name in ["diffuse", "advect"] {
+    for name in ["diffuse", "flow", "advect", "react"] {
         let rows: Vec<_> = log.iter().filter(|r| r.0 == name).collect();
         let best = |f: &dyn Fn(&(String, f64, Vec<f64>, fv_gpu::Timings)) -> f64| rows.iter().map(|r| f(r)).fold(f64::MAX, f64::min);
         let kernels = rows.iter().map(|r| r.2.clone()).min_by(|x, y| x.iter().sum::<f64>().partial_cmp(&y.iter().sum::<f64>()).unwrap()).unwrap();
@@ -58,5 +68,5 @@ fn main() {
             best(&|r| r.1), kernels.iter().sum::<f64>(), kernels.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(" + "),
             best(&|r| r.3.upload), best(&|r| r.3.readback), best(&|r| r.3.prepare), best(&|r| r.3.unpack));
     }
-    println!("CPU advect (4 threads if parallel): {cpu_adv:.1} ms");
+    println!("CPU, 4 threads (copying the world included): flow {cpu_flow:.1} ms, advect {cpu_adv:.1} ms, react {cpu_react:.1} ms");
 }
