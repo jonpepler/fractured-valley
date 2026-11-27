@@ -259,7 +259,9 @@ fn diffuse_face(lo: u32, a: Side, hi: u32, b: Side, speed: I, axis: u32) -> Flux
 
     let both_gas = gt0(a.gas_ml) && gt0(b.gas_ml);
     if (both_gas) {
-        let churn = buoyant_churn(mx(a.t, b.t), ambient());
+        var churn = buoyant_churn(mx(a.t, b.t), ambient());
+        // Plumes trade gas sideways only at their entrainment velocity.
+        if (axis != 2u) { churn = divi(muli(churn, C_ENTRAINMENT), 1000); }
         let q = i_(C_MIX_QUANTUM);
         var ul = mul(div(add(i_(C_STILL_MIX), divi(muli(add(speed, churn), C_TURB_MIX), 1000)), q), q);
         if (!(a.permeable && b.permeable)) { ul = mul(div(divi(ul, C_SEEP), q), q); }

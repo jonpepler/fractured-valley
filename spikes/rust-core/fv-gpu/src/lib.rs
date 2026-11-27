@@ -31,6 +31,7 @@ const STILL_MIX_UL: i64 = 50 * CELL_MM;
 const TURBULENT_MIX_NL_PER_MM_S: i64 = 50_000 * FACE_MM2 / 10_000;
 const MIX_QUANTUM_UL: i64 = CELL_VOLUME_ML;
 const SEEP_DIVISOR: i64 = 20;
+const ENTRAINMENT_PERMILLE: i64 = 100;
 
 /// The shader with fv-core's constants in front of it.
 pub fn shader_source() -> String { constants() + include_str!("common.wgsl") + include_str!("diffuse.wgsl") }
@@ -42,10 +43,10 @@ pub fn constants() -> String {
     format!(
         "const C_GAS_SH = array<i32, 7>({});\nconst C_VAPOUR: u32 = {}u;\nconst C_LATENT: i32 = {};\nconst C_TICK: i32 = {};\nconst C_CELL_MM: i32 = {};\n\
          const C_FLAME_LEAN: i32 = {};\nconst C_FLAME_CONTACT: i32 = {};\nconst C_FLAME_FACE_G: i32 = {};\nconst C_FILM: i32 = {};\n\
-         const C_STILL_MIX: i32 = {};\nconst C_TURB_MIX: i32 = {};\nconst C_MIX_QUANTUM: i32 = {};\nconst C_SEEP: i32 = {};\n",
+         const C_STILL_MIX: i32 = {};\nconst C_TURB_MIX: i32 = {};\nconst C_MIX_QUANTUM: i32 = {};\nconst C_SEEP: i32 = {};\nconst C_ENTRAINMENT: i32 = {};\n",
         sh.join(", "), Gas::Vapour as usize, i32c(LATENT_HEAT_VAPOUR.0), i32c(TICK.0), i32c(CELL_MM),
         i32c(FLAME_LEAN_PERMILLE), i32c(FLAME_CONTACT), i32c(FLAME_FACE_G), i32c(FILM),
-        i32c(STILL_MIX_UL), i32c(TURBULENT_MIX_NL_PER_MM_S), i32c(MIX_QUANTUM_UL), i32c(SEEP_DIVISOR),
+        i32c(STILL_MIX_UL), i32c(TURBULENT_MIX_NL_PER_MM_S), i32c(MIX_QUANTUM_UL), i32c(SEEP_DIVISOR), i32c(ENTRAINMENT_PERMILLE),
     )
 }
 
