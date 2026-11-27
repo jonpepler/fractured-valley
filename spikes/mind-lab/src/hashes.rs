@@ -95,6 +95,8 @@ pub fn hunt_runs(threads: usize) -> Vec<(&'static str, u64)> {
         ("hunt: a planned hunt (seed 2)", drive(build(&Case { seed: 2, set: 1, mode: Mode::Planned }), HUNT_TICKS)),
         ("hunt: the same people, each alone (seed 2)", drive(build(&Case { seed: 2, set: 1, mode: Mode::Solo }), HUNT_TICKS)),
         ("hunt: an ambush given away (seed 1, Cai leans to Dee)", drive(build_betrayal(&BCase { seed: 1, set: 1, lean: Lean::Cai, caution: 10, honest_teller: false }), BETRAY_TICKS)),
+        // (Review) A run where Ash overhears Bryn's whisper, so the wasm32 check covers it too.
+        ("hunt: a careless teller overheard (seed 2, Bryn)", drive(build_betrayal(&BCase { seed: 2, set: 1, lean: Lean::Bryn, caution: 2, honest_teller: false }), BETRAY_TICKS)),
     ]
 }
 

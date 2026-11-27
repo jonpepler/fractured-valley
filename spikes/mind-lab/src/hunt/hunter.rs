@@ -95,6 +95,10 @@ pub struct Log {
     pub reactions: Vec<(u32, u32, i32, u8, u8)>,
     pub warned_at: Option<u32>,
     pub improvised: u32,
+    /// (Review) The ticks it improvised on, and the ticks a breach of its own mind's made it
+    /// re-plan out loud (an early whistle or a new plan); ordinary whistles don't count.
+    pub improvised_at: Vec<u32>,
+    pub replan_at: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -578,11 +582,13 @@ impl Person {
         let k = self.hunter().k;
         if hp.signal.is_none() && hp.target == Target::Deer && new_breaches.iter().any(|b| b.1 == k.deer) {
             // The deer moved before the signal: drive now.
+            self.hunt.as_mut().unwrap().log.replan_at.push(tick);
             return self.signal(hp, tick, "the deer moved early: drive now");
         }
         let missing: Vec<usize> = new_breaches.iter().filter(|b| b.3 == BREACH_MISSING).filter_map(|b| (0..PEOPLE).find(|&j| self.pnode[j] == b.1)).filter(|j| hp.members.iter().any(|m| m.0 == *j)).collect();
         let declined: Vec<usize> = book.declined.iter().copied().filter(|j| hp.members.iter().any(|m| m.0 == *j)).collect();
         if (!declined.is_empty() || !missing.is_empty()) && book.replans < 2 {
+            if !missing.is_empty() { self.hunt.as_mut().unwrap().log.replan_at.push(tick); }
             let mut ex = declined.clone(); ex.extend(missing.iter().copied());
             if let Some((plan, members, tgt)) = self.compose(s, tick, &ex) { return self.propose(plan, members, tgt, tick, true); }
             let h = self.hunt.as_mut().unwrap(); h.book.gave_up = true; h.log.events.push((tick, "no one left to plan with".into()));
@@ -676,7 +682,7 @@ impl Person {
         let k = self.hunter().k;
         if !self.m.last.ws.contains(&k.deer) && !self.m.last.ws.contains(&k.deer_kind) { return a; }
         let Some((x, y, _)) = self.target_seen(Target::Deer) else { return a };
-        if self.hunter().plan.is_some() { self.hunt.as_mut().unwrap().log.improvised += 1; }
+        if self.hunter().plan.is_some() { let h = self.hunt.as_mut().unwrap(); h.log.improvised += 1; h.log.improvised_at.push(s.tick); }
         if (x - s.body.x).abs().max((y - s.body.y).abs()) <= 2 { self.hunt.as_mut().unwrap().struck = Some(s.tick); return Action::Snap { entity: DEER_ID }; }
         Action::WalkTo { x, y }
     }
@@ -692,13 +698,16 @@ impl Person {
         let h = self.hunt.as_mut().unwrap();
         h.seen_breaches = nb;
         for b in new { h.log.reactions.push((b.0, b.1, b.2, b.3, u8::MAX)); }
-        // What followed each breach, REACT_WINDOW ticks on (or as soon as the plan is re-made).
-        let replanned = matches!(said, Some(Say::Propose(_)) | Some(Say::Signal));
-        let improvised = h.log.improvised;
+        // What followed each breach, REACT_WINDOW ticks on (or as soon as a re-plan it caused).
+        // (Review: any whistle counted as a re-plan, and improvising was a lifetime counter.)
+        let _ = said;
+        let replanned = h.log.replan_at.last() == Some(&tick);
+        let imp = h.log.improvised_at.clone();
         for r in h.log.reactions.iter_mut().filter(|r| r.4 == u8::MAX) {
             if replanned { r.4 = 1; continue; }
             if tick >= r.0 + REACT_WINDOW {
-                r.4 = if intent.is_some() && intent == hp_node { 0 } else if improvised > 0 { 3 } else { 2 };
+                let improvised = imp.iter().any(|&t| t > r.0 && t <= r.0 + REACT_WINDOW);
+                r.4 = if improvised { 3 } else if intent.is_some() && intent == hp_node { 0 } else { 2 };
             }
         }
         let _ = s;

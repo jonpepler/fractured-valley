@@ -350,7 +350,9 @@ pub struct Consol { pub last_units: i64, pub total_units: i64, pub idle_ticks: u
 pub struct Puzzle { pub place: usize, pub kind: u8, pub strength: i32, pub since: u32 }
 
 #[derive(Clone, Debug)]
-pub struct Percept { pub entity: u32, pub kind: u8, pub x: i32, pub y: i32, pub place: Option<usize>, pub approaching: bool, pub node: u32, pub expected: i32, pub error: i32 }
+pub struct Percept { pub entity: u32, pub kind: u8, pub x: i32, pub y: i32, pub place: Option<usize>, pub approaching: bool, pub node: u32, pub expected: i32, pub error: i32,
+    /// Stage 4: how far it moved since last tick (cells), if it was seen last tick too; else 0.
+    pub moved: i32 }
 
 /// What a mind does this tick.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -663,14 +665,16 @@ impl<S: Store> Mind<S> {
             }
             // Stage 4: a held plan predicts where this one should be and how fast it should move;
             // that prediction replaces the others (a friend seen where it shouldn't be surprises).
+            // (Review: this read the distance from the last sighting, however old, and the breach
+            // check read it after the anchor had moved, so "too fast" never fired.)
+            let moved = if self.last.percepts.iter().any(|p| p.node == node) { self.store.anchor(node).map(|a| { let (ax, ay) = a.xy(); (ax - e.x).abs().max((ay - e.y).abs()) }).unwrap_or(0) } else { 0 };
             if let Some(x) = self.plan_expect(s.tick, node) {
-                let moved = self.store.anchor(node).map(|a| { let (ax, ay) = a.xy(); (ax - e.x).abs().max((ay - e.y).abs()) }).unwrap_or(0);
                 let off = (dist(e.x, e.y, x.x, x.y) - x.tol).max(0);
                 let mut ex = x.w * (1000 - (off * 150).min(1000)) / 1000;
                 if moved > x.pace { ex = ex.min(x.w / 3); }
                 expected = ex;
             }
-            Percept { entity: e.id, kind: e.kind, x: e.x, y: e.y, place, approaching: e.approaching, node, expected, error: 1000 - expected }
+            Percept { entity: e.id, kind: e.kind, x: e.x, y: e.y, place, approaching: e.approaching, node, expected, error: 1000 - expected, moved }
         }).collect()
     }
 
@@ -811,9 +815,8 @@ impl<S: Store> Mind<S> {
             for p in &percepts {
                 let Some(x) = self.plan_expect(s.tick, p.node) else { continue };
                 if p.error >= IGNORE_BELOW {
-                    let moved = self.store.anchor(p.node).map(|a| { let (ax, ay) = a.xy(); (ax - p.x).abs().max((ay - p.y).abs()) }).unwrap_or(0);
                     if let Some(b) = self.plan.broken { inject.push((b, p.error / 2)); }
-                    self.plan.breaches.push((s.tick, p.node, p.error, if moved > x.pace { BREACH_PACE } else { BREACH_PLACE }));
+                    self.plan.breaches.push((s.tick, p.node, p.error, if p.moved > x.pace { BREACH_PACE } else { BREACH_PLACE }));
                     done.push(p.node);
                 } else if x.until != u32::MAX { done.push(p.node); }
             }

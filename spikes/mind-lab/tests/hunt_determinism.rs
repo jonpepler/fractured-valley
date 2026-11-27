@@ -11,7 +11,7 @@ use fv_mind_lab::store::Store;
 use fv_mind_lab::think::Form;
 
 /// Pinned when stage 4 was written.
-const PINNED: [u64; 3] = [0x86d38e0fc8623350, 0xfa0621d86f14cc10, 0xa4041dfaef4f6b53];
+const PINNED: [u64; 4] = [0xb6f86f16e7e085e0, 0xe3741b0f04311f00, 0x87018d8fee501444, 0x79da30f17e5be554];
 
 #[test]
 fn hunt_runs_give_identical_pinned_hashes() {

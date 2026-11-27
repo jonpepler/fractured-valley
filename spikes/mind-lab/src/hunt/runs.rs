@@ -133,8 +133,11 @@ pub struct Outcome {
 pub fn hunt(c: &Case) -> (Outcome, Valley) { hunt_rec(c, None) }
 pub fn hunt_rec(c: &Case, rec: Option<usize>) -> (Outcome, Valley) { hunt_ev(c, rec, &[]) }
 /// A hunt with world events added (staging a breach: someone made very thirsty partway).
-pub fn hunt_ev(c: &Case, rec: Option<usize>, evs: &[(u32, Event)]) -> (Outcome, Valley) {
+pub fn hunt_ev(c: &Case, rec: Option<usize>, evs: &[(u32, Event)]) -> (Outcome, Valley) { hunt_with(c, rec, evs, true) }
+/// `cover` false: the hiding rule off (an ablation).
+pub fn hunt_with(c: &Case, rec: Option<usize>, evs: &[(u32, Event)], cover: bool) -> (Outcome, Valley) {
     let mut v = build(c);
+    v.w.cover = cover;
     for (t, e) in evs { v.at(*t, e.clone()); }
     let mut v = match rec { Some(r) => v.recording(r), None => v };
     let mut o = Outcome::default();
@@ -185,6 +188,17 @@ pub struct BCase { pub seed: u64, pub set: usize, pub lean: Lean,
     pub caution: i32,
     /// Honest people say nothing when they won't join; dishonest ones agree out loud and lie.
     pub honest_teller: bool }
+impl BCase { pub fn new(seed: u64, set: usize, lean: Lean) -> BCase { BCase { seed, set, lean, caution: 10, honest_teller: false } } }
+/// (Review) A sweep: the leaner (Cai) feels `to_dee` towards Dee and 200 towards Ash, owes Dee
+/// nothing: where does telling start?
+pub fn build_betrayal_warmth(seed: u64, set: usize, to_dee: i32) -> Valley {
+    let mut v = build_betrayal(&BCase::new(seed, set, Lean::CaiSlight));
+    let p = &mut v.folk[CAI];
+    let n = p.pnode[DEE];
+    p.m.store.set_val(n, to_dee as i16);
+    let d = p.ids.debt; if let Some(k) = p.m.store.find(n, d, lt::ASSOC) { p.m.store.set_slow(k, 0); }
+    v
+}
 
 /// The betrayal valley: the seed's layout; Ash, Bryn and Cai at the camp; Dee across the valley,
 /// due to set out for the stream at `HABIT`. The group dislikes Dee and links it to danger (a
@@ -241,6 +255,8 @@ pub struct BOutcome {
     pub proposed: Option<u32>,
     /// Who decided to warn (from their own minds), and when the warning was whispered.
     pub teller: Option<usize>, pub warned_at: Option<u32>,
+    /// (Review) Who actually whispered the plan to Dee (verdicts are scored against this).
+    pub whisperer: Option<usize>,
     /// Whether anyone of the group overheard the whisper.
     pub overheard: Vec<usize>,
     /// Dee proposed a counter-plan; the teller joined it.
@@ -259,8 +275,8 @@ pub struct BOutcome {
 }
 
 pub fn betrayal(c: &BCase) -> (BOutcome, Valley) { betrayal_rec(c, None) }
-pub fn betrayal_rec(c: &BCase, rec: Option<usize>) -> (BOutcome, Valley) {
-    let v = build_betrayal(c);
+pub fn betrayal_rec(c: &BCase, rec: Option<usize>) -> (BOutcome, Valley) { betrayal_on(c, build_betrayal(c), rec) }
+pub fn betrayal_on(c: &BCase, v: Valley, rec: Option<usize>) -> (BOutcome, Valley) {
     let mut v = match rec { Some(r) => v.recording(r), None => v };
     let order: Vec<usize> = (0..PEOPLE).collect();
     let mut o = BOutcome::default();
@@ -275,7 +291,7 @@ pub fn betrayal_rec(c: &BCase, rec: Option<usize>) -> (BOutcome, Valley) {
     }
     let h = |i: usize| v.folk[i].hunt.as_ref().unwrap();
     o.proposed = h(ASH).book.said_at;
-    for i in [BRYN, CAI] { if h(i).warn.is_some() { o.teller = Some(i); o.warned_at = h(i).log.warned_at; } }
+    for i in [BRYN, CAI] { if h(i).warn.is_some() && o.teller.is_none() { o.teller = Some(i); } if h(i).log.warned_at.is_some() && o.whisperer.is_none() { o.whisperer = Some(i); o.warned_at = h(i).log.warned_at; } }
     for i in [ASH, BRYN, CAI] { if h(i).log.events.iter().any(|e| e.1.starts_with("overheard")) { o.overheard.push(i); } }
     o.counter = h(DEE).lead.is_some();
     if let Some(t) = o.teller { o.counter_joined = h(t).plan.as_ref().is_some_and(|hp| hp.by == DEE); }
