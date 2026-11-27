@@ -1,0 +1,16 @@
+[package]
+name = "fv-spread-kernels-gpu"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: the redefined spread kernel as a wgpu integer compute shader"
+
+[dependencies]
+mc = { package = "fv-mind-compaction", path = "../../mind-compaction" }
+sk = { package = "fv-spread-kernels", path = ".." }
+wgpu = "25"
+pollster = "0.4"
+bytemuck = "1"
+
+[profile.release]
+codegen-units = 1
