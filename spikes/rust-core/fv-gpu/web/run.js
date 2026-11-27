@@ -15,6 +15,10 @@ async function main() {
   const module = device.createShaderModule({ code: src });
   const msgs = (await module.getCompilationInfo()).messages.filter((m) => m.type === 'error');
   if (msgs.length) throw new Error(msgs.map((m) => `${m.lineNum}: ${m.message}`).join('\n'));
+  // The brick pool's shader must compile here too (Tint is stricter than Naga).
+  const pool = device.createShaderModule({ code: await (await fetch('data/pool.wgsl')).text() });
+  const pmsgs = (await pool.getCompilationInfo()).messages.filter((m) => m.type === 'error');
+  if (pmsgs.length) throw new Error('pool.wgsl: ' + pmsgs.map((m) => `${m.lineNum}: ${m.message}`).join('\n'));
   const U = GPUBufferUsage;
   const buf = (words, usage) => device.createBuffer({ size: words * 4, usage });
   const B = {

@@ -191,7 +191,7 @@ fn signed(q: I, neg: bool) -> I { return select(q, neg_(q), neg); }
 fn mul_div(a: I, b: I, d: I) -> I {
     let ua = abs_(a); let ub = abs_(b); let ud = abs_(d);
     if (ua.y == 0u && ub.y == 0u) {
-        let neg = isneg(a) != isneg(b) != isneg(d);
+        let neg = (isneg(a) != isneg(b)) != isneg(d);
         return signed(udiv64_any(mul32w(ua.x, ub.x), ud), neg);
     }
     return narrow(wdiv(mulw(a, b), widen(d)));

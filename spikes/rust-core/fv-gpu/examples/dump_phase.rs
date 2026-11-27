@@ -37,6 +37,8 @@ fn main() {
     }
     let wr = |name: &str, d: &[u8]| std::fs::write(format!("{dir}/{name}"), d).unwrap();
     wr("diffuse.wgsl", fv_gpu::shader_source().as_bytes());
+    // The pool's shader too, so the browser's compiler (Tint) checks it.
+    wr("pool.wgsl", fv_gpu::pool::pool_shader_source().as_bytes());
     wr("params.bin", bytemuck::cast_slice(&inp.params));
     wr("cells.bin", bytemuck::cast_slice(&inp.cells));
     wr("sides.bin", bytemuck::cast_slice(&inp.sides));

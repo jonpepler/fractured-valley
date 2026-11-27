@@ -85,13 +85,6 @@ jobs:
       - name: Determinism (Chromium, Firefox, WebKit vs native)
         working-directory: spikes/rust-core/web
         run: node tests/determinism.mjs --out ../../../results
-      - name: GPU path in the browser (Chromium WebGPU equals the CPU, word for word)
-        if: runner.os == 'Linux'
-        working-directory: spikes/rust-core
-        run: |
-          mkdir -p fv-gpu/web/data
-          SCENE=campfire cargo run --release -p fv-gpu --example dump_phase -- fv-gpu/web/data
-          QUERY='?reps=1' NODE_PATH=web/node_modules node fv-gpu/web/test.cjs
       - name: Threads (4 workers via the service worker, Chromium)
         if: runner.os == 'Linux'
         working-directory: spikes/rust-core/web
@@ -100,6 +93,14 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: spikes/rust-core/web
         run: node tests/peers.mjs
+      - name: GPU path in the browser (Chromium WebGPU equals the CPU, word for word)
+        # Last, so a failure here can't hide the threads and peers results.
+        if: runner.os == 'Linux'
+        working-directory: spikes/rust-core
+        run: |
+          mkdir -p fv-gpu/web/data
+          SCENE=campfire cargo run --release -p fv-gpu --example dump_phase -- fv-gpu/web/data
+          QUERY='?reps=1' NODE_PATH=web/node_modules node fv-gpu/web/test.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
