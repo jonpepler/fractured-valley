@@ -1,0 +1,19 @@
+[package]
+name = "world-scale"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: measurements for brief 10 (world scale). Reads fv-core; changes nothing in it."
+
+# Standalone: not part of the rust-core workspace, so fv-core's results and
+# builds are untouched.
+[workspace]
+
+[dependencies]
+fv-core = { path = "../rust-core/fv-core" }
+miniz_oxide = "0.8"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
