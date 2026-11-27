@@ -343,13 +343,30 @@ fn solve_piece(w: &World, cells: &[[usize; 3]], grounded: &[bool], report: &mut 
             let (_, axis, b, _) = links[i][li];
             if axis == 2 { b.stiffness } else { b.stiffness * SHEAR_STIFFNESS }
         };
+        // The active links as flat rows (compressed sparse rows): each row's
+        // links in their order, the other cell's index (`n` for a fixed
+        // support, whose displacement is the 0.0 kept at the end of the
+        // vector) and the stiffness. The same products and sums in the same
+        // order as walking `links`, without the branches and pointer-chasing.
+        let mut row = Vec::with_capacity(n + 1);
+        let mut col: Vec<u32> = Vec::new();
+        let mut stiff: Vec<f64> = Vec::new();
+        for i in 0..n {
+            row.push(col.len() as u32);
+            for (li, &(other, _, _, _)) in links[i].iter().enumerate() {
+                if !active[i][li] { continue }
+                col.push(other.map_or(n, |j| j) as u32);
+                stiff.push(k_of(i, li));
+            }
+        }
+        row.push(col.len() as u32);
+        // `x` has n + 1 entries, the last 0.0 (the fixed supports).
         let apply = |x: &[f64], out: &mut [f64]| {
             for i in 0..n {
                 let mut acc = 0.0;
-                for (li, &(other, _, _, _)) in links[i].iter().enumerate() {
-                    if !active[i][li] { continue }
-                    let k = k_of(i, li);
-                    acc += k * (x[i] - other.map_or(0.0, |j| x[j]));
+                let xi = x[i];
+                for l in row[i] as usize..row[i + 1] as usize {
+                    acc += stiff[l] * (xi - x[col[l] as usize]);
                 }
                 out[i] = acc;
             }
@@ -357,10 +374,13 @@ fn solve_piece(w: &World, cells: &[[usize; 3]], grounded: &[bool], report: &mut 
         let bvec: Vec<f64> = weight.iter().map(|w| -w).collect();
         let mut x = uz.clone();
         let mut ax = vec![0.0; n];
+        x.push(0.0);
         apply(&x, &mut ax);
+        x.pop();
         let mut r: Vec<f64> = (0..n).map(|i| bvec[i] - ax[i]).collect();
         // Cells with no active links can't be solved for (they float); leave them.
         let mut p = r.clone();
+        p.push(0.0);
         let mut rr: f64 = r.iter().map(|v| v * v).sum();
         let bb: f64 = bvec.iter().map(|v| v * v).sum::<f64>().max(1e-30);
         let mut ap = vec![0.0; n];
