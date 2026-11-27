@@ -161,9 +161,7 @@ fn b_c_backlog_grows_without_sleep_degrades_thinking_and_sleep_restores_it() {
     }
     let tired = tired.unwrap();
     // An eventful life fills it far faster: most of the capacity on the first day, and it stays high.
-    // Restated in round 2: round 1's first eventful day ended at fatigue 852; now 669 (round 2's
-    // rules and new defaults together; the cause is not separated). It still stays above 600.
-    assert!(rows[1].1 >= 600 && rows.iter().all(|r| r.1 >= 600), "eventful sleepless days keep fatigue high");
+    assert!(rows[1].1 >= 700 && rows.iter().all(|r| r.1 >= 600), "eventful sleepless days keep fatigue high");
     let rt = recall(&tired);
     // Not more expensive: fatigue damps spreading, so a tired think visits *fewer* links than its
     // own slow graph would rested. Tired thought is narrower and dimmer, and less faithful.

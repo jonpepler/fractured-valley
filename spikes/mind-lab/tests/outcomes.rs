@@ -85,10 +85,7 @@ fn o1_same_slow_graph_different_modulators_different_thoughts_and_choices() {
     // den (the comfort it was founded with). It still keeps away from the henhouse and the dog.
     // (Lost in round 2: "low mood keeps away from the henhouse". Printed.)
     println!("low mood's choice: {}", rows[3].1);
-    // (Round 2: lost on this seed. Round 1: the afraid fox had the dog on its mind at 39 against 14
-    // for the neutral one; now 8 against 14, because it sets off for the bush and away from the
-    // henhouse sooner. Printed, not asserted.)
-    println!("fear and the dog on the mind: afraid {} against neutral {}", rows[2].3, rows[0].3);
+    assert!(rows[2].3 > rows[0].3, "fear brings the dog to mind more");
     println!("PARTIAL (as before): low mood puts the dog on the mind at {} (neutral {}); its effect is dimming good paths", rows[3].3, rows[0].3);
     assert!(rows[2].6 < rows[0].6 && rows[3].6 < rows[0].6);
 }
@@ -118,7 +115,7 @@ fn o2_fire_in_the_meadow_interrupts_within_a_tick_the_campfire_does_not() {
     assert!(camp_err < IGNORE_BELOW);
     assert_eq!(flees, 0, "the expected campfire must not make it flee");
     // Restated in round 2: with habituation the default (9.6), a fox that passed the campfire
-    // finds fire less new (error 600, round 1: 1000). It is still a surprise and still flees in
+    // finds fire less new (error 725, round 1: 1000). It is still a surprise and still flees in
     // the same tick.
     assert!(p.is_some_and(|p| p.error >= IGNORE_BELOW));
     assert!(matches!(a, Action::Flee { .. }), "it must flee in the same tick the fire is seen");

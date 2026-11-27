@@ -44,13 +44,7 @@ fn s1_telling_without_sharing_nodes() {
     println!("told Bryn drinks first at the spring in {drank_spring}/{n} runs, untold in {untold_spring}/{n}; drinks sooner than untold in {sooner}/{n}; first drink at tick {} (told) vs {} (untold) on average (301 = not by nightfall)", mean(&t_told), mean(&t_untold));
     println!("told place put {} cells from the spring on average (range {}..{}), uncertainty {}; the told node was in the workspace {} ticks of 301", mean(&errs), errs.iter().min().unwrap(), errs.iter().max().unwrap(), mean(&tols), mean(&ws));
     assert_eq!(untold_spring, 0, "nobody finds the spring without being told");
-    // Restated in round 2. Round 1: a told Bryn drank first at the spring in 18/18 runs. With the
-    // village's `felt_without_sources` the default (9.6, provisional), who told it of the spring is
-    // no reason to go there; trust sets only how strongly the fact is held (648, against 700 for
-    // its own stream), so in 12 of 18 it goes to its own stream (6/18; 18/18 with the setting off,
-    // checked by hand). Lost, and recorded. What still holds: the telling is used (it drinks
-    // sooner than untold), and some go to the told spring.
-    assert!(drank_spring >= 1, "a told Bryn sometimes goes to the spring");
+    assert!(drank_spring * 3 >= n * 2, "a told Bryn goes to the spring in most runs");
     assert!(sooner * 3 >= n * 2, "and drinks sooner, in most runs");
     // How strongly it's believed depends on trust (one seed, every temperament set).
     for set in SETS {
@@ -75,8 +69,7 @@ fn s2a_confirmed_the_node_becomes_bryns_own() {
         if r.anchored_on_spring { assert!(r.trust.1 > r.trust.0 && r.warmth.1 > r.warmth.0, "useful truth raises trust and warmth"); assert!(r.ash_from_spring > 0 && r.ash_feeling > 0, "and the spring brings Ash to mind kindly"); }
     }
     println!("confirmed and anchored on the real spring in {anchored}/{n} runs; trust +{} and warmth +{} on average; source link after 10 nights with Ash about: {} on average", mean(&dt), mean(&dw), mean(&srcs));
-    // (Round 2: confirmed only where Bryn went, 6 of 18 runs, against 18; see s1.)
-    assert!(anchored >= 1);
+    assert!(anchored * 3 >= n * 2);
 }
 
 #[test]
@@ -98,15 +91,14 @@ fn s2b_dry_spring_and_s2c_mistake_or_lie() {
         println!("{case:?}: found it dry {found}/{n}; verdict lie {lie}, mistake {mis}, undecided {amb}; trust in Ash 600 → {} on average; arousal at the dry spring {}, Ash's activation then {} (never in the top 8); Ash's feeling from the spring afterwards {}",
             mean(&tr), mean(&ar), mean(&ash), mean(&feel));
         match case {
-            // Restated in round 2: round 1 asserted these over all 18 runs (Bryn went in all of
-            // them). Now Bryn goes to the told spring less often (s1), so each verdict is checked
-            // where its evidence arose: among the runs where Bryn found it dry, or heard Ash
-            // contradict itself.
-            DryCase::HonestFresh | DryCase::HonestStale => assert!(mis * 2 >= found && lie == 0, "an honest teller who corrects itself is judged mistaken (where Bryn found it dry)"),
-            // Lost in round 2: Bryn, overhearing Ash tell Dee of the stream, now goes for water
-            // without asking Ash, so the lie is never told (0/18; round 1: told and caught out).
+            DryCase::HonestFresh | DryCase::HonestStale => assert!(mis * 2 >= n && lie == 0, "an honest teller who corrects itself is judged mistaken (a verdict reached in most runs)"),
+            // Restated in round 2. Round 1: Bryn overheard Ash tell Dee the spring was dry, then asked
+            // Ash and was lied to: judged a liar in most runs. Now a thirsty Bryn, having overheard
+            // Ash tell Dee of the stream, goes for water without asking Ash, so the lie is never told
+            // (0/18). Lost as a demonstration; what is left can only be checked as "never judged a
+            // mere mistake".
             DryCase::LieHeard => assert!(mis == 0, "a teller heard contradicting itself is never judged merely mistaken"),
-            DryCase::LieUnheard => assert!(lie == 0 && mis == 0, "without evidence Bryn can't tell a lie from a stale belief"),
+            DryCase::LieUnheard => assert!(found * 2 >= n && lie == 0 && mis == 0, "Bryn goes and finds it dry, and without evidence can't tell a lie from a stale belief"),
         }
     }
 }
@@ -247,11 +239,10 @@ fn s8_the_teachers_side() {
         }
         println!("helped {helped}, model {model}: Bryn thanks in {thanked}/{n}; Ash's warmth to Bryn {:+}; Bryn's debt {}; asked about the oak, Bryn tells at the first asking in {shared}/{asked}; Bryn asks for water again: Ash tells {tells}, reminds {reminds}",
             mean(&dw), mean(&debt));
-        // Restated in round 2. Thanks follow a confirmed claim, so they come in 6/18 (round 1: 18/18;
-        // see s1). And Ash's model of Bryn: round 1 found reminds ≥ tells (6 / 6). Now Ash tells
-        // 18 and reminds 0: when Bryn asks again, the water that comes to Ash's mind is not the one
-        // it told Bryn of (lost; recorded).
-        if helped { assert!(thanked >= 1 && mean(&dw) > 0, "thanks warm the teacher"); }
+        if helped { assert!(thanked * 3 >= n * 2 && mean(&dw) > 0, "thanks warm the teacher"); }
+        // Restated in round 2. Round 1 found reminds ≥ tells (6 / 6). Now Ash tells 15 and reminds 0:
+        // Ash's "Bryn knows it" link is there, but when Bryn asks again the water that comes to
+        // Ash's mind is not the one it told Bryn of (lost; recorded in the stage note).
         if !model { assert_eq!(reminds, 0); }
     }
 }
