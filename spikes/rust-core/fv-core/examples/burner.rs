@@ -61,11 +61,8 @@ fn main() {
             let fuel_box: i64 = w.cells.iter().map(|c| c.gas[Gas::Fuel as usize].0).sum();
             let c = w.get(cx, cy, base);
             let hot = w.cells.iter().filter(|c| c.gas_volume_ml(&w.subs) > 0 && c.gas_temperature() >= fv_core::chem::IGNITION).count();
-            let reach = fv_core::chem::flame_reach(w);
-            let lit = reach.iter().filter(|&&l| l > 0).count();
-            let mut hist = std::collections::BTreeMap::new();
-            for &r in reach.iter().filter(|&&l| l > 0) { *hist.entry(r).or_insert(0) += 1 }
-            print!("hot {hot} lit {lit} eddies mm:cells {hist:?} ");
+            let lit = fv_core::chem::flame_reach(w).iter().filter(|&&l| l).count();
+            print!("hot {hot} lit {lit} ");
             println!("tick {tick}: in {:.2} g, in box {:.2} g, edge fuel {:.2} g, flames {:.1} kW, centre cell {:.0} °C fuel {} O2 {}", sim.books.commands_mass as f64 * 1e-6, fuel_box as f64 * 1e-6, sim.books.edge_gas[Gas::Fuel as usize] as f64 * 1e-6, fl.iter().sum::<i64>() as f64 / 0.35 * 1e-6 * 20.0 / 1e3, c.gas_temperature().celsius_f64(), c.gas[Gas::Fuel as usize].0, c.gas[Gas::Oxygen as usize].0);
         }
         if tick <= warm { continue }
