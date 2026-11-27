@@ -183,6 +183,20 @@ pub(crate) fn absorb_table() -> &'static Vec<u64> {
     T.get_or_init(|| (0..4096).map(|i| Fraction::from_f64(-libm::expm1(-(i as f64) / 256.0)).0).collect())
 }
 
+/// `n / d`, exactly as integer division gives it. For the usual case (both
+/// positive, well inside 2⁵²) a floating-point quotient is a guess, put right
+/// exactly by integer arithmetic: much cheaper than a 64-bit division, and
+/// the same integer on every machine.
+#[inline]
+fn quotient(n: i64, d: i64) -> i64 {
+    const LIMIT: i64 = 1 << 52;
+    if n < 0 || d <= 0 || n >= LIMIT || d >= LIMIT { return n / d }
+    let mut q = (n as f64 / d as f64) as i64;
+    while q * d > n { q -= 1 }
+    while (q + 1) * d <= n { q += 1 }
+    q
+}
+
 #[inline]
 fn isqrt(v: u64) -> u64 {
     if v == 0 { return 0 }
@@ -247,6 +261,7 @@ pub(crate) fn drop_albedo(band: usize) -> u64 { if band == IR { Fraction::ONE.0 
 /// starting temperature could otherwise send more than it has.
 /// `water`: open water, sending up from its surface (1) or down from its
 /// bottom into its bed (−1); 0 for everything else.
+#[derive(Copy, Clone)]
 pub(crate) struct Emitter { pub area_q16: i128, pub t: Temperature, pub albedo: [u64; 4], pub from_gas: bool, pub most: i64, pub soot: bool, pub water: i8 }
 
 /// How open water treats a band: what it reflects of what it meets (the
@@ -310,13 +325,25 @@ pub(crate) fn grey_shares(t: Temperature) -> [u64; 4] { tables().bands[k_index(t
 /// The split for glowing soot at `t` (see [`crate::tables::Tables::soot_bands`]).
 pub(crate) fn soot_shares(t: Temperature) -> [u64; 4] { tables().soot_bands[k_index(t.0)] }
 
+/// A cell's emitters (at most four), held inline: no allocation per cell.
+#[derive(Copy, Clone, Default)]
+pub(crate) struct Emitters { n: usize, list: [Option<Emitter>; 4] }
+impl Emitters {
+    fn push(&mut self, e: Emitter) { self.list[self.n] = Some(e); self.n += 1 }
+}
+impl IntoIterator for Emitters {
+    type Item = Emitter;
+    type IntoIter = core::iter::Flatten<core::array::IntoIter<Option<Emitter>, 4>>;
+    fn into_iter(self) -> Self::IntoIter { self.list.into_iter().flatten() }
+}
+
 /// The radiating parts of a cell. A surface radiates from its exposed
 /// faces; airy matter radiates from 4κV (the same κ light is stopped by):
 /// blades (σ·share/4 per metre), soot (counted at κ_ref = 1 per metre per
 /// mg/L, its Planck mean at 1 400 K; [`Emitter::energy`] scales it to its
 /// own temperature) and water drops
 /// (0.15 per metre per mg/L), none more than a black cube (six faces).
-pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temperature) -> Vec<Emitter> {
+pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temperature) -> Emitters {
     let s = &subs[c.substance as usize];
     // What the surface store and the gas hold above the surroundings, halved
     // (the gas's shared between soot and drops).
@@ -328,11 +355,13 @@ pub(crate) fn emitters(c: &Cell, subs: &[Substance], faces: i64, ambient: Temper
     let one = Fraction::ONE.0 as i128;
     let solid_albedo = [0, 1, 2, 3].map(|b| band_albedo(s, b));
     if c.opaque(subs) {
-        return vec![Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water: 0 }];
+        let mut out = Emitters::default();
+        out.push(Emitter { area_q16: faces as i128 * ONE as i128, t: c.surface_temperature(subs), albedo: solid_albedo, from_gas: false, most: solid_most, soot: false, water: 0 });
+        return out;
     }
     let cap = 6 * ONE as i128;
     let share = c.solid_share(subs).0 as i128;
-    let mut out = Vec::new();
+    let mut out = Emitters::default();
     if c.open_water() {
         // Open water radiates from its surface (the cell's floor area, one
         // face) and, as any layer does, from its bottom into the bed it lies
@@ -530,25 +559,54 @@ fn volume_optics(c: &Cell, subs: &[Substance], band: usize, kelvin: usize, s: &m
     (total, Meets::Gas, drop_albedo(band))
 }
 
-fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
+/// A cell's optics, as `trace` needs them often: light passes straight
+/// through it, or it stops light at its surface.
+const OPTIC_CLEAR: u8 = 1;
+const OPTIC_OPAQUE: u8 = 2;
+
+/// Each cell's optics flags. A clear cell is one where [`volume_optics`]
+/// finds nothing to meet in any band but ionising (no solid share, soot or
+/// drops) and no open water lies: a packet crosses it without drawing a
+/// random number, so `trace` can step over it without reading the cell.
+fn optics(w: &World) -> Vec<u8> {
+    let subs = &w.subs;
+    let flag = |c: &Cell| -> u8 {
+        if c.opaque(subs) { return OPTIC_OPAQUE }
+        let sub = &subs[c.substance as usize];
+        let share = c.solid_share(subs).0 as i64;
+        let k_solid = sub.surface_per_volume * share / Fraction::ONE.0 as i64 * ONE / 4;
+        let k_drop = c.gas[Gas::Droplets as usize].0 * ONE * 15 / (100 * CELL_VOLUME_ML);
+        if k_solid == 0 && k_drop == 0 && c.gas[Gas::Soot as usize].0 == 0 && !c.open_water() { OPTIC_CLEAR } else { 0 }
+    };
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        return w.cells.par_iter().map(flag).collect();
+    }
+    #[allow(unreachable_code)]
+    w.cells.iter().map(flag).collect()
+}
+
+fn trace(w: &World, optic: &[u8], mut p: Packet, dep: &Deposits, tally: &mut Tally) {
     let subs = &w.subs;
     let tab = absorb_table();
     let mut cell = p.pos.map(|v| v.div_euclid(ONE));
     for _ in 0..MAX_STEPS {
         if !w.inside(cell[0], cell[1], cell[2]) { tally.radiation_out += p.energy; return }
         let i = w.idx(cell[0] as usize, cell[1] as usize, cell[2] as usize);
-        let c = &w.cells[i];
         // Distance to this cell's exit along the ray, in Q16 cell lengths.
         let mut t_exit = i64::MAX;
         let mut exit_axis = 0;
         for a in 0..3 {
             if p.dir[a] == 0 { continue }
             let edge = if p.dir[a] > 0 { (cell[a] + 1) * ONE - p.pos[a] } else { p.pos[a] - cell[a] * ONE + 1 };
-            let t = edge * ONE / p.dir[a].abs();
+            let t = quotient(edge * ONE, p.dir[a].abs());
             if t < t_exit { t_exit = t; exit_axis = a }
         }
         let t_exit = t_exit.max(1);
-        // Does it interact inside this cell?
+        // Does it interact inside this cell? (Not in clear air.)
+        if optic[i] & OPTIC_CLEAR == 0 || p.band as usize == IONISING {
+        let c = &w.cells[i];
         let (k, mut meets, mut albedo) = volume_optics(c, subs, p.band as usize, p.kelvin as usize, &mut p.stream);
         // Open water lying in the cell's bottom: only the path below its surface.
         let tau_water = if c.open_water() && (p.band as usize) < 4 {
@@ -574,6 +632,7 @@ fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
                 return;
             }
         }
+        }
         // Move to the next cell.
         let mut next = cell;
         let step = if p.dir[exit_axis] > 0 { 1 } else { -1 };
@@ -583,8 +642,8 @@ fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
         // An opaque cell ahead stops light at its surface (ionising passes into it).
         if p.band as usize != IONISING && w.inside(next[0], next[1], next[2]) {
             let j = w.idx(next[0] as usize, next[1] as usize, next[2] as usize);
-            let n = &w.cells[j];
-            if n.opaque(subs) {
+            if optic[j] & OPTIC_OPAQUE != 0 {
+                let n = &w.cells[j];
                 let sub = &subs[n.substance as usize];
                 if (1..=3).contains(&(p.band as usize)) { dep.light[j][p.band as usize - 1].fetch_add(p.energy, Relaxed); }
                 if p.bounces < MAX_BOUNCES && p.stream.chance(band_albedo(sub, p.band as usize)) {
@@ -602,7 +661,7 @@ fn trace(w: &World, mut p: Packet, dep: &Deposits, tally: &mut Tally) {
     // Still travelling after its longest path: it stops where it is.
     if w.inside(cell[0], cell[1], cell[2]) {
         let i = w.idx(cell[0] as usize, cell[1] as usize, cell[2] as usize);
-        let meets = if w.cells[i].opaque(subs) { Meets::Solid } else { Meets::Gas };
+        let meets = if optic[i] & OPTIC_OPAQUE != 0 { Meets::Solid } else { Meets::Gas };
         absorb(dep, i, &p, meets);
         return;
     }
@@ -806,15 +865,16 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
         dose: (0..n).map(|_| AtomicI64::new(0)).collect(),
     };
     let mut traced = vec![Tally::default(); bricks];
+    let optic = optics(w);
     {
         let wr: &World = w;
         #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
-            packets.par_iter().zip(traced.par_iter_mut()).for_each(|(list, t)| for p in list { trace(wr, *p, &dep, t) });
+            packets.par_iter().zip(traced.par_iter_mut()).for_each(|(list, t)| for p in list { trace(wr, &optic, *p, &dep, t) });
         }
         #[cfg(not(feature = "parallel"))]
-        for (list, t) in packets.iter().zip(traced.iter_mut()) { for p in list { trace(wr, *p, &dep, t) } }
+        for (list, t) in packets.iter().zip(traced.iter_mut()) { for p in list { trace(wr, &optic, *p, &dep, t) } }
     }
     // 3. Each cell gives up what it emitted and keeps what it absorbed.
     for i in 0..n {
