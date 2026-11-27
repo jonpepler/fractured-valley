@@ -51,3 +51,33 @@ fn a_lit_valley_is_the_same_on_the_gpu() {
         sim
     }, 60, false);
 }
+
+/// The same on the brick pool, with the bricks in a shuffled slot order.
+fn compare_pool(make: impl Fn() -> Sim, ticks: usize) {
+    let mut cpu = make();
+    let mut gpu = make();
+    let n = gpu.world.bricks();
+    let g = match fv_gpu::pool::PoolDiffusion::from_world(&gpu.world, fv_gpu::pool::shuffled(n, 99)) {
+        Ok(g) => Arc::new(Mutex::new(g)),
+        Err(e) => { eprintln!("skipped: {e}"); return }
+    };
+    gpu.diffuse_hook = Some(Box::new(move |w, flow| g.lock().unwrap().diffuse(w, flow)));
+    for t in 0..ticks {
+        cpu.step();
+        gpu.step();
+        assert_eq!(cpu.hash(), gpu.hash(), "tick {t}: the pool's world differs");
+        assert_eq!(cpu.world.tallies, gpu.world.tallies, "tick {t}: the edge tallies differ");
+        assert_eq!((gpu.energy_gap(), gpu.mass_gap()), (0, 0), "tick {t}: books");
+    }
+    assert!(gpu.world.cells.iter().any(|c| c.lit), "nothing burnt");
+}
+
+#[test]
+fn a_campfire_burns_the_same_on_a_shuffled_brick_pool() {
+    compare_pool(|| {
+        let f = campfire(24, 16);
+        let mut sim = Sim::new(f.world, Sky::afternoon());
+        for t in 0..30 { for (i, &(x, y, z)) in f.torch.iter().enumerate() { sim.schedule(Scheduled { tick: t, peer: 0, seq: i as u32, command: Command::Heat { x: x as u16, y: y as u16, z: z as u16, energy: joules(2_000) } }) } }
+        sim
+    }, 60);
+}

@@ -8,6 +8,8 @@
 //! every cell (`diffuse_brick`) and each brick's edge tally. All arithmetic
 //! is 64/128-bit integer, emulated with 32-bit words in `diffuse.wgsl`.
 
+pub mod pool;
+
 use fv_core::cell::Cell;
 use fv_core::substance::*;
 use fv_core::transport::{side, sides, FaceVelocity, Side};
@@ -297,7 +299,7 @@ impl GpuDiffusion {
     }
 }
 
-fn ms(t0: Instant) -> f64 { t0.elapsed().as_secs_f64() * 1e3 }
+pub(crate) fn ms(t0: Instant) -> f64 { t0.elapsed().as_secs_f64() * 1e3 }
 
 fn get64(d: &[u32], o: usize) -> i64 { (d[o] as u64 | (d[o + 1] as u64) << 32) as i64 }
 
