@@ -1,4 +1,4 @@
-# Spike: the mind lab's shared mind (stages 1 to 3)
+# Spike: the mind lab's shared mind (stages 1 to 4)
 
 One mind library for every mind-lab scenario: teaching, danger, the hunt and the village build on it. It is the fox's mind from `spikes/thought-graph`, extracted and made general (any species, any number of minds), on the compact runtime form the compaction lab (`spikes/mind-compaction`) recommended. Headless, deterministic, integer maths only, no dependencies. The original fox is a dev-dependency, used only to prove the port faithful.
 
@@ -23,6 +23,7 @@ cargo run --release --example viewers && NODE_PATH=$(npm root -g) node tools/fra
 | `scale` | Big minds: the fox's founding graph plus a generated body of knowledge (10k, 100k nodes), so the real scenarios run at scale. |
 | `people` | Stage 2, teaching. People as a species (concepts in the shared base; places, landmarks, the others and trust on each person's own overlay), a valley with sound in the air and paper notes, hearing and grounding a described place in one's own landmarks, source links, checking a claim against the world, mistake-or-lie evidence, notes and maps, talk chosen from the mind's own state, the fox shown the spring (`fox_demo`), the scenario runs (`runs`) and a viewer. |
 | `danger` | Stage 3, danger with company. The wild **boar** as a species (`danger::boar`, built the fox's way, hunted so people anger it), and the scenarios (`danger::runs`): a hunter who expects a boar against a forager who doesn't, alone or with allies, a cry for help, and a plan under stress. |
+| `hunt` | Stage 4, the hunt and the betrayal. A **deer** with an animal mind (`hunt::deer`); a hunting layer round a person's mind (`hunt::hunter`): a plan spoken as words (roles, places by landmarks, a whistle), grounded by each hearer in its own map, joined or not from its own feelings, held as an intent whose **predictions** of where the others will be break as prediction errors; and a plan against a person that one member, chosen by its own relationships, whispers to the target. Scenarios in `hunt::runs`. |
 | `hashes` | The pinned determinism runs, also built for wasm32 (`src/bin/hashes.rs`). |
 
 **The open design question is a setting:** `Config::sleep_keep` (default 8): sleep keeps 1/`sleep_keep` of the day's plain strengthening. `tests/sleep_keep.rs` reports 1/8 against 1/3.
@@ -45,6 +46,8 @@ Ablation: `Config::overlay_steps_of_4` stores the mind's own learnt weights in s
 | `teaching_storage.rs` | What a told fact, source link, note and map cost; source links over a year; µs per person-tick. |
 
 Findings, numbers and what changed: `research/mind-lab/01-shared-mind.md` in the private store.
+
+Stage 4: `cargo test --release --test hunt -- --nocapture` (the scenarios), `hunt_determinism.rs`, `hunt_storage.rs`; pages: `cargo run --release --example hunt_viewers && NODE_PATH=$(npm root -g) node tools/frames.cjs out/hunt viewer/hunt-frames.json`; quick sweeps: `--example hunt_sweep`, `--example betray_sweep`; `--example world_fingerprint` prints world-only hashes of the stage-2 and stage-3 pinned runs (behaviour checks when a change moves only the minds' hashes). Findings: `research/mind-lab/04-hunt.md` in the store.
 
 Teaching viewer pages: `cargo run --release --example teaching_viewers && NODE_PATH=$(npm root -g) node tools/frames.cjs out/teaching viewer/teaching-frames.json`. Findings: `research/mind-lab/02-teaching.md` in the store.
 

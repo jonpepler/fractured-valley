@@ -526,7 +526,9 @@ impl<S: Store> Mind<S> {
             + std::mem::size_of::<Report>() + self.last.ws.len() * 4 + self.last.percepts.len() * std::mem::size_of::<Percept>()
             + self.last.inject.len() * 8 + self.last.scores.len() * 12 + self.last.why.len() + self.last.absent.len() * 16
             // Stage 3: intent, alarm, the response under way and its last scores.
-            + std::mem::size_of::<Held>() + self.held.last_scores.len() * 8;
+            + std::mem::size_of::<Held>() + self.held.last_scores.len() * 8
+            // Stage 4: a plan's predictions and the breaches noticed (only when in use).
+            + if self.plan != PlanState::default() { std::mem::size_of::<PlanState>() + self.plan.expects.len() * std::mem::size_of::<Expect>() + self.plan.breaches.len() * 16 } else { 0 };
         (b.shared, b.own, b.fast, state)
     }
 

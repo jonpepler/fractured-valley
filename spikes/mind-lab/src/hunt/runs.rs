@@ -74,7 +74,9 @@ fn world_for(seed: u64, l: &Valley4) -> World {
         let p = match t.id { CAMP => l.camp, ROCK => l.rock, WINDMILL => l.windmill, OAK => l.oak, STREAM => l.stream, _ => (t.x, t.y) };
         t.x = p.0; t.y = p.1;
     }
-    // The spring plays no part: it is moved off to a corner, dry of interest (nobody knows it).
+    // The spring plays no part (nobody here knows it): it is taken out of the valley, so that it
+    // doesn't surprise every hunter who passes it. (A first version left it in: found in the viewer.)
+    if let Some(t) = w.things.iter_mut().find(|t| t.id == crate::people::world::SPRING) { t.alive = false; }
     w.meadows = l.meadows.clone();
     w.cover = true;
     w
@@ -129,8 +131,11 @@ pub struct Outcome {
 }
 
 pub fn hunt(c: &Case) -> (Outcome, Valley) { hunt_rec(c, None) }
-pub fn hunt_rec(c: &Case, rec: Option<usize>) -> (Outcome, Valley) {
-    let v = build(c);
+pub fn hunt_rec(c: &Case, rec: Option<usize>) -> (Outcome, Valley) { hunt_ev(c, rec, &[]) }
+/// A hunt with world events added (staging a breach: someone made very thirsty partway).
+pub fn hunt_ev(c: &Case, rec: Option<usize>, evs: &[(u32, Event)]) -> (Outcome, Valley) {
+    let mut v = build(c);
+    for (t, e) in evs { v.at(*t, e.clone()); }
     let mut v = match rec { Some(r) => v.recording(r), None => v };
     let mut o = Outcome::default();
     let order: Vec<usize> = (0..PEOPLE).collect();

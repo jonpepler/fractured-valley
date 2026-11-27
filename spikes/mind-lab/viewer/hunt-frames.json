@@ -1,0 +1,19 @@
+[
+  {"file": "hunt-plan-ash.html", "t": 0, "h": -1, "name": "hunt-plan-ash-1", "label": "Ash composes the plan from its own map and proposes it: its plan node links the deer, its spot, its role, each member"},
+  {"file": "hunt-plan-ash.html", "t": 6, "h": -1, "name": "hunt-plan-ash-2", "label": "On the way to its spot, the plan is held in mind (rehearsed) and predicts where the others will be"},
+  {"file": "hunt-plan-bryn.html", "t": 1, "h": -1, "name": "hunt-plan-bryn-1", "label": "Bryn hears the plan, grounds the places in its own landmarks, and builds a plan node of its own: it joins"},
+  {"file": "hunt-plan-bryn.html", "t": 7, "h": -1, "name": "hunt-plan-bryn-2", "label": "On the way to its spot, the plan is held in mind (rehearsed) and predicts where the others will be"},
+  {"file": "hunt-plan-dee.html", "t": 1, "h": -1, "name": "hunt-plan-dee-1", "label": "Dee hears the plan, grounds the places in its own landmarks, and builds a plan node of its own: it joins"},
+  {"file": "hunt-plan-dee.html", "t": 7, "h": -1, "name": "hunt-plan-dee-2", "label": "On the way to its spot, the plan is held in mind (rehearsed) and predicts where the others will be"},
+  {"file": "hunt-plan-cai-declines.html", "t": 1, "h": -1, "name": "hunt-plan-cai-declines-1", "label": "Cai hears the plan; it feels cool towards Ash and trusts it little, so the plan feels bad to it: it declines out loud"},
+  {"file": "hunt-breach.html", "t": 21, "h": -1, "name": "hunt-breach-1", "label": "Waiting by the rock: the plan predicts the deer grazing at its meadow"},
+  {"file": "hunt-breach.html", "t": 22, "h": 0, "name": "hunt-breach-2", "label": "The deer is not where the plan said: a prediction error; 'a broken plan' and danger light up; Ash whistles at once"},
+  {"file": "hunt-breach.html", "t": 24, "h": -1, "name": "hunt-breach-3", "label": "After the breach: arousal up, the plan's hold shaken; the drivers set off on the whistle"},
+  {"file": "hunt-betray-cai.html", "t": 1, "h": -1, "name": "hunt-betray-cai-1", "label": "Cai hears the plan against Dee. It feels more for Dee than for Ash: it says 'I'm in', and forms an intent of its own, to tell Dee"},
+  {"file": "hunt-betray-cai.html", "t": 40, "h": -1, "name": "hunt-betray-cai-2", "label": "Out of the others' sight, Cai whispers the plan to Dee"},
+  {"file": "hunt-betray-dee.html", "t": 41, "h": -1, "name": "hunt-betray-dee-1", "label": "Dee is warned: their plan becomes predictions of its own (who waits where), and it proposes a counter-plan to Cai, in a whisper"},
+  {"file": "hunt-betray-dee.html", "t": 44, "h": -1, "name": "hunt-betray-dee-2", "label": "Dee and Cai set off for a spot behind the ones lying in wait"},
+  {"file": "hunt-betray-ash.html", "t": 41, "h": -1, "name": "hunt-betray-ash-1", "label": "Ash waits hidden by the windmill, predicting Dee on its way and Cai at its post"},
+  {"file": "hunt-betray-ash.html", "t": 42, "h": 0, "name": "hunt-betray-ash-2", "label": "The breach: someone is not where the plan said: surprise, a broken plan, danger"},
+  {"file": "hunt-betray-ash.html", "t": 45, "h": -1, "name": "hunt-betray-ash-3", "label": "The ambush turned into a fight; afterwards Ash weighs who could have told"}
+]
