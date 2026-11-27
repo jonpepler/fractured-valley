@@ -23,7 +23,7 @@ struct Params {
 // slot, i64 as two words) and then the heat group (energy, solid_energy, skin).
 @group(0) @binding(1) var<storage, read_write> state: array<u32>;
 // Each cell's side (25 words, worked out on the CPU for now).
-@group(0) @binding(2) var<storage, read> sides: array<u32>;
+@group(0) @binding(2) var<storage, read_write> sides_rw: array<u32>;
 // Face velocities: each cell's three + faces (per slot, per axis), then each
 // slot's lower boundary faces (3 × 64).
 @group(0) @binding(3) var<storage, read> vel: array<i32>;
@@ -68,7 +68,7 @@ fn gas(c: u32, k: u32) -> I {
     if (c == OUT) { return tb(P.outside + 2u * k); }
     return gas_at(P.in_copy, c, k);
 }
-fn lsd(o: u32) -> I { return I(sides[o], sides[o + 1u]); }
+fn lsd(o: u32) -> I { return I(sides_rw[o], sides_rw[o + 1u]); }
 fn tsd(o: u32) -> I { return I(table[o], table[o + 1u]); }
 fn side(c: u32) -> Side {
     var s: Side;
@@ -85,7 +85,7 @@ fn side(c: u32) -> Side {
     s.t = lsd(o); s.t_cond = lsd(o + 2u); s.t_skin = lsd(o + 4u); s.gas_ml = lsd(o + 6u);
     s.half = lsd(o + 8u); s.excess = lsd(o + 10u); s.flame_t = lsd(o + 12u); s.flame_heat = lsd(o + 14u);
     s.flame_fill = lsd(o + 16u); s.fuel_g = lsd(o + 18u); s.reached = lsd(o + 20u); s.water_g = lsd(o + 22u);
-    let f = sides[o + 24u];
+    let f = sides_rw[o + 24u];
     s.permeable = (f & 1u) != 0u; s.wet = (f & 2u) != 0u;
     return s;
 }
@@ -534,7 +534,7 @@ fn temp_of(c: u32) -> I {
     return I(limits[2u * c], limits[2u * c + 1u]);
 }
 fn total_of(c: u32) -> I { return I(faces[2u * c], faces[2u * c + 1u]); }
-fn permeable_of(c: u32) -> bool { return (sides[c * SS + 24u] & 1u) != 0u; }
+fn permeable_of(c: u32) -> bool { return (sides_rw[c * SS + 24u] & 1u) != 0u; }
 
 @compute @workgroup_size(64)
 fn carry_prepare(@builtin(global_invocation_id) id: vec3<u32>) {

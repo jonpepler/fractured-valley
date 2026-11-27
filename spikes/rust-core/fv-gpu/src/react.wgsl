@@ -497,3 +497,71 @@ fn react_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     store(c, x);
 }
+
+// ── each cell's side (transport::side_lit), on the GPU ──────────────────────
+// What diffusion's faces need of a cell, worked out from the state on the
+// GPU instead of uploaded: the same integers as side_lit. The pilot flags
+// (flame_reach) are bits in `aux`, as for the reaction.
+fn flame_release_gpu(x: C, s: S) -> I {
+    if (!gt0(x.gas[FUEL]) || !gt0(x.gas[O2]) || !permeable(x, s) || !gt0(gas_volume_ml(x, s))) { return I(0u, 0u); }
+    let fh = flame_holds(x, s, true);
+    if (!fh.holds) { return I(0u, 0u); }
+    return muli(of_f(I(C_MIXING, 0u), fh.could), C_GAS_CHEM_FUEL);
+}
+
+fn put_side(c: u32, v: array<I, 12>, flags: u32) {
+    let o = c * SS;
+    for (var j = 0u; j < 12u; j++) { sides_rw[o + 2u * j] = v[j].x; sides_rw[o + 2u * j + 1u] = v[j].y; }
+    sides_rw[o + 24u] = flags;
+}
+
+@compute @workgroup_size(64)
+fn sides_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    let x = load(c);
+    let s = subst(x.substance);
+    let amb = ambient();
+    let pilot = ((aux[c / 32u] >> (c % 32u)) & 1u) != 0u;
+    let share = solid_share(x, s);
+    let k = sub(add(of_f(share, s.conductivity), i_(C_AIR_COND)), of_f(share, i_(C_AIR_COND)));
+    let t = gas_temp(x);
+    let wet = open_water(x);
+    let perm = permeable(x, s);
+    var t_cond = solid_temperature(x, s);
+    if (!wet && perm) { t_cond = t; }
+    var water_g = I(0u, 0u);
+    if (wet) {
+        let half_um = mx(divi(x.water, 2 * C_FACE_MM2), i_(500));
+        water_g = div(mul(i_(C_WATER_COND * C_FACE_MM2), i_(1000)), half_um);
+    }
+    let t_skin = surface_temperature(x, s);
+    let gas_ml = gas_volume_ml(x, s);
+    var fits = I(0xffffffffu, 0x7fffffffu);
+    if (gt0(t)) { fits = narrow(wdiv(wmul_small(mulw(i_(C_FRESH_TOTAL), gas_ml), amb), mulw(i_(C_CELL_VOLUME_ML), t))); }
+    let has_vol = gt0(x.solid[VOLATILE]);
+    let flaming = has_vol && ((!lt(t_skin, i_(C_IGNITION)) && !lt(t, i_(C_IGNITION))) || (x.front > 0u && x.lit && fine_fuel(x, s)));
+    let flame_t = select(I(0u, 0u), i_(C_FLAME_CONTACT), flaming);
+    var release = I(0u, 0u);
+    if (pilot && gt0(gas_ml)) { release = flame_release_gpu(x, s); }
+    let flame_fill = mn(narrow(wdiv(mulw(release, i_(1000)), mulw(i_(C_FLAME_UJ_PER_ML), mx(gas_ml, i_(1))))), i_(1000));
+    let excess_e = mx(sub(sub(x.energy, latent(x)), cap_t(gas_capacity(x), amb)), I(0u, 0u));
+    let flame_heat = select(I(0u, 0u), divi(excess_e, 6), flaming || gt0(flame_fill));
+    var fuel_g = I(0u, 0u);
+    if (has_vol && gt0(s.sigma)) {
+        var area = i_(C_FACE_MM2);
+        var h = i_(C_FLAME_ON_FACE);
+        if (perm) { area = inner_surface_mm2(x, s); h = mul(surface_h(s.sigma, t, amb), s.sigma); }
+        fuel_g = mul_div(h, area, i_(1000));
+    }
+    var reached = i_(1000);
+    if (fine_fuel(x, s) && lt(t_skin, i_(C_IGNITION))) { reached = divi(muli(i_(i32(x.front)), 1000), 65535); }
+    var gm = I(0u, 0u);
+    for (var j = 0u; j < 7u; j++) { gm = add(gm, x.gas[j]); }
+    // gas mass − fits, or 0 where nothing fits (t = 0: i64::MAX).
+    var over = I(0u, 0u);
+    if (lt(fits, gm)) { over = sub(gm, fits); }
+    let half = muli(k, 2 * C_CELL_MM);
+    put_side(c, array<I, 12>(t, t_cond, t_skin, gas_ml, half, over, flame_t, flame_heat, flame_fill, fuel_g, reached, water_g),
+        select(0u, 1u, perm) | select(0u, 2u, wet));
+}

@@ -26,12 +26,13 @@ fn react_constants() -> String {
 const C_IGNITION: i32 = {};\nconst C_FRESH_O2: i32 = {};\nconst C_RESIDENCE: i32 = {};\nconst C_CHAR_UM_PER_MIN: i32 = {};\nconst C_O2_PER_FUEL: i32 = {};\n\
 const C_GAS_CHEM_FUEL: i32 = {};\nconst C_GAS_CHEM_SOOT: i32 = {};\nconst C_CRITICAL_FLAME: i32 = {};\nconst C_BOIL: i32 = {};\nconst C_FINE_SIGMA: i32 = {};\n\
 const C_O2_PER_C_NUM: i32 = {};\nconst C_O2_PER_C_DEN: i32 = {};\nconst C_CHAR_CHEM: i32 = {};\nconst C_CHAR_TO_CO: i32 = {};\nconst C_MIXING: u32 = {}u;\n\
-const C_FRESH_TOTAL: i32 = {};\nconst C_CO2_SHARE: i32 = {};\nconst C_FEEDBACK_MAX: u32 = {}u;\nconst C_FEEDBACK_HALF: i32 = {};\nconst C_RADIATIVE: u32 = {}u;\nconst C_SURFACE_H_PER_SIGMA: i32 = {};\n",
+const C_FRESH_TOTAL: i32 = {};\nconst C_AIR_COND: i32 = {};\nconst C_WATER_COND: i32 = {};\nconst C_FLAME_UJ_PER_ML: i32 = {};\nconst C_FLAME_ON_FACE: i32 = {};\nconst C_CO2_SHARE: i32 = {};\nconst C_FEEDBACK_MAX: u32 = {}u;\nconst C_FEEDBACK_HALF: i32 = {};\nconst C_RADIATIVE: u32 = {}u;\nconst C_SURFACE_H_PER_SIGMA: i32 = {};\n",
         c(su::CHAR_SPECIFIC_HEAT.0), c(su::WATER_SPECIFIC_HEAT.0), c(su::CELL_VOLUME_ML), c(su::FACE_MM2), c(fv_core::cell::SKIN_PERMILLE),
         c(ch::IGNITION.0), c(su::FRESH_AIR[su::Gas::Oxygen as usize].0), c(ch::RESIDENCE_S_PER_SIGMA), c(ch::CHAR_UM_PER_MIN), c(ch::O2_PER_FUEL),
         c(su::GAS_CHEMICAL[su::Gas::Fuel as usize].0), c(su::GAS_CHEMICAL[su::Gas::Soot as usize].0), c(ch::CRITICAL_FLAME.0), c(ch::BOIL.0), c(ch::FINE_SIGMA),
         c(ch::O2_PER_CARBON_NUM), c(ch::O2_PER_CARBON_DEN), c(su::CHAR_CHEMICAL.0), c(ch::CHAR_TO_CO_HEAT.0), u(ch::MIXING.0),
-        c(su::FRESH_AIR.iter().map(|m| m.0).sum()), c(ch::CO2_SHARE), u(ch::FEEDBACK_MAX.0), c(ch::FEEDBACK_HALF_MM2 as i64), u(ch::RADIATIVE_FRACTION.0), c(ch::SURFACE_H_PER_SIGMA))
+        c(su::FRESH_AIR.iter().map(|m| m.0).sum()), c(fv_core::transport::AIR_CONDUCTIVITY), c(fv_core::transport::WATER_CONDUCTIVITY),
+        c(fv_core::transport::FLAME_UJ_PER_ML), c(fv_core::transport::FLAME_ON_FACE), c(ch::CO2_SHARE), u(ch::FEEDBACK_MAX.0), c(ch::FEEDBACK_HALF_MM2 as i64), u(ch::RADIATIVE_FRACTION.0), c(ch::SURFACE_H_PER_SIGMA))
 }
 
 /// Words per substance in the table buffer (see react.wgsl's `subst`).
@@ -77,7 +78,7 @@ pub struct PoolDiffusion {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter_info: wgpu::AdapterInfo,
-    pipelines: [wgpu::ComputePipeline; 17],
+    pipelines: [wgpu::ComputePipeline; 18],
     bind_group: wgpu::BindGroup,
     params: wgpu::Buffer,
     state: wgpu::Buffer,
@@ -108,6 +109,8 @@ pub struct PoolDiffusion {
     aux: wgpu::Buffer,
     rparams: wgpu::Buffer,
     fparams: wgpu::Buffer,
+    /// Work out each cell's side on the GPU (else the CPU's are uploaded).
+    pub gpu_sides: bool,
 }
 
 impl PoolDiffusion {
@@ -156,18 +159,18 @@ impl PoolDiffusion {
         let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..11u32).map(|b| wgpu::BindGroupLayoutEntry {
             binding: b, visibility: wgpu::ShaderStages::COMPUTE, count: None,
             ty: wgpu::BindingType::Buffer {
-                ty: if b == 0 || b >= 9 { wgpu::BufferBindingType::Uniform } else { wgpu::BufferBindingType::Storage { read_only: matches!(b, 2 | 3 | 4 | 8) } },
+                ty: if b == 0 || b >= 9 { wgpu::BufferBindingType::Uniform } else { wgpu::BufferBindingType::Storage { read_only: matches!(b, 3 | 4 | 8) } },
                 has_dynamic_offset: false, min_binding_size: None,
             },
         }).collect();
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("pool"), entries: &entries });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("pool"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
         let names = ["limits_pass", "apply_pass", "faces_scratch", "limits_scratch", "apply_scratch", "carry_prepare", "carry_apply", "carry_prepare2", "carry_faces", "carry_apply2", "react_main",
-            "flow_gather", "flow_carried", "flow_forced", "flow_div", "flow_pressure", "flow_project"];
+            "flow_gather", "flow_carried", "flow_forced", "flow_div", "flow_pressure", "flow_project", "sides_main"];
         let pipelines = names.map(|e| device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&layout), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: None }));
         let bge: Vec<wgpu::BindGroupEntry> = (0..11).map(|b| wgpu::BindGroupEntry { binding: b as u32, resource: all[b].as_entire_binding() }).collect();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("pool"), layout: &bgl, entries: &bge });
-        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new(), resident: None, carry_once: true, aux, rparams, fparams };
+        let mut p = PoolDiffusion { device, queue, adapter_info: info, pipelines, bind_group, params, state, sides: sides_b, vel, table, tallies, faces, read, slot_of, slots, copy_words, mode, compact, last: Timings::default(), kernel_ms: Vec::new(), resident: None, carry_once: true, aux, rparams, fparams, gpu_sides: true };
         p.write_table(w);
         Ok(p)
     }
@@ -405,12 +408,12 @@ impl PoolDiffusion {
         let t0 = Instant::now();
         let state = self.pack_state(w);
         let solid = self.pack_solid(w);
-        let sv = self.pack_sides(w);
+        let sv = if self.gpu_sides && self.mode == Mode::Scratch { Vec::new() } else { self.pack_sides(w) };
         t.prepare += ms(t0);
         let t0 = Instant::now();
         self.queue.write_buffer(&self.state, 0, bytemuck::cast_slice(&state));
         self.queue.write_buffer(&self.state, (2 * self.copy_words * 4) as u64, bytemuck::cast_slice(&solid));
-        self.queue.write_buffer(&self.sides, 0, bytemuck::cast_slice(&sv));
+        if !sv.is_empty() { self.queue.write_buffer(&self.sides, 0, bytemuck::cast_slice(&sv)) }
         self.wait();
         t.upload += ms(t0);
     }
@@ -426,6 +429,20 @@ impl PoolDiffusion {
         t.upload += ms(t0);
     }
 
+    /// The pilot flags (`chem::flame_reach`, on the CPU for now) as bits in `aux`.
+    fn upload_pilot(&mut self, w: &World, t: &mut Timings) {
+        let t0 = Instant::now();
+        let lit = fv_core::chem::flame_reach(w);
+        let mut bits = vec![0u32; self.slots * BRICK_CELLS / 32 + 1];
+        for b in 0..self.slots {
+            for l in 0..BRICK_CELLS {
+                if lit[b * BRICK_CELLS + l] { let c = self.slot_of[b] * BRICK_CELLS + l; bits[c / 32] |= 1 << (c % 32) }
+            }
+        }
+        t.prepare += ms(t0);
+        self.queue.write_buffer(&self.aux, 0, bytemuck::cast_slice(&bits));
+    }
+
     /// One diffusion phase: leaves `w` exactly as `transport::diffuse` would.
     /// The result stays on the GPU for carrying in the same tick.
     pub fn diffuse(&mut self, w: &mut World, vel: &dyn FaceVelocity) {
@@ -434,7 +451,11 @@ impl PoolDiffusion {
         self.upload(w, &mut t);
         self.upload_vel(w, vel, &mut t);
         let p = self.params(w, 0, 1, false);
-        let jobs: Vec<(usize, [u32; 16])> = if self.mode == Mode::Scratch { vec![(2, p), (3, p), (4, p)] } else { vec![(0, p), (1, p)] };
+        let mut jobs: Vec<(usize, [u32; 16])> = if self.mode == Mode::Scratch { vec![(2, p), (3, p), (4, p)] } else { vec![(0, p), (1, p)] };
+        if self.gpu_sides && self.mode == Mode::Scratch {
+            self.upload_pilot(w, &mut t);
+            jobs.insert(0, (17, p));
+        }
         self.run(&jobs);
         t.compute = self.kernel_ms.iter().sum();
         self.read_into(w, 1, &mut t);
@@ -559,16 +580,7 @@ impl PoolDiffusion {
             Some((tick, copy)) if tick == w.tick => copy,
             _ => { self.upload(w, &mut t); self.upload_vel(w, vel, &mut t); 0 }
         };
-        let t0 = Instant::now();
-        let lit = fv_core::chem::flame_reach(w);
-        let mut bits = vec![0u32; self.slots * BRICK_CELLS / 32 + 1];
-        for b in 0..self.slots {
-            for l in 0..BRICK_CELLS {
-                if lit[b * BRICK_CELLS + l] { let c = self.slot_of[b] * BRICK_CELLS + l; bits[c / 32] |= 1 << (c % 32) }
-            }
-        }
-        t.prepare += ms(t0);
-        self.queue.write_buffer(&self.aux, 0, bytemuck::cast_slice(&bits));
+        self.upload_pilot(w, &mut t);
         let p = self.params(w, cur, 1, false);
         self.run(&[(10, p)]);
         t.compute = self.kernel_ms.iter().sum();
