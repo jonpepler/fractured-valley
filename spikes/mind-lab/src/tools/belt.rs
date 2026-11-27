@@ -66,8 +66,17 @@ impl Reach {
 }
 
 /// A tool bound to a question pattern: tools in order of preference (the full one, then cheaper).
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bind { pub pattern: Vec<u32>, pub tools: Vec<usize>, pub query: Rec, pub last: Option<u32>, pub fired: u32 }
+// By hand: a `Vec<usize>` hashes as raw bytes, 8 per item natively and 4 on wasm32 (the wasm
+// test caught this here too).
+impl Hash for Bind {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.pattern.hash(h);
+        h.write_u64(self.tools.len() as u64); for &t in &self.tools { h.write_u64(t as u64); }
+        self.query.hash(h); self.last.hash(h); self.fired.hash(h);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BeltStats { pub tells: u64, pub tell_fuel: u64, pub asks: u64, pub ask_fuel: u64, pub fired: u64, pub spent: u64, pub sleep_fuel: u64, pub refused: u64, pub fell_back: u64 }
@@ -85,8 +94,9 @@ pub struct Belt {
     pub maker: Option<Tool>,
     /// The pattern each question was asked with, for binding what the maker makes.
     pub questions: Vec<(Question, Vec<u32>)>,
-    /// What the maker made, each night it made something: (tick, how it scored, tool index, cheap version's index).
-    pub made: Vec<(u32, Made, usize, Option<usize>)>,
+    /// What the maker made, each night it made something: (tick, how it scored, tool index, cheap
+    /// version's index, the tool's name and the cheap one's, as made).
+    pub made: Vec<(u32, Made, usize, Option<usize>, String, Option<String>)>,
     pub stats: BeltStats,
 }
 
@@ -135,7 +145,8 @@ impl Belt {
     pub fn thought(&mut self, q: Question, pattern: &[u32], cost: i32, tick: u32) {
         if !self.cfg.on { return; }
         if !self.questions.iter().any(|x| x.0 == q) { let mut p = pattern.to_vec(); p.sort_unstable(); p.dedup(); self.questions.push((q, p)); }
-        let mut r = rec_of(&[(F::Kind, kind::ASKED), (F::Want, q.0), (F::From, q.1), (F::Given, q.2), (F::Who, q.3), (F::Cost, cost)]);
+        // A question about no one in particular is about "anyone" (-1): a missing key would not be counted.
+        let mut r = rec_of(&[(F::Kind, kind::ASKED), (F::Want, q.0), (F::From, q.1), (F::Given, q.2), (F::Who, if q.3 == NONE { ANYONE } else { q.3 }), (F::Cost, cost)]);
         self.stamp(&mut r, tick);
         if let Some(m) = self.maker.as_mut() { let _ = m.observe(&r, self.cfg.tell_fuel); }
     }
@@ -191,17 +202,18 @@ impl Belt {
         let _ = m.forget(tick as i32, 100_000);
         let Ok(Out::Made(d, made, cheap)) = out else { return None };
         let key = (made.want, made.from, made.given, made.who);
-        let prev = self.made.iter().rev().find(|x| (x.1.want, x.1.from, x.1.given, x.1.who) == key).copied();
+        let prev = self.made.iter().rev().find(|x| (x.1.want, x.1.from, x.1.given, x.1.who) == key).map(|x| (x.0, x.1, x.2, x.3));
         if let Some((_, pm, pi, _)) = prev {
             if self.tools[pi].desc.shape() == d.shape() || made.score <= pm.score { return None; }
         }
+        let (name, cheap_name) = (d.name.clone(), cheap.as_ref().map(|c| c.0.name.clone()));
         let t = self.filled(*d);
         let idx = match prev { Some((_, _, pi, _)) => { self.replace(pi, t); pi } None => { let b = self.bound_of(&t.desc); self.tools.push(t); self.bounds.push(b); self.tools.len() - 1 } };
         let cheap_idx = cheap.map(|c| {
             let t = self.filled(c.0);
             match prev.and_then(|p| p.3) { Some(ci) => { self.replace(ci, t); ci } None => { let b = self.bound_of(&t.desc); self.tools.push(t); self.bounds.push(b); self.tools.len() - 1 } }
         });
-        self.made.push((tick, made, idx, cheap_idx));
+        self.made.push((tick, made, idx, cheap_idx, name, cheap_name));
         if let Some((_, pat)) = self.questions.iter().find(|q| q.0 == key) {
             let q = rec_of(&[(F::Who, made.who), (F::Want, made.want)]);
             let pat = pat.clone();
@@ -221,7 +233,7 @@ impl Belt {
         self.binds.hash(&mut h);
         if let Some(m) = &self.maker { m.hash(&mut h); }
         h.write_u64(self.made.len() as u64);
-        for (t, m, i, c) in &self.made { h.write_u32(*t); m.hash(&mut h); h.write_u64(*i as u64); h.write_u64(c.map_or(u64::MAX, |x| x as u64)); }
+        for (t, m, i, c, _, _) in &self.made { h.write_u32(*t); m.hash(&mut h); h.write_u64(*i as u64); h.write_u64(c.map_or(u64::MAX, |x| x as u64)); }
         h.finish()
     }
     /// Packed bytes: each tool's description and state, the maker's too.

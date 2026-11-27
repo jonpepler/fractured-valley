@@ -23,6 +23,8 @@ use std::hash::Hasher;
 
 /// Missing.
 pub const NONE: i32 = i32::MIN;
+/// "Anyone": a subject key for a question about no one in particular.
+pub const ANYONE: i32 = -1;
 
 /// The fields of a record. Order is the binary encoding: append only.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -146,6 +148,9 @@ pub enum S {
     Push(u8),
     /// Every weight in a slot loses 1/2^shift of itself (at least 1); empty entries go.
     Fade(u8, u8),
+    /// Round-2 revision (routes): drop one value from a cell (a blocked way is no longer a way:
+    /// counting against it was too slow to undo a strong habit).
+    Drop(u8, Vec<E>, E),
 }
 
 /// An answer: ranked (value, score) pairs, best first.
@@ -214,6 +219,8 @@ pub struct Grammar {
     /// Owner's addition (reach): also return the best candidate whose static ask bound is at
     /// most this (a cheap version for the fast brain); 0: don't.
     pub fast: i32,
+    /// Make nothing until the question has come up at least this many times in the history.
+    pub min: i32,
 }
 
 /// A tool description.
@@ -278,6 +285,7 @@ impl Desc {
                 if !matches!(s.cell, Cell::Count) && !compat(tv, s.val) { return Err(CheckError(format!("{}: slot {} holds {}, given {}", self.name, s.name, TY_NAMES[s.val as usize], TY_NAMES[tv as usize]))); } Ok(()) }
             S::Push(i) => { let s = self.slot(*i)?; if !matches!(s.cell, Cell::Ring(_)) { return Err(CheckError(format!("{}: push to {} which is not a ring", self.name, s.name))); } Ok(()) }
             S::Fade(i, sh) => { self.slot(*i)?; if *sh == 0 || *sh > 16 { return Err(CheckError(format!("{}: fade shift 1..16", self.name))); } Ok(()) }
+            S::Drop(i, key, v) => { let s = self.check_key(*i, key)?; let tv = self.ty_e(v)?; if !compat(tv, s.val) { return Err(CheckError(format!("{}: drop from {}: holds {}, given {}", self.name, s.name, TY_NAMES[s.val as usize], TY_NAMES[tv as usize]))); } Ok(()) }
         }
     }
     fn check_a(&self, a: &A) -> Result<(), CheckError> {
@@ -302,7 +310,7 @@ impl Desc {
 }
 
 fn e_has_sub(e: &E) -> bool { match e { E::Sub(..) => true, E::Op(_, a, b) => e_has_sub(a) || e_has_sub(b), E::If(c, a, b) => e_has_sub(c) || e_has_sub(a) || e_has_sub(b), E::Get(_, k, _) => k.iter().any(e_has_sub), _ => false } }
-fn s_has_sub(s: &S) -> bool { match s { S::If(c, b) => e_has_sub(c) || b.iter().any(s_has_sub), S::Put(_, k, v, w) => k.iter().any(e_has_sub) || e_has_sub(v) || e_has_sub(w), _ => false } }
+fn s_has_sub(s: &S) -> bool { match s { S::If(c, b) => e_has_sub(c) || b.iter().any(s_has_sub), S::Put(_, k, v, w) => k.iter().any(e_has_sub) || e_has_sub(v) || e_has_sub(w), S::Drop(_, k, v) => k.iter().any(e_has_sub) || e_has_sub(v), _ => false } }
 
 // --------------------------------------------------------------------------- binary form
 
@@ -334,6 +342,7 @@ impl Enc {
             S::Put(i, k, v, w) => { self.u8(1); self.u8(*i); self.es(k); self.e(v); self.e(w); }
             S::Push(i) => { self.u8(2); self.u8(*i); }
             S::Fade(i, sh) => { self.u8(3); self.u8(*i); self.u8(*sh); }
+            S::Drop(i, k, v) => { self.u8(4); self.u8(*i); self.es(k); self.e(v); }
         }
     }
     fn ss(&mut self, v: &[S]) { self.u8(v.len() as u8); for s in v { self.s(s); } }
@@ -351,7 +360,7 @@ impl Enc {
             A::Make(q, l, b, g) => { self.u8(6); self.u8(*q); self.u8(*l); self.u8(*b);
                 self.u8(g.feats.len() as u8); for &f in &g.feats { self.feat(f); }
                 self.u8(g.cells.len() as u8); for &c in &g.cells { self.cell(c); }
-                self.u8(g.max_key); self.u8(g.backoff as u8 | (g.paths as u8) << 1); self.int(g.cap as i64); self.int(g.per_kb as i64); self.int(g.per_fuel as i64); self.int(g.budget as i64); self.int(g.gap as i64); self.int(g.fast as i64); }
+                self.u8(g.max_key); self.u8(g.backoff as u8 | (g.paths as u8) << 1); self.int(g.cap as i64); self.int(g.per_kb as i64); self.int(g.per_fuel as i64); self.int(g.budget as i64); self.int(g.gap as i64); self.int(g.fast as i64); self.int(g.min as i64); }
         }
     }
     pub fn desc(&mut self, d: &Desc, names: bool) {
@@ -396,7 +405,9 @@ impl<'a> Dec<'a> {
         Ok(match self.u8()? {
             0 => { let c = self.e(depth)?; S::If(c, self.ss(depth + 1)?) }
             1 => { let i = self.u8()?; let k = self.es(depth)?; let v = self.e(depth)?; S::Put(i, k, v, self.e(depth)?) }
-            2 => S::Push(self.u8()?), 3 => S::Fade(self.u8()?, self.u8()?), _ => return bad("stmt"),
+            2 => S::Push(self.u8()?), 3 => S::Fade(self.u8()?, self.u8()?),
+            4 => { let i = self.u8()?; let k = self.es(depth)?; S::Drop(i, k, self.e(depth)?) }
+            _ => return bad("stmt"),
         })
     }
     fn ss(&mut self, depth: u32) -> R<Vec<S>> { let n = self.u8()?; (0..n).map(|_| self.s(depth)).collect() }
@@ -414,8 +425,8 @@ impl<'a> Dec<'a> {
                 let nf = self.u8()?; let feats = (0..nf).map(|_| self.feat()).collect::<R<_>>()?;
                 let nc = self.u8()?; let cells = (0..nc).map(|_| self.cell()).collect::<R<_>>()?;
                 let max_key = self.u8()?; let fl = self.u8()?; let (backoff, paths) = (fl & 1 != 0, fl & 2 != 0); let cap = self.int()? as u16;
-                let (per_kb, per_fuel, budget, gap, fast) = (self.i32()?, self.i32()?, self.i32()?, self.i32()?, self.i32()?);
-                A::Make(q, l, b, Box::new(Grammar { feats, cells, max_key, backoff, cap, per_kb, per_fuel, budget, gap, paths, fast })) }
+                let (per_kb, per_fuel, budget, gap, fast, min) = (self.i32()?, self.i32()?, self.i32()?, self.i32()?, self.i32()?, self.i32()?);
+                A::Make(q, l, b, Box::new(Grammar { feats, cells, max_key, backoff, cap, per_kb, per_fuel, budget, gap, paths, fast, min })) }
             8 => { let u = self.u8()?; let v = self.str()?; A::Sub(u, v, self.fq(depth + 1)?) }
             7 => { let i = self.u8()?; let a = self.e(depth)?; let b = self.e(depth)?; let n = self.u8()?; let av = match self.u8()? { 0 => None, _ => { let j = self.u8()?; Some((j, self.i32()?)) } }; A::Path(i, a, b, n, av) }
             _ => return bad("answer"),
@@ -483,6 +494,7 @@ impl P<'_> {
             S::Put(i, k, v, w) => { let _ = write!(o, "{pad}(put {} ", self.slot(*i)); self.key(k, o); o.push(' '); self.e(v, o); o.push(' '); self.e(w, o); o.push(')'); }
             S::Push(i) => { let _ = write!(o, "{pad}(push {})", self.slot(*i)); }
             S::Fade(i, sh) => { let _ = write!(o, "{pad}(fade {} {sh})", self.slot(*i)); }
+            S::Drop(i, k, v) => { let _ = write!(o, "{pad}(drop {} ", self.slot(*i)); self.key(k, o); o.push(' '); self.e(v, o); o.push(')'); }
         }
     }
     fn a(&self, a: &A, ind: usize, o: &mut String) {
@@ -508,7 +520,7 @@ fn grammar_text(g: &Grammar, o: &mut String) {
     for &f in &g.feats { o.push(' '); o.push_str(&feat_text(f)); }
     o.push_str(") (cells");
     for &c in &g.cells { o.push(' '); o.push_str(&cell_text(c)); }
-    let _ = write!(o, ") (keys {}){}{} (cap {}) (per-kb {}) (per-fuel {}) (budget {}) (gap {}){})", g.max_key, if g.backoff { " backoff" } else { "" }, if g.paths { " paths" } else { "" }, g.cap, g.per_kb, g.per_fuel, g.budget, g.gap, if g.fast > 0 { format!(" (fast {})", g.fast) } else { String::new() });
+    let _ = write!(o, ") (keys {}){}{} (cap {}) (per-kb {}) (per-fuel {}) (budget {}) (gap {}){}{})", g.max_key, if g.backoff { " backoff" } else { "" }, if g.paths { " paths" } else { "" }, g.cap, g.per_kb, g.per_fuel, g.budget, g.gap, if g.fast > 0 { format!(" (fast {})", g.fast) } else { String::new() }, if g.min > 0 { format!(" (min {})", g.min) } else { String::new() });
 }
 
 impl fmt::Display for Desc {
@@ -602,6 +614,7 @@ impl Ps {
             [X::Sym(h), s, k, v, w] if h == "put" => S::Put(self.slot(s)?, self.key(k)?, self.e(v)?, self.e(w)?),
             [X::Sym(h), s] if h == "push" => S::Push(self.slot(s)?),
             [X::Sym(h), s, n] if h == "fade" => S::Fade(self.slot(s)?, self.int(n)? as u8),
+            [X::Sym(h), s, k, v] if h == "drop" => S::Drop(self.slot(s)?, self.key(k)?, self.e(v)?),
             _ => return self.err(format!("bad statement {x:?}")),
         })
     }
@@ -618,7 +631,7 @@ impl Ps {
     }
     fn grammar(&self, x: &X) -> R<Grammar> {
         let X::L(l) = x else { return self.err("grammar expected".into()); };
-        let mut g = Grammar { feats: vec![], cells: vec![], max_key: 2, backoff: false, cap: 256, per_kb: 0, per_fuel: 0, budget: 1_000_000, gap: 0, paths: false, fast: 0 };
+        let mut g = Grammar { feats: vec![], cells: vec![], max_key: 2, backoff: false, cap: 256, per_kb: 0, per_fuel: 0, budget: 1_000_000, gap: 0, paths: false, fast: 0, min: 0 };
         for it in l.iter().skip(1) {
             match it {
                 X::Sym(s) if s == "backoff" => g.backoff = true,
@@ -633,6 +646,7 @@ impl Ps {
                     [X::Sym(h), n] if h == "budget" => g.budget = self.int(n)? as i32,
                     [X::Sym(h), n] if h == "gap" => g.gap = self.int(n)? as i32,
                     [X::Sym(h), n] if h == "fast" => g.fast = self.int(n)? as i32,
+                    [X::Sym(h), n] if h == "min" => g.min = self.int(n)? as i32,
                     _ => return self.err(format!("bad grammar item {it:?}")),
                 },
                 _ => return self.err(format!("bad grammar item {it:?}")),

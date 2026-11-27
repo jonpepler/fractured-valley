@@ -201,6 +201,23 @@ impl Tool {
                 f.spend(2)?;
                 if q.recs.len() < len as usize { q.recs.push(*r); } else { let h = q.head; q.recs[h] = *r; q.head = (h + 1) % len as usize; }
             }
+            S::Drop(i, k, v) => {
+                let Some(key) = self.key(k, r, NONE, f)? else { return Ok(()) };
+                let v = self.eval(v, r, NONE, f)?;
+                if none(v) { return Ok(()); }
+                let cell = self.desc.slots[*i as usize].cell;
+                let St::T(t) = &mut self.slots[*i as usize] else { return Ok(()) };
+                f.spend(probes(t.keys.len()) + 4)?;
+                if let Ok(p) = t.keys.binary_search(&key) {
+                    let x = &mut t.cells[p];
+                    match cell {
+                        Cell::Votes(k) => { for j in 0..k as usize { if x[2 * j] == v { x[2 * j + 1] = 0; } } fade(cell, x, 16); }
+                        Cell::Hist(n) => { if (0..n as i32).contains(&v) { x[v as usize] = 0; } }
+                        Cell::Last => { if x[0] == v { x[0] = NONE; } }
+                        _ => {}
+                    }
+                }
+            }
             S::Fade(i, sh) => {
                 let cell = self.desc.slots[*i as usize].cell;
                 let St::T(t) = &mut self.slots[*i as usize] else { return Ok(()) };

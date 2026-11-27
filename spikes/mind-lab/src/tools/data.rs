@@ -56,13 +56,13 @@ fn seen(who: usize, place: Option<usize>, x: i32, y: i32) -> Rec {
 #[derive(Clone, Copy, Debug)]
 struct Seg { from: u32, place: usize }
 
-/// A generated valley: `places` places, `people` people, each with a home and a routine of 5–6
+/// A generated valley (48 × 32 cells, sight 12): 8 places, `people` people, each with a home and a routine of 5–6
 /// stretches a day; the stretch around midday goes somewhere else every third day (a cycle);
 /// each stretch starts up to ±10 ticks late or early, and with chance `detour`/1000 a day's
 /// stretch goes somewhere random. Observers are `observers`; everyone is a subject.
 pub fn routine(seed: u64, people: usize, days: u32, observers: &[usize], detour: u64) -> Stream {
-    let (w, h, sight, radius) = (64i32, 40i32, 10i32, 3i32);
-    let np = 10usize;
+    let (w, h, sight, radius) = (48i32, 32i32, 12i32, 3i32);
+    let np = 8usize;
     let r = |a: u64, b: u64, m: u64| hash(seed, a, b, 0x5c4e) % m;
     // Places, at least 9 cells apart.
     let mut places: Vec<(i32, i32)> = vec![];

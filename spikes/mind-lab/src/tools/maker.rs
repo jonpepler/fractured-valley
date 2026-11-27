@@ -23,7 +23,8 @@
 //! 4. The best (ties: smaller, then by shape hash) is returned; its shape gets a library vote.
 //!
 //! Hand-written in the builder: a record with a negative outcome (`val` < 0: a blocked step, a
-//! failure) counts −32 against what it says, every other record +1; tables fade by 1/8 a
+//! failure) drops what it says (first version: counted −32 against it, too slow to undo a habit);
+//! every other record counts +1; tables fade by 1/8 a
 //! night, maps by 1/16, the surprise slot by 1/2.
 
 use super::lang::*;
@@ -44,9 +45,11 @@ pub enum Shape {
 }
 
 pub const AVOID_AT: i32 = 300;
-const FAIL_W: i32 = -32;
 
-fn weight() -> E { E::If(Box::new(E::Op(Op::Lt, Box::new(E::F(F::Val)), Box::new(E::C(0)))), Box::new(E::C(FAIL_W)), Box::new(E::C(1))) }
+fn failed() -> E { E::Op(Op::Lt, Box::new(E::F(F::Val)), Box::new(E::C(0))) }
+fn ok() -> E { E::Op(Op::Or, Box::new(E::Op(Op::Eq, Box::new(E::F(F::Val)), Box::new(E::C(NONE)))), Box::new(E::Op(Op::Le, Box::new(E::C(0)), Box::new(E::F(F::Val))))) }
+/// Learn a record into a slot: +1 for what happened; a failure (val < 0) drops what it says.
+fn learn(i: u8, k: Vec<E>, v: E) -> Vec<S> { vec![S::If(ok(), vec![S::Put(i, k.clone(), v.clone(), E::C(1))]), S::If(failed(), vec![S::Drop(i, k, v)])] }
 fn is_kind(k: i32) -> E { E::Op(Op::Eq, Box::new(E::F(F::Kind)), Box::new(E::C(k))) }
 
 fn feat_expr(f: Feat, last: u8, want: F) -> (E, Ty) {
@@ -72,8 +75,8 @@ pub fn build(want: F, from: i32, shape: &Shape, cap: u16) -> Desc {
             if back { slots.push(Slot { name: "back".into(), key: keys[..keys.len() - 1].iter().map(|k| k.1).collect(), cell: *cell, cap, val: want.ty() }); }
             if needs_last { slots.push(Slot { name: "last".into(), key: vec![Ty::Entity], cell: Cell::Last, cap, val: want.ty() }); }
             let ke: Vec<E> = keys.iter().map(|k| k.0.clone()).collect();
-            let mut body = vec![S::Put(0, ke.clone(), E::F(want), weight())];
-            if back { body.push(S::Put(1, ke[..ke.len() - 1].to_vec(), E::F(want), weight())); }
+            let mut body = learn(0, ke.clone(), E::F(want));
+            if back { body.extend(learn(1, ke[..ke.len() - 1].to_vec(), E::F(want))); }
             if needs_last { body.push(S::Put(last, vec![E::F(F::Who)], E::F(want), E::C(1))); }
             let top = |i: u8, k: Vec<E>| A::Top(i, k, 3);
             let ask = if back { A::First(vec![top(0, ke.clone()), top(1, ke[..ke.len() - 1].to_vec())]) } else { top(0, ke) };
@@ -84,8 +87,8 @@ pub fn build(want: F, from: i32, shape: &Shape, cap: u16) -> Desc {
         }
         Shape::Map { both, avoid, journeys } => {
             let mut slots = vec![Slot { name: "map".into(), key: vec![Ty::Place], cell: Cell::Votes(4), cap, val: Ty::Place }];
-            let mut body = vec![S::Put(0, vec![E::F(F::Place)], E::F(want), weight())];
-            if *both { body.push(S::Put(0, vec![E::F(want)], E::F(F::Place), weight())); }
+            let mut body = learn(0, vec![E::F(F::Place)], E::F(want));
+            if *both { body.extend(learn(0, vec![E::F(want)], E::F(F::Place))); }
             let mut observe = vec![];
             let mut forget = vec![S::Fade(0, 4)];
             let av = if *avoid {
@@ -99,7 +102,7 @@ pub fn build(want: F, from: i32, shape: &Shape, cap: u16) -> Desc {
             let ask = if *journeys {
                 slots.push(Slot { name: "journeys".into(), key: vec![Ty::Place, Ty::Place], cell: Cell::Votes(2), cap, val: Ty::Place });
                 let j = slots.len() as u8 - 1;
-                body.push(S::Put(j, vec![E::F(F::Goal), E::F(F::Place)], E::F(want), weight()));
+                body.extend(learn(j, vec![E::F(F::Goal), E::F(F::Place)], E::F(want)));
                 forget.push(S::Fade(j, 3));
                 A::First(vec![A::Top(j, vec![E::F(F::Goal), E::F(F::Place)], 2), path])
             } else { path };
@@ -209,7 +212,7 @@ pub fn make(t: &mut Tool, qs: u8, log: u8, lib: u8, g: &Grammar, fuel: &mut Fuel
     fuel.spend(q.keys.len() as i64 + 1)?;
     let Some((key, _)) = q.keys.iter().zip(&q.cells).map(|(k, c)| (*k, c[0])).filter(|x| x.1 > 0).max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0))) else { return Ok(None) };
     let Some(want) = F::from_u8(key[0].clamp(0, 255) as u8) else { return Ok(None) };
-    let target = Target { want, from: key[1], given: key[2], who: key[3], gap: g.gap };
+    let target = Target { want, from: key[1], given: key[2], who: if key[3] == ANYONE { NONE } else { key[3] }, gap: g.gap };
     let Some(St::R(ring)) = t.slots.get(log as usize) else { return Ok(None) };
     let recs: Vec<Rec> = ring.iter().copied().collect();
     fuel.spend(recs.len() as i64 / 8 + 1)?;
@@ -223,7 +226,7 @@ pub fn make(t: &mut Tool, qs: u8, log: u8, lib: u8, g: &Grammar, fuel: &mut Fuel
         let d = build(want, target.from, &s, g.cap);
         let Ok((hits, asked, af, tool)) = replay(&d, &recs, &target, fuel) else { break };
         tried += 1;
-        if asked == 0 { continue; }
+        if asked == 0 || asked < g.min { continue; }
         let acc = hits * 1000 / asked;
         let bytes = (tool.bytes() + d.size()) as i32;
         let fpa = (af / asked as i64) as i32;

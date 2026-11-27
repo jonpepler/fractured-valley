@@ -83,11 +83,13 @@ pub const BLEND: &str = r#"
 /// The schedule alternatives, for comparison.
 pub const SCHEDULES: [&str; 6] = [TIMETABLE, LAST_AND_HABIT, SEQUENCE, CONTEXT_TIMETABLE, FICKLE_TIMETABLE, BLEND];
 
-/// Route memory: on the way to a goal, which place I went to next from here.
+/// Route memory: on the way to a goal, which place I went to next from here (a blocked step is dropped).
 pub const ROUTES: &str = r#"
 (tool "routes"
   (slot next (key place place) (votes 2) place 512)
-  (observe (if (= kind moved) (put next (goal place) next 1)))
+  (observe
+    (if (and (= kind moved) (or (= val none) (<= 0 val))) (put next (goal place) next 1))
+    (if (and (= kind moved) (< val 0)) (drop next (goal place) next)))
   (ask (top next (goal place) 2))
   (forget (fade next 4)))"#;
 
@@ -181,8 +183,8 @@ pub const MAKER: &str = r#"
     (if (= kind asked) (put questions (want from given who) 0 cost))
     (if (!= kind asked) (push log)))
   (ask (make questions log lib
-    (grammar (feats who tod (/ tod 4) (% day 2) (% day 3) prev (since 25) place to)
-      (cells (votes 3) last) (keys 3) backoff paths (cap 512) (per-kb 20) (per-fuel 2) (budget 30000000) (gap 30))))
+    (grammar (feats who tod (/ tod 4) (% day 2) (% day 3) prev (since 25) place goal)
+      (cells (votes 3) last) (keys 3) backoff paths (cap 512) (per-kb 20) (per-fuel 2) (budget 30000000) (gap 15) (fast 64) (min 20))))
   (forget (fade questions 1)))"#;
 
 /// A frugal maker: few features, short keys, a small budget, storage costs it more.
@@ -195,7 +197,7 @@ pub const FRUGAL_MAKER: &str = r#"
     (if (= kind asked) (put questions (want from given who) 0 cost))
     (if (!= kind asked) (push log)))
   (ask (make questions log lib
-    (grammar (feats who (/ tod 4) prev place to) (cells last (votes 2)) (keys 2) (cap 128) (per-kb 200) (per-fuel 10) (budget 3000000) (gap 30))))
+    (grammar (feats who (/ tod 4) prev place goal) (cells last (votes 2)) (keys 2) (cap 128) (per-kb 200) (per-fuel 10) (budget 3000000) (gap 30) (fast 64) (min 10))))
   (forget (fade questions 1)))"#;
 
 pub fn load(src: &str) -> Desc { parse(src).unwrap_or_else(|e| panic!("{e}\n{src}")) }

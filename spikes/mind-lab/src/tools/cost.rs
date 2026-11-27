@@ -70,6 +70,7 @@ fn s_cost(d: &Desc, s: &S) -> i64 {
         S::Put(i, k, v, w) => { let c = cap(d, *i); k.iter().map(|x| e_cost(d, x, none, 0)).sum::<i64>() + e_cost(d, v, none, 0) + e_cost(d, w, none, 0) + probes(c) + (c as i64 / 4 + 1) + (c as i64 / 32 + 2) }
         S::Push(_) => 2,
         S::Fade(i, _) => cap(d, *i) as i64 + 1,
+        S::Drop(i, k, v) => k.iter().map(|x| e_cost(d, x, none, 0)).sum::<i64>() + e_cost(d, v, none, 0) + probes(cap(d, *i)) + 4,
     }
 }
 
