@@ -4,9 +4,9 @@ use mc::spread::Params;
 use std::collections::HashSet;
 fn main() {
     let p = Params::default();
-    for &n in &[10_000usize, 100_000, 1_000_000] {
+    for n in std::env::args().skip(2).map(|x| x.parse::<usize>().unwrap()) {
         let sp = species(n, 7);
-        let m = 1000;
+        let m: usize = std::env::args().nth(1).map(|x| x.parse().unwrap()).unwrap_or(1000);
         let set = make_set(&sp, m, 40, 1, 1, 4);
         let mut insts: Vec<Inst> = set.deltas.iter().map(|_| Inst::new()).collect();
         let mut sc = Scratch::new();

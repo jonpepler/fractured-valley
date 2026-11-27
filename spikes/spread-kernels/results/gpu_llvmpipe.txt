@@ -1,0 +1,7 @@
+adapter: llvmpipe (LLVM 20.1.2, 256 bits) (Cpu, Gl)
+N 10000 M 1000 T 20: GPU matches CPU redef: true (overflowed instance-steps 0); GPU 5.833 us/step (171443 steps/s), host knots+packing 0.467 us/step
+N 10000 M 10000 T 20: GPU matches CPU redef: true (overflowed instance-steps 0); GPU 5.354 us/step (186777 steps/s), host knots+packing 0.643 us/step
+adapter: llvmpipe (LLVM 20.1.2, 256 bits) (Cpu, Gl)
+N 100000 M 1000 T 20: GPU matches CPU redef: true (overflowed instance-steps 0); GPU 12.033 us/step (83105 steps/s), host knots+packing 0.514 us/step
+adapter: llvmpipe (LLVM 20.1.2, 256 bits) (Cpu, Gl)
+N 1000000 M 200 T 20: GPU matches CPU redef: true (overflowed instance-steps 0); GPU 84.636 us/step (11815 steps/s), host knots+packing 0.434 us/step

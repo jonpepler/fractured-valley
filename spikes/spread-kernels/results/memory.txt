@@ -1,0 +1,6 @@
+N 10000 overlay 1/1: raw overlay 19 KB, compiled delta 43 KB (patched sources 1464, overrides 2105, extra edges 851); shared 1 MB (kernel-read 0 MB)
+N 10000 overlay 1/10: raw overlay 2 KB, compiled delta 8 KB (patched sources 266, overrides 264, extra edges 82); shared 1 MB (kernel-read 0 MB)
+N 100000 overlay 1/1: raw overlay 201 KB, compiled delta 434 KB (patched sources 14477, overrides 20842, extra edges 8635); shared 19 MB (kernel-read 8 MB)
+N 100000 overlay 1/10: raw overlay 22 KB, compiled delta 83 KB (patched sources 2726, overrides 2758, extra edges 855); shared 19 MB (kernel-read 8 MB)
+N 1000000 overlay 1/1: raw overlay 2007 KB, compiled delta 4347 KB (patched sources 145314, overrides 208661, extra edges 85851); shared 189 MB (kernel-read 83 MB)
+N 1000000 overlay 1/10: raw overlay 220 KB, compiled delta 831 KB (patched sources 27039, overrides 27150, extra edges 8494); shared 189 MB (kernel-read 83 MB)
