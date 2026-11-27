@@ -484,7 +484,7 @@ fn react_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (!inert_air(x, s)) {
         var wind = I(0u, 0u);
         if (open_water(x)) { wind = wind_over(c); }
-        let pilot = ((aux[c / 32u] >> (c % 32u)) & 1u) != 0u;
+        let pilot = (limits[2u * c + RP.pad1] & 1u) != 0u;
         let core_before = core_capacity(x, s);
         react_inner(&x, s, ambient(), pilot, wind);
         let core_after = core_capacity(x, s);
@@ -522,7 +522,7 @@ fn sides_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let x = load(c);
     let s = subst(x.substance);
     let amb = ambient();
-    let pilot = ((aux[c / 32u] >> (c % 32u)) & 1u) != 0u;
+    let pilot = (limits[2u * c + RP.pad1] & 1u) != 0u;
     let share = solid_share(x, s);
     let k = sub(add(of_f(share, s.conductivity), i_(C_AIR_COND)), of_f(share, i_(C_AIR_COND)));
     let t = gas_temp(x);
@@ -564,4 +564,88 @@ fn sides_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let half = muli(k, 2 * C_CELL_MM);
     put_side(c, array<I, 12>(t, t_cond, t_skin, gas_ml, half, over, flame_t, flame_heat, flame_fill, fuel_g, reached, water_g),
         select(0u, 1u, perm) | select(0u, 2u, wet));
+}
+
+// ── flame_reach on the GPU ─────────────────────────────────────────────────
+// chem::flame_reach is a flood fill: seeds hold burnable gas and can light
+// it; the flame spreads to face neighbours (inside the box) holding burnable
+// gas that air passes through. The set it reaches is the least fixed point
+// of "lit = seed, or can and a neighbour is lit", whatever the order, so
+// repeated propagation gives exactly the same set. Per cell, in `limits`
+// (free before diffusion's limiters and during reaction): two words, ping-
+// ponged between rounds, each bit 0 lit, bit 1 can. Each round, a 4³ tile
+// propagates within itself to a standstill in workgroup memory, and flags
+// (per workgroup, in `tallies`) whether anything in it changed.
+
+fn burnable(x: C) -> bool { return gt0(x.gas[FUEL]) && gt0(x.gas[O2]); }
+fn lights(x: C, s: S) -> bool {
+    return x.lit
+        || (x.front > 0u && gt0(x.solid[VOLATILE]) && fine_fuel(x, s))
+        || (gt0(gas_capacity(x)) && !lt(gas_temp(x), i_(C_IGNITION)))
+        || (gt0(add(x.solid[VOLATILE], x.solid[CHAR])) && !lt(surface_temperature(x, s), i_(C_IGNITION)));
+}
+
+@compute @workgroup_size(64)
+fn reach_init(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = cell_of(id);
+    if (c >= P.slots * 512u) { return; }
+    let x = load(c);
+    let s = subst(x.substance);
+    let b = burnable(x);
+    let v = select(0u, 1u, b && lights(x, s)) | select(0u, 2u, b && permeable(x, s));
+    limits[2u * c] = v;
+    limits[2u * c + 1u] = v;
+}
+
+var<workgroup> wlit: array<u32, 64>;
+var<workgroup> wchanged: atomic<u32>;
+var<workgroup> wany: atomic<u32>;
+
+@compute @workgroup_size(64)
+fn reach_round(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
+    let w = wg.x + wg.y * P.tiles_x;
+    let live = w < P.slots * 8u;
+    let pin = RP.pad0;           // the word read this round; the other is written
+    var c = 0u;
+    var v = 0u;
+    if (live) { c = my_cell(wg, t); v = limits[2u * c + pin]; }
+    let start = v & 1u;
+    wlit[t] = v & 1u;
+    if (t == 0u) { atomicStore(&wany, 0u); }
+    // Neighbours: inside the tile from workgroup memory, else from this
+    // round's input (box edges have none).
+    var nb = array<u32, 6>(NONE, NONE, NONE, NONE, NONE, NONE);
+    var nt = array<i32, 6>(-1, -1, -1, -1, -1, -1);
+    if (live) {
+        for (var f = 0u; f < 6u; f++) {
+            let axis = f / 2u; let up = (f & 1u) == 1u;
+            let n = step(c, axis, up, false);
+            if (n == OUT || n == NONE) { continue; }
+            let tp = tile_pos(t, axis);
+            if ((up && tp < 3u) || (!up && tp > 0u)) { nt[f] = select(i32(t) - i32(stride(axis)), i32(t + stride(axis)), up); }
+            else { nb[f] = n; }
+        }
+    }
+    loop {
+        workgroupBarrier();
+        if (t == 0u) { atomicStore(&wchanged, 0u); }
+        workgroupBarrier();
+        if (live && (v & 3u) == 2u) {
+            var any = false;
+            for (var f = 0u; f < 6u; f++) {
+                if (nt[f] >= 0) { any = any || wlit[u32(nt[f])] != 0u; }
+                else if (nb[f] != NONE) { any = any || (limits[2u * nb[f] + pin] & 1u) != 0u; }
+            }
+            if (any) { v = v | 1u; atomicStore(&wchanged, 1u); }
+        }
+        workgroupBarrier();
+        wlit[t] = v & 1u;
+        if (workgroupUniformLoad(&wchanged) == 0u) { break; }
+    }
+    if (live) {
+        limits[2u * c + 1u - pin] = v;
+        if ((v & 1u) != start) { atomicStore(&wany, 1u); }
+    }
+    workgroupBarrier();
+    if (t == 0u && live) { tallies[w * 16u] = atomicLoad(&wany); }
 }

@@ -216,3 +216,23 @@ fn a_campfire_burns_the_same_with_the_flow_on_the_gpu_too() { compare_phases(bur
 
 #[test]
 fn a_windy_puddle_is_the_same_with_the_flow_on_the_gpu_too() { compare_phases(puddle_in_wind, 40, false, true) }
+
+/// The GPU's flame-reach fill reaches exactly the cells the CPU's does, every
+/// tick of a burning campfire (and some do get reached).
+#[test]
+fn the_flame_reach_fill_is_the_same_on_the_gpu() {
+    let mut sim = burning_campfire();
+    let n = sim.world.bricks();
+    let mut g = match fv_gpu::pool::PoolDiffusion::with_mode(&sim.world, fv_gpu::pool::shuffled(n, 13), fv_gpu::pool::Mode::Scratch, true) {
+        Ok(g) => g,
+        Err(e) => { no_gpu(e); return }
+    };
+    let mut reached = 0;
+    for t in 0..60 {
+        sim.step();
+        let cpu = fv_core::chem::flame_reach(&sim.world);
+        assert_eq!(g.flame_reach(&sim.world), cpu, "tick {t}: flame reach differs");
+        reached += cpu.iter().filter(|&&b| b).count();
+    }
+    assert!(reached > 0, "no flame reached any gas");
+}
