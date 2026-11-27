@@ -330,7 +330,7 @@ pub fn think_v2_default() -> bool {
     static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *D.get_or_init(|| match std::env::var("FV_THINK").as_deref() { Ok("v1") => false, Ok("v2") => true, _ => THINK_V2_DEFAULT })
 }
-pub const THINK_V2_DEFAULT: bool = false;
+pub const THINK_V2_DEFAULT: bool = true;
 
 /// Default `Config::walk_cost`: a place this many cells away counts half.
 pub const WALK_COST: i32 = 120;

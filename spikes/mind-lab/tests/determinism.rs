@@ -19,7 +19,11 @@ use fv_mind_lab::rng::hash;
 // the village's fixes are the default (9.6), sleep keeps a share set by the day's novelty (9.4),
 // dormancy and feelings by evidence (9.4, 9.8), graded choices (9.6), and the link-type table
 // grew by one (`told`). Native and wasm32 agree on every one (`tools/wasm-hashes.sh`).
-const PINNED: [u64; 6] = [0xad54cd29a4662f6e, 0xbcb701685d14f855, 0x239deb6ad3d06594, 0x2e071c4ae5caca6c, 0x137b03a3aec278ff, 0x6caad114020b4490];
+// Round 2, stage 2: re-pinned. The thinking step is now think v2 (`SPEC-think.md`: gain from
+// per-class knots, saturating 32-bit arithmetic, links heaviest first with an exact early stop),
+// so every think rounds a little differently and every run's hash moves; the behavioural tests
+// all still pass, and native and wasm32 agree (`tools/wasm-hashes.sh`).
+const PINNED: [u64; 6] = [0x3aaaf157626cf3a5, 0xee85326f312353b6, 0xa4fb6b6fb5329cfa, 0x7e4ea57d1a07227f, 0xd5f1eaae59965cea, 0x5875b5bdfc198c27];
 
 #[test]
 fn identical_runs_give_identical_pinned_hashes() {

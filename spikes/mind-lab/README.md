@@ -130,3 +130,24 @@ python3 tools/round2_compare.py <round1 runs.csv> <round2 runs.csv>   # paired b
 - The village's fixes are default; joining, warning and crying out are graded (`mind::graded`). `Config::round1()` restores round 1's rules for ablations.
 
 Findings: `research/mind-lab/round-2/01-foundations.md` in the private store.
+
+## Round 2, stage 2: the thinking step as a spec, and on the GPU
+
+- **`SPEC-think.md`** defines one think exactly (gain from per-class knots, saturating 32-bit
+  arithmetic, ties by stable key, the budget, cap and workspace), the storage it reads, and the
+  tick around it, including the look-ahead `felt_in`. `src/think2.rs` is that spec on the CPU;
+  it is the default (`Config::think_v2`; `Config::round1()` and `FV_THINK=v1` give the old step).
+- **Storage:** each species base is sorted once, links heaviest first with weight sums
+  (`think2::SortedBase`, shared); each mind's overlay and fast weights are compiled into per-node
+  patches, recompiled only for nodes whose links changed (`think2::Compiled`, inside `Runtime`).
+- **GPU** (`gpu/`, its own crate with wgpu): the same step in WGSL, one workgroup per think, all
+  hops in one dispatch, thinks ordered by species base. On a machine without a GPU, Mesa's
+  lavapipe works: prefix commands with `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`.
+
+```bash
+cargo test --release --test think_v2 -- --nocapture       # the spec's numbers, by hand
+FV_THINK=v1 cargo run --release --example think_speed      # cost on real minds (and FV_THINK=v2)
+cd gpu && cargo test --release                             # GPU = CPU: random graphs, village thinks
+cd gpu && cargo run --release --bin village-check -- 40    # every think of a 40-day village on the GPU
+cd gpu && cargo run --release --bin gpu-bench -- 1000,10000 20   # GPU matches CPU, steps per second
+```
