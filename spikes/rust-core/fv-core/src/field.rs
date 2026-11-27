@@ -676,21 +676,35 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
         }
         // Moonlight as rays, like the sun (a few µJ a column, rounded by chance).
         if sky.moon_uw_m2 > 0 {
-            let cos_z = (-sky.moon_dir[2]).max(0) as i128;
-            let nj = sky.moon_uw_m2 as i128 * FACE_MM2 as i128 * cos_z / ONE as i128 * TICK.0 as i128 / 1_000_000;
-            let weight: [i128; 4] = core::array::from_fn(|b| Fraction(tables().bands[5_778][b]).of(1_000_000) as i128 * crate::rad::MOON_REFLECTANCE[b] as i128);
-            let sum: i128 = weight.iter().sum();
+            let roll = |h: u64| move |b: usize| ((h >> (b * 16)) & 0xffff) * 1_000 / 65_536;
             let mut moon_beams: Vec<([i64; 3], usize, [i64; 4])> = Vec::new();
             for y in 0..g.dims[1] { for x in 0..g.dims[0] {
                 let h = crate::rng::hash(w.seed, w.tick, (y * g.dims[0] + x) as u64, 0x400);
-                let e: [i64; 4] = core::array::from_fn(|b| {
-                    let part = nj * weight[b] / sum.max(1);
-                    (part / 1_000) as i64 + i64::from(((h >> (b * 16)) & 0xffff) as i128 * 1_000 / 65_536 < part % 1_000)
-                });
+                let e = crate::rad::moon_split(sky, -sky.moon_dir[2], roll(h));
                 if e.iter().all(|&v| v == 0) { continue }
                 in_total += e.iter().sum::<i64>();
                 moon_beams.push(([x as i64 * ONE + ONE / 2, y as i64 * ONE + ONE / 2, g.dims[2] as i64 * ONE - 1], face(2, 1), e));
             }}
+            // A low moon also enters through the box's moonward sides.
+            for axis in 0..2 {
+                let toward = sky.moon_dir[axis];
+                if toward == 0 { continue }
+                let edge = if toward > 0 { 0 } else { g.dims[axis] - 1 };
+                let other = 1 - axis;
+                for z in 0..g.dims[2] { for o in 0..g.dims[other] {
+                    let mut p = [0usize; 3];
+                    p[axis] = edge; p[other] = o; p[2] = z;
+                    let l = (p[2] * g.dims[1] + p[1]) * g.dims[0] + p[0];
+                    if g.opaque[l] { continue }
+                    let h = crate::rng::hash(w.seed, w.tick, l as u64, 0x401 + axis as u64);
+                    let e = crate::rad::moon_split(sky, toward.abs(), roll(h));
+                    if e.iter().all(|&v| v == 0) { continue }
+                    in_total += e.iter().sum::<i64>();
+                    let mut pos = [p[0] as i64 * ONE + ONE / 2, p[1] as i64 * ONE + ONE / 2, p[2] as i64 * ONE + ONE / 2];
+                    pos[axis] = if toward > 0 { 1 } else { g.dims[axis] as i64 * ONE - 2 };
+                    moon_beams.push((pos, face(axis, if toward > 0 { -1 } else { 1 }), e));
+                }}
+            }
             let c: &Caught = caught;
             out_total += moon_beams.iter().map(|&(p, f, e)| beam(&g, p, sky.moon_dir, f, e, c)).sum::<i64>();
         }

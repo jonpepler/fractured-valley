@@ -645,13 +645,8 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>) 
     // Moonlight: sunlight's bands × the moon's reflectance, a few µJ per
     // column per tick, rounded by chance to whole µJ (fair on average).
     if sky.moon_uw_m2 > 0 {
-        let cos_z = (-sky.moon_dir[2]).max(0) as i128;
-        let nj = sky.moon_uw_m2 as i128 * FACE_MM2 as i128 * cos_z / ONE as i128 * TICK.0 as i128 / 1_000_000; // nJ per tick
-        let weight: [i128; 4] = core::array::from_fn(|b| Fraction(tables().bands[5_778][b]).of(1_000_000) as i128 * MOON_REFLECTANCE[b] as i128);
-        let sum: i128 = weight.iter().sum();
-        for b in 0..4 {
-            let part = nj * weight[b] / sum.max(1);
-            let e = (part / 1_000) as i64 + i64::from(stream.below(1_000) < (part % 1_000) as u64);
+        let e = moon_split(sky, -sky.moon_dir[2], |_| stream.below(1_000));
+        for (b, &e) in e.iter().enumerate() {
             if e <= 0 { continue }
             out.push(Packet { pos, dir: sky.moon_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
             total += e;
@@ -702,6 +697,35 @@ fn surroundings(w: &World, sky: &Sky, i: usize, x: usize, y: usize, z: usize, ou
         }
     }
     (sent, absorbed)
+}
+
+/// Moonlight through one face whose cosine to the moon is `cos` (Q16), split
+/// between bands as sunlight × the moon's reflectance: whole µJ per band,
+/// the fraction rounded by chance with `roll(band)` in 0..1000 (fair on
+/// average).
+pub(crate) fn moon_split(sky: &Sky, cos: i64, mut roll: impl FnMut(usize) -> u64) -> [i64; 4] {
+    let nj = sky.moon_uw_m2 as i128 * FACE_MM2 as i128 * cos.max(0) as i128 / ONE as i128 * TICK.0 as i128 / 1_000_000;
+    let weight: [i128; 4] = core::array::from_fn(|b| Fraction(tables().bands[5_778][b]).of(1_000_000) as i128 * MOON_REFLECTANCE[b] as i128);
+    let sum: i128 = weight.iter().sum();
+    core::array::from_fn(|b| {
+        let part = nj * weight[b] / sum.max(1);
+        (part / 1_000) as i64 + i64::from((roll(b) as i128) < part % 1_000)
+    })
+}
+
+/// Moonlight entering through a side face of the box, like [`side_sun`].
+fn side_moon(w: &World, sky: &Sky, x: usize, y: usize, z: usize, axis: usize, out: &mut Vec<Packet>) -> i64 {
+    let mut stream = Stream(hash(w.seed, w.tick, w.idx(x, y, z) as u64, 0x5cf + axis as u64));
+    let e = moon_split(sky, sky.moon_dir[axis].abs(), |_| stream.below(1_000));
+    let mut pos = [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, z as i64 * ONE + stream.below(ONE as u64) as i64];
+    pos[axis] = if sky.moon_dir[axis] > 0 { 1 } else { [w.nx, w.ny][axis] as i64 * ONE - 2 };
+    let mut total = 0;
+    for (b, &e) in e.iter().enumerate() {
+        if e <= 0 { continue }
+        out.push(Packet { pos, dir: sky.moon_dir, energy: e, band: b as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
+        total += e;
+    }
+    total
 }
 
 /// Direct sunlight entering through a side face of the box (an open-air
@@ -756,6 +780,9 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
                         let toward = sky.sun_dir[axis];
                         let at_edge = [x, y][axis] == if toward > 0 { 0 } else { [wr.nx, wr.ny][axis] - 1 };
                         if toward != 0 && at_edge { *skyin += side_sun(wr, sky, x, y, z, axis, list) }
+                        let toward = sky.moon_dir[axis];
+                        let at_edge = [x, y][axis] == if toward > 0 { 0 } else { [wr.nx, wr.ny][axis] - 1 };
+                        if sky.moon_uw_m2 > 0 && toward != 0 && at_edge { *skyin += side_moon(wr, sky, x, y, z, axis, list) }
                     }
                 }
             }

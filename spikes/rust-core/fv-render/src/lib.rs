@@ -43,9 +43,11 @@ pub struct Exposure {
     /// exposure, nor do unlit surfaces.
     pub percentile: f32,
     /// The least exposure allowed: the most an eye can adapt to the dark.
-    /// Daylit ground is ~100–300 W/m² of visible light; an eye covers about
-    /// four orders of magnitude below that before it stops adapting
-    /// (scotopic vision), so ~0.01 W/m². Below this the scene goes dark.
+    /// Daylit ground is ~100–300 W/m² of visible light; full moonlight is
+    /// ~0.002 W/m² (0.1–0.3 lux), which a dark-adapted eye reads well, and
+    /// it keeps adapting down to starlight (~0.001 lux). So 0.0003 W/m²
+    /// (about 0.1 lux on the ground): a moonlit scene is seen, dimmer
+    /// than that goes dark.
     pub min_w_m2: f32,
     /// How quickly the exposure follows the scene, in seconds of simulated
     /// time (an eye takes about a second).
@@ -65,14 +67,14 @@ pub struct Exposure {
 }
 
 impl Default for Exposure {
-    fn default() -> Self { Exposure { percentile: 0.75, min_w_m2: 0.01, adapt_seconds: 1.0, max_rate: 4.0, night_hold: 1.0, sky_w_m2: None, fixed: None } }
+    fn default() -> Self { Exposure { percentile: 0.75, min_w_m2: 0.0003, adapt_seconds: 1.0, max_rate: 4.0, night_hold: 1.0, sky_w_m2: None, fixed: None } }
 }
 
 /// Simulated seconds per tick (fv-core ticks are 50 ms).
 const TICK_SECONDS: f32 = 0.05;
 /// A surface counts as lit above this (W/m²): a tenth of the darkest the
 /// eye adapts to (`Exposure::min_w_m2`'s default).
-const LIT_MIN: f32 = 0.001;
+const LIT_MIN: f32 = 0.00003;
 /// A surface giving off more than this (W) is its own light source and is
 /// left out of the exposure.
 const SELF_LIT_W: f32 = 0.005;
