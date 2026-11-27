@@ -44,6 +44,21 @@ pub fn scenario(seed: u64, n: usize, nz: usize, lit_ticks: u64) -> Sim {
     sim
 }
 
+/// The dead-tree scene, as fv-core's `probe_tree dead` runs it: a crib of
+/// logs at the foot of a tree in a `n`×`n`×`nz` box, a torch held to its
+/// kindling (500 J a tick at every third torch point) for the first 200
+/// ticks, under the afternoon sun. `dead` dries the tree out.
+pub fn tree_scene(seed: u64, n: usize, nz: usize, dead: bool) -> Sim {
+    let (w, torch) = fv_core::scene::crib_and_tree(seed, n, nz, dead);
+    let mut sim = Sim::new(w, Sky::afternoon());
+    for t in 0..200 {
+        for (i, p) in torch.iter().enumerate().filter(|(i, _)| i % 3 == 0) {
+            sim.schedule(Scheduled { tick: t, peer: 0, seq: i as u32, command: Command::Heat { x: p[0] as u16, y: p[1] as u16, z: p[2] as u16, energy: joules(500) } });
+        }
+    }
+    sim
+}
+
 /// The state hash as 16 hex digits (a u64 does not cross into JS cleanly).
 pub fn hex(h: u64) -> String { format!("{h:016x}") }
 
@@ -196,6 +211,11 @@ impl Engine {
         let sky = match sky { "afternoon" => Sky::afternoon(), "night" => Sky::NIGHT, s => return Err(err(format!("unknown sky {s}"))) };
         let v = fv_core::scene::valley(seed as u64, n as usize, nz as usize, grass_moisture as i64);
         Ok(Engine { sim: Sim::new(v.world, sky), parts: None })
+    }
+
+    /// The dead-tree scene (see [`tree_scene`]), for timing.
+    pub fn tree(seed: u32, n: u32, nz: u32, dead: bool) -> Engine {
+        Engine { sim: tree_scene(seed as u64, n as usize, nz as usize, dead), parts: None }
     }
 
     /// Join from a checkpoint made by `export`.

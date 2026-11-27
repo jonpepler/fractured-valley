@@ -3,6 +3,7 @@
 #   pkg-st/      the single-threaded WebAssembly build (stable Rust)
 #   pkg-mt/      the threaded build (nightly: shared memory, rayon on Web Workers)
 #   native.json  the native build's hash list for the determinism scenario
+#   native-tree.json  the same for the dead-tree scene (the speed test)
 #   js/, *.html  the pages
 #
 #   bash scripts/build.sh          everything
@@ -22,6 +23,7 @@ mkdir -p dist
 if [ "${1:-all}" != js ]; then
   echo "== native hash list"
   (cd "$CORE" && CARGO_TARGET_DIR=$TARGET cargo run --quiet --release -p fv-wasm --example native_hashes) > dist/native.json
+  (cd "$CORE" && CARGO_TARGET_DIR=$TARGET cargo run --quiet --release -p fv-wasm --example native_hashes -- tree) > dist/native-tree.json
 
   echo "== single-threaded wasm (stable)"
   (cd "$CORE" && CARGO_TARGET_DIR=$TARGET cargo build --release -p fv-wasm --target wasm32-unknown-unknown)
@@ -42,6 +44,6 @@ fi
 
 echo "== pages"
 cp public/* dist/
-npx esbuild src/determinism.ts src/threads.ts src/threads-worker.ts src/peers.ts \
+npx esbuild src/determinism.ts src/threads.ts src/threads-worker.ts src/peers.ts src/speed.ts src/speed-worker.ts \
   --bundle --format=esm --splitting --target=es2022 --outdir=dist/js --log-level=warning
 echo "built $WEB/dist"

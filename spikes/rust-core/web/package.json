@@ -7,7 +7,8 @@
     "build": "bash scripts/build.sh",
     "build:js": "bash scripts/build.sh js",
     "serve": "node scripts/serve.mjs dist 4180",
-    "test": "node tests/determinism.mjs && node tests/threads.mjs && node tests/peers.mjs"
+    "test": "node tests/determinism.mjs && node tests/threads.mjs && node tests/peers.mjs",
+    "test:speed": "node tests/speed.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2"
