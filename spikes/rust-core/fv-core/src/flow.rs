@@ -70,22 +70,34 @@ impl Flow {
         self.vel[self.ci(x as usize, y as usize, z as usize)][axis] as i64
     }
 
+    /// `f(i, x, y, z)` for every block `i` at (x, y, z), in block order (on
+    /// worker threads with the `parallel` feature: each block's value depends
+    /// only on the arrays the loop reads, so any split gives the same bits).
+    fn per_block<T: Send>(&self, f: impl Fn(usize, usize, usize, usize) -> T + Sync) -> Vec<T> {
+        let (cx, cy) = (self.cx, self.cy);
+        let n = cx * cy * self.cz;
+        let at = |i: usize| f(i, i % cx, i / cx % cy, i / (cx * cy));
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            if crate::world::THREADS.load(core::sync::atomic::Ordering::Relaxed) != 1 {
+                return (0..n).into_par_iter().with_min_len(64).map(at).collect();
+            }
+        }
+        (0..n).map(at).collect()
+    }
+
     /// One tick of air motion, from the cells' temperatures and solidity.
     pub fn step(&mut self, w: &World) {
         let (cx, cy, cz) = (self.cx, self.cy, self.cz);
-        let n = cx * cy * cz;
         // Wind: the scene's breeze, with slow gusts of ±40 %.
         let g = (hash(w.seed, w.tick / 40, 0, 0x91) % 801) as i64 - 400;
         self.wind = [self.wind_mean[0] + self.wind_mean[0] * g / 1000, self.wind_mean[1] + self.wind_mean[1] * g / 1000];
         // Gather each block's mean temperature over its open cells, openness,
-        // and how much gas it holds beyond what fits (as a volume, mL).
-        let mut temp = vec![w.ambient.0; n];
-        let mut open = vec![false; n];
-        let mut over_ml = vec![0i64; n];
-        // Drag of the fuel beds in each block, 1/m × 1000 (see `bed_drag`).
-        let mut drag = vec![0i64; n];
+        // and how much gas it holds beyond what fits (as a volume, mL), and
+        // the drag of the fuel beds in it, 1/m × 1000 (see `bed_drag`).
         let fresh: i64 = crate::substance::FRESH_AIR.iter().map(|m| m.0).sum();
-        for z in 0..cz { for y in 0..cy { for x in 0..cx {
+        let gathered = self.per_block(|_, x, y, z| {
             let (mut sum, mut cnt, mut over, mut dr) = (0i64, 0i64, 0i64, 0i64);
             for d in 0..8 {
                 let c = w.get(x * FR + (d & 1), y * FR + (d >> 1 & 1), z * FR + (d >> 2));
@@ -99,31 +111,31 @@ impl Flow {
                 let fits = crate::units::div_i128(fresh as i128 * ml as i128 * w.ambient.0 as i128, crate::substance::CELL_VOLUME_ML as i128 * t as i128) as i64;
                 over += (c.gas_mass().0 - fits) * crate::substance::CELL_VOLUME_ML / fresh.max(1);
             }
-            let i = self.ci(x, y, z);
-            open[i] = cnt >= 4;
-            if cnt > 0 { temp[i] = sum / cnt }
-            over_ml[i] = over;
-            drag[i] = dr / 8;
-        }}}
+            (if cnt > 0 { sum / cnt } else { w.ambient.0 }, cnt >= 4, over, dr / 8)
+        });
+        let temp: Vec<i64> = gathered.iter().map(|g| g.0).collect();
+        let open: Vec<bool> = gathered.iter().map(|g| g.1).collect();
+        let over_ml: Vec<i64> = gathered.iter().map(|g| g.2).collect();
+        let drag: Vec<i64> = gathered.iter().map(|g| g.3).collect();
         let amb = w.ambient.0;
         // Air carries its own motion (Stam's self-advection): a face's
         // velocity is what arrives there from upstream, so air near the
         // ground starts from rest and a plume speeds up as it rises, drawing
         // air in along its height rather than all at its foot.
         self.vel = self.carried();
-        // How freely each block's + faces let air through (permille).
-        let mut give_face = vec![[1_000i64; 3]; n];
         // Forces: buoyancy on vertical faces, damping, and a little turbulence
         // in hot air so plumes flicker and break rather than stand still.
-        for z in 0..cz { for y in 0..cy { for x in 0..cx {
-            let i = self.ci(x, y, z);
+        // Also how freely each block's + faces let air through (permille).
+        let forced = self.per_block(|i, x, y, z| {
+            let mut vel = self.vel[i];
+            let mut give_face = [1_000i64; 3];
             for axis in 0..3 {
-                let mut v = self.vel[i][axis] as i64 * KEEP / 256;
+                let mut v = vel[axis] as i64 * KEEP / 256;
                 let mut q = [x, y, z];
                 q[axis] += 1;
                 let up_ok = q[axis] < [cx, cy, cz][axis];
                 let j = if up_ok { self.ci(q[0], q[1], q[2]) } else { i };
-                if !(open[i] && up_ok && open[j]) { self.vel[i][axis] = 0; continue }
+                if !(open[i] && up_ok && open[j]) { vel[axis] = 0; continue }
                 let t = (temp[i] + temp[j]) / 2;
                 if axis == 2 {
                     // g·ΔT/T·dt, in mm/s
@@ -139,31 +151,30 @@ impl Flow {
                 // drag c·|u|·u, taken implicitly over the tick (stable at any
                 // c), and the face lets the pressure push it only as much.
                 let k = give(drag[i] + drag[j], v);
-                self.vel[i][axis] = (v * k / 1_000) as i32;
-                give_face[i][axis] = k;
+                vel[axis] = (v * k / 1_000) as i32;
+                give_face[axis] = k;
             }
-        }}}
+            (vel, give_face)
+        });
+        self.vel = forced.iter().map(|f| f.0).collect();
+        let give_face: Vec<[i64; 3]> = forced.iter().map(|f| f.1).collect();
         // Pressure: make the flow divergence-free through open blocks.
-        let mut p = vec![0i64; n];
-        let mut div = vec![0i64; n];
-        for z in 0..cz { for y in 0..cy { for x in 0..cx {
-            let i = self.ci(x, y, z);
-            if !open[i] { continue }
+        let div = self.per_block(|i, x, y, z| {
+            if !open[i] { return 0 }
             let (xi, yi, zi) = (x as i64, y as i64, z as i64);
-            div[i] = self.block_face(xi, yi, zi, 0) - self.block_face(xi - 1, yi, zi, 0)
+            let d = self.block_face(xi, yi, zi, 0) - self.block_face(xi - 1, yi, zi, 0)
                 + self.block_face(xi, yi, zi, 1) - self.block_face(xi, yi - 1, zi, 1)
                 + self.block_face(xi, yi, zi, 2) - self.block_face(xi, yi, zi - 1, 2);
             // A block holding more gas than fits should send the extra out
             // over the next couple of ticks: ask for that much net outflow.
             // Half of it each tick, through a block face of (2 cells)²:
             // v [mm/s] = mL × 10³ mm³ / (2 × dt [s] × A [mm²]) (over/4 at 10 cm).
-            div[i] -= over_ml[i] * 1_000_000 / (2 * TICK.0 * BLOCK_FACE_MM2);
-        }}}
-        let mut q = vec![0i64; n];
+            d - over_ml[i] * 1_000_000 / (2 * TICK.0 * BLOCK_FACE_MM2)
+        });
+        let mut p = vec![0i64; div.len()];
         for _ in 0..PRESSURE_ROUNDS {
-            for z in 0..cz { for y in 0..cy { for x in 0..cx {
-                let i = self.ci(x, y, z);
-                if !open[i] { q[i] = 0; continue }
+            p = self.per_block(|i, x, y, z| {
+                if !open[i] { return 0 }
                 // Σ k·(p_j − p_i) = div over the faces, each face weighted
                 // by how freely it lets air through (k, permille).
                 let (mut sum, mut cnt) = (0i64, 0i64);
@@ -182,27 +193,27 @@ impl Flow {
                     sum += p[j] * k;
                     cnt += k;
                 }
-                q[i] = if cnt > 0 { (sum - div[i] * 1_000) / cnt } else { 0 };
-            }}}
-            core::mem::swap(&mut p, &mut q);
+                if cnt > 0 { (sum - div[i] * 1_000) / cnt } else { 0 }
+            });
         }
         // Subtract the pressure gradient across interior open faces.
-        for z in 0..cz { for y in 0..cy { for x in 0..cx {
-            let i = self.ci(x, y, z);
+        self.vel = self.per_block(|i, x, y, z| {
+            let mut vel = self.vel[i];
             for axis in 0..3 {
                 let mut r = [x, y, z];
                 r[axis] += 1;
                 if r[axis] >= [cx, cy, cz][axis] {
                     // The top face of the top block: free outflow.
-                    if axis == 2 && open[i] { self.vel[i][2] = (self.vel[i][2] as i64 + p[i]).clamp(-MAX_SPEED, MAX_SPEED) as i32 }
+                    if axis == 2 && open[i] { vel[2] = (vel[2] as i64 + p[i]).clamp(-MAX_SPEED, MAX_SPEED) as i32 }
                     continue;
                 }
                 let j = self.ci(r[0], r[1], r[2]);
-                if !(open[i] && open[j]) { self.vel[i][axis] = 0; continue }
-                let v = self.vel[i][axis] as i64 - (p[j] - p[i]) * give_face[i][axis] / 1_000;
-                self.vel[i][axis] = v.clamp(-MAX_SPEED, MAX_SPEED) as i32;
+                if !(open[i] && open[j]) { vel[axis] = 0; continue }
+                let v = vel[axis] as i64 - (p[j] - p[i]) * give_face[i][axis] / 1_000;
+                vel[axis] = v.clamp(-MAX_SPEED, MAX_SPEED) as i32;
             }
-        }}}
+            vel
+        });
     }
 
     /// Every face's velocity after carrying the flow along itself for a tick:
@@ -220,10 +231,10 @@ impl Flow {
             for k in 0..3 { q[k] = if k == a { q[k].clamp(-1, n[k] - 1) } else { q[k].clamp(0, n[k] - 1) } }
             self.block_face(q[0], q[1], q[2], a)
         };
-        let mut out = self.vel.clone();
-        for z in 0..n[2] { for y in 0..n[1] { for x in 0..n[0] {
+        self.per_block(|_, x, y, z| {
+            let mut out = [0i32; 3];
             for a in 0..3 {
-                let p = [x, y, z];
+                let p = [x as i64, y as i64, z as i64];
                 // The velocity at this face: its own component, and the
                 // others averaged from the four faces around it.
                 let mut u = [0i64; 3];
@@ -254,11 +265,11 @@ impl Flow {
                     }
                     v += wgt * at(q, a) as i128;
                 }
-                let i = self.ci(x as usize, y as usize, z as usize);
-                out[i][a] = v.div_euclid((Q * Q * Q) as i128) as i32;
+                // (÷ Q³ rounding down; in 64 bits when it fits, as it does.)
+                out[a] = match i64::try_from(v) { Ok(v) => v.div_euclid(Q * Q * Q), Err(_) => v.div_euclid((Q * Q * Q) as i128) as i64 } as i32;
             }
-        }}}
-        out
+            out
+        })
     }
 
     /// Largest speed anywhere, mm/s.
