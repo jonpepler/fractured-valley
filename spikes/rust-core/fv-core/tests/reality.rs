@@ -157,6 +157,14 @@ fn humidify(c: &mut Cell, t: Temperature, subs: &[Substance]) {
 /// rate over the measured ticks (mm/day) and how much the water warmed over
 /// the whole run (K).
 fn puddle(sky: Sky, roof: bool, warm: u64, measure: u64) -> (f64, f64) {
+    let (rate, warmed, _) = puddle_in_wind(sky, roof, None, warm, measure);
+    (rate, warmed)
+}
+
+/// The same, with the wind's average set (mm/s along x, y; `None` keeps
+/// the sim's default breeze). Also returns the mean air speed measured
+/// over the water, mm/s.
+fn puddle_in_wind(sky: Sky, roof: bool, wind: Option<[i64; 2]>, warm: u64, measure: u64) -> (f64, f64, f64) {
     let air = celsius(AIR_C);
     let mut w = World::new(16, 16, 16, 9, air);
     let subs = w.subs.clone();
@@ -175,6 +183,8 @@ fn puddle(sky: Sky, roof: bool, warm: u64, measure: u64) -> (f64, f64) {
     humidify(&mut wet, air, &subs);
     for y in PUDDLE { for x in PUDDLE { w.set(x, y, PUDDLE_Z, wet) } }
     let mut sim = Sim::new(w, sky);
+    if let Some(wind) = wind { sim.flow.wind_mean = wind }
+    let mut speed = (0f64, 0u64);
     let water = |sim: &Sim| -> (i64, f64) {
         let (mut m, mut t) = (0i64, 0f64);
         for y in PUDDLE { for x in PUDDLE {
@@ -189,6 +199,16 @@ fn puddle(sky: Sky, roof: bool, warm: u64, measure: u64) -> (f64, f64) {
     let mut m0 = 0;
     for tick in 0..warm + measure {
         if tick == warm { m0 = water(&sim).0 }
+        if tick >= warm && tick % 20 == 0 {
+            use fv_core::transport::FaceVelocity;
+            for y in PUDDLE { for x in PUDDLE {
+                let (x, y, z) = (x as i64, y as i64, PUDDLE_Z as i64);
+                let u = (sim.flow.face(x - 1, y, z, 0) + sim.flow.face(x, y, z, 0)) as f64 / 2.0;
+                let v = (sim.flow.face(x, y - 1, z, 1) + sim.flow.face(x, y, z, 1)) as f64 / 2.0;
+                speed.0 += (u * u + v * v).sqrt();
+                speed.1 += 1;
+            }}
+        }
         sim.step();
         assert_eq!(sim.energy_gap(), 0, "energy books, tick {tick}");
         assert_eq!(sim.mass_gap(), 0, "mass books, tick {tick}");
@@ -198,7 +218,7 @@ fn puddle(sky: Sky, roof: bool, warm: u64, measure: u64) -> (f64, f64) {
     // 1 mm of water over a cell's face is FACE_MM2 mg (10 g on a 10 cm cell).
     let mm = (m0 - m1) as f64 / 1_000.0 / FACE_MM2 as f64 / (PUDDLE.len() * PUDDLE.len()) as f64;
     let days = measure as f64 * 0.05 / 86_400.0;
-    (mm / days, t1 - t0)
+    (mm / days, t1 - t0, speed.0 / speed.1.max(1) as f64)
 }
 
 #[test]
@@ -335,4 +355,28 @@ fn the_plume_over_a_campfire_is_as_hot_as_mccaffrey_measured() {
         checked += 1;
     }
     assert!(checked > 0);
+}
+
+#[test]
+fn wind_dries_a_puddle_faster_than_still_air() {
+    // Wind thins the layer of damp air on water and brings drier air, so
+    // open water dries faster in a breeze. Penman's wind function for open
+    // water, f(u) = 0.26·(1 + 0.54·u) mm/day per mbar with u in m/s
+    // (Penman 1948; as written in Shuttleworth, Terrestrial
+    // Hydrometeorology, 2012), makes a 2 m/s breeze dry about 2.1 times as
+    // fast as still air; McAdams' surface coefficient h = 5.7 + 3.8·v, which
+    // the sim uses, about 2.3 times. At night only the air dries the puddle,
+    // so its rate shows the wind's effect alone. Over minutes 1–3.
+    let (warm, measure) = (60 * 20, 2 * 60 * 20);
+    let (still, breeze) = std::thread::scope(|s| {
+        let still = s.spawn(|| puddle_in_wind(Sky::NIGHT, false, Some([0, 0]), warm, measure));
+        let breeze = s.spawn(|| puddle_in_wind(Sky::NIGHT, false, Some([2_000, 0]), warm, measure));
+        (still.join().unwrap(), breeze.join().unwrap())
+    });
+    let ratio = breeze.0 / still.0.max(1e-9);
+    eprintln!("puddle at night: still air {:.2} mm/day (air over it {:.0} mm/s), breeze {:.2} mm/day ({:.0} mm/s): ×{ratio:.2}", still.0, still.2, breeze.0, breeze.2);
+    assert!(breeze.2 > 1_000.0, "the breeze reaches the water: {:.0} mm/s", breeze.2);
+    assert!(still.0 > 0.0, "still air dries it a little");
+    // ×2.1 by Penman, ×3 either way, but it must be clearly faster.
+    assert!((1.3..6.3).contains(&ratio), "a 2 m/s breeze dries it ×{ratio:.2} as fast as still air (Penman: ×2.1)");
 }

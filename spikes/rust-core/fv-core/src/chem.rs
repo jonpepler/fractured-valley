@@ -86,16 +86,20 @@ const FEEDBACK_HALF_MM2: i128 = 10 * CELL_VOLUME_ML as i128;
 const SURFACE_H_PER_SIGMA: i64 = 25;
 
 /// Heat transfer between open water's surface and the air over it, in
-/// mW/(m²·K): about 10 W/(m²·K) in light air (h = 5.7 + 3.8·v W/(m²·K) at
-/// v ≈ 1 m/s, McAdams 1954, as used for open water by Watmuff et al. 1977).
-const WATER_SURFACE_H: i64 = 10_000;
-/// Vapour carried off a water surface: by the Chilton–Colburn analogy
-/// h_m = h / (ρ·c_p·Le^⅔) with ρ·c_p ≈ 1 200 J/(m³·K) and Le ≈ 0.85 for
-/// water vapour in air, ≈ 9.2 mm/s at the h above (in µm/s). Per tick it
-/// sweeps h_m × the water's surface × the tick of air over it: 4.6 mL on a
-/// 10 cm cell.
-const WATER_TRANSFER_UM_PER_S: i64 = 9_200;
-const WATER_SWEPT_UL: i64 = WATER_TRANSFER_UM_PER_S * FACE_MM2 * TICK.0 / 1_000_000;
+/// mW/(m²·K), at an air speed over it in mm/s: h = 5.7 + 3.8·v W/(m²·K)
+/// with v in m/s (McAdams 1954, as used for open water by Watmuff et al.
+/// 1977). Wind thins the layer of still, damp air on the water; 5.7 is what
+/// still air alone gives. The fit is for up to ~5 m/s.
+pub fn water_surface_h(wind_mm_s: i64) -> i64 { 5_700 + 38 * wind_mm_s.clamp(0, 5_000) / 10 }
+/// Vapour carried off a water surface per tick, as the volume of air swept
+/// over a cell's water, µL: by the Chilton–Colburn analogy the transfer
+/// speed is h_m = h / (ρ·c_p·Le^⅔), with ρ·c_p ≈ 1 200 J/(m³·K) and
+/// Le ≈ 0.85 for water vapour in air, so ≈ 9.3 mm/s at h = 10 W/(m²·K).
+/// Times the water's surface and the tick: 4.6 mL on a 10 cm cell then.
+fn water_swept_ul(wind_mm_s: i64) -> i64 {
+    let h_m_um_s = water_surface_h(wind_mm_s) * 1_000 / 1_077; // mW → W ×1000, ÷ 1 077 J/(m³·K)
+    h_m_um_s * FACE_MM2 * TICK.0 / 1_000_000
+}
 /// A water surface fills a cell's floor, mm².
 const WATER_SURFACE_MM2: i64 = FACE_MM2;
 
@@ -117,13 +121,34 @@ pub fn surface_h(sigma: i64, t_gas: Temperature, ambient: Temperature) -> i64 {
     (SURFACE_H_PER_SIGMA as f64 * nusselt / 2.0).round() as i64
 }
 
-pub fn react(world: &mut World) {
+/// The reaction step in still air.
+pub fn react(world: &mut World) { react_in(world, &crate::transport::Still) }
+
+/// The reaction step, with the air moving as `vel` says (the sim passes
+/// its flow): wind over open water speeds its evaporation.
+pub fn react_in(world: &mut World, vel: &dyn crate::transport::FaceVelocity) {
     let t = tables();
     let lit = flame_reach(world);
     world.run_phase(|w, b, out, _tally| {
         let base = b * BRICK_CELLS;
-        for l in 0..BRICK_CELLS { out[l] = react_cell(w.cells[base + l], &w.subs, t, w.ambient, lit[base + l]) }
+        let (ox, oy, oz) = w.brick_origin(b);
+        for l in 0..BRICK_CELLS {
+            let c = w.cells[base + l];
+            let wind = if c.open_water() {
+                let (lx, ly, lz) = World::local_xyz(l);
+                wind_over(vel, (ox + lx) as i64, (oy + ly) as i64, (oz + lz) as i64)
+            } else { 0 };
+            out[l] = react_cell(c, &w.subs, t, w.ambient, lit[base + l], wind);
+        }
     });
+}
+
+/// Horizontal air speed through a cell, mm/s: the mean of its two faces'
+/// speeds along x and along y, combined.
+fn wind_over(vel: &dyn crate::transport::FaceVelocity, x: i64, y: i64, z: i64) -> i64 {
+    let u = (vel.face(x - 1, y, z, 0) + vel.face(x, y, z, 0)) / 2;
+    let v = (vel.face(x, y - 1, z, 1) + vel.face(x, y, z, 1)) / 2;
+    libm::sqrt((u * u + v * v) as f64) as i64
 }
 
 /// Which cells' gas a flame can reach this tick: gas holding both fuel and
@@ -220,9 +245,10 @@ pub fn pyrolysis_rate(c: &Cell, subs: &[Substance], t: &Tables) -> Mass {
     t.pyrolysis[k_index(c.surface_temperature(subs).0)].of_mass(c.solid[VOLATILE]).min(Mass(cap.max(1)))
 }
 
-pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool) -> Cell {
+/// `wind`: horizontal air speed through the cell, mm/s (only open water uses it).
+pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool, wind: i64) -> Cell {
     let core_before = c.core_capacity(subs);
-    let mut c = react_inner(c, subs, t, ambient, pilot);
+    let mut c = react_inner(c, subs, t, ambient, pilot, wind);
     // Matter leaves from the surface, but a burning solid shrinks as a
     // whole (the surface layer is a share of it): the core gives up the heat
     // of what it no longer holds to the surface, keeping its temperature.
@@ -236,7 +262,7 @@ pub fn react_cell(c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature,
     c
 }
 
-fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool) -> Cell {
+fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature, pilot: bool, wind: i64) -> Cell {
     let ml = c.gas_volume_ml(subs);
     let s = &subs[c.substance as usize];
     let vap = Gas::Vapour as usize;
@@ -255,7 +281,7 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
         // G = h·A with h in mW/(m²·K) and A in mm²: product is 10⁻⁹ W/K = 10⁻³ µW/K.
         let h = (surface_h(s.surface_per_volume, tg, ambient) * s.surface_per_volume) as i128;
         // Open water trades heat with the air over it across its surface.
-        let g = if c.open_water() { WATER_SURFACE_H as i128 * WATER_SURFACE_MM2 as i128 / 1_000 } else { h * c.inner_surface_mm2(subs) as i128 / 1_000 };
+        let g = if c.open_water() { water_surface_h(wind) as i128 * WATER_SURFACE_MM2 as i128 / 1_000 } else { h * c.inner_surface_mm2(subs) as i128 / 1_000 };
         let mut q = (Conductance(g as i64) * (tg - ts)) * TICK;
         // Never past the shared temperature: at most what equalises them.
         // Worked out from the gas side: the shared temperature is rounded to
@@ -337,7 +363,7 @@ fn react_inner(mut c: Cell, subs: &[Substance], t: &Tables, ambient: Temperature
             // vapour at its surface, so sunlight and heat speed it up.
             let air = c.gas[vap].0 as i128 * CELL_VOLUME_ML as i128 / ml as i128; // µg/L
             let sat_l = t.saturated_ug_per_l[k_index(ts.0)] as i128;
-            Mass((((sat_l - air).max(0) * WATER_SWEPT_UL as i128 + 500_000) / 1_000_000) as i64).min(Mass(room))
+            Mass((((sat_l - air).max(0) * water_swept_ul(wind) as i128 + 500_000) / 1_000_000) as i64).min(Mass(room))
         } else {
             Mass((room as i128 * speed as i128 / (FINE_SIGMA as i128 * 4)) as i64)
         }.min(held).min(c.water);

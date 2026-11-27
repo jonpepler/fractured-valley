@@ -95,7 +95,7 @@ impl Sim {
         // the fuel beside it before the plume carries that gas away.
         self.flow.step(w);
         advect(w, &self.flow, self.advect_steps);
-        chem::react(w);
+        chem::react_in(w, &self.flow);
         if let Some(f) = self.flames.as_mut() {
             f.resize(w.cells.len(), 0);
             for (o, c) in f.iter_mut().zip(&w.cells) { *o = c.flame.0 }
