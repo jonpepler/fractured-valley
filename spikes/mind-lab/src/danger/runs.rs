@@ -95,6 +95,9 @@ pub fn build_cast(c: &Case, cast: &Cast) -> (Valley, u32) {
 /// Bryn, `d` cells off, wherever Bryn has got to. Its wallow lies behind it.
 pub fn meet(v: &mut Valley, seed: u64, d: i32) {
     v.run_until(MEET);
+    // (Review: the seeds varied outcomes too little.) The distance at which the boar is seen also
+    // varies with the seed: `d` − 2 to `d` + 1 cells (still in sight).
+    let d = d - 2 + (hash(seed, 4, 0, 0xd4e7) % 4) as i32;
     let (spot, from) = geometry(seed);
     let k = dist(spot.0, spot.1, from.0, from.1).max(1);
     let me = &v.w.people[BRYN];
@@ -115,6 +118,8 @@ pub struct Outcome {
     pub plan_held: bool, pub plan_dropped: Option<u32>,
     /// Hurt (times gored), the boar struck and braced against, the boar driven off (it ran).
     pub gored: u32, pub struck: u32, pub braced: u32, pub boar_fled: bool,
+    /// The tick (after the meeting) Bryn went down, if it did; responses aren't counted after it.
+    pub down_at: Option<u32>,
     /// The competition's scores at the first response.
     pub first_scores: Vec<(u8, i32)>,
     /// Hops thought in the first tick after the meeting, and the frontier allowed.
@@ -144,6 +149,8 @@ pub fn encounter_cast(c: &Case, cast: &Cast, record: bool) -> (Outcome, Valley) 
             let q = &v.w.boars[0]; let me = &v.w.people[BRYN]; boar_d0 = dist(q.x, q.y, me.x, me.y);
         } }
         o.stress_peak = o.stress_peak.max(b.m.mods.stress);
+        // (Review: a downed Bryn's choices were counted though never carried out.)
+        if v.w.people[BRYN].gored >= crate::people::world::DOWN_AFTER { if o.down_at.is_none() { o.down_at = Some(k); } continue; }
         if let Some(r) = b.m.held.response { o.counts[r as usize] += 1; if o.first.is_none() { o.first = Some(r); o.first_scores = b.m.held.last_scores.clone(); } }
         if k == 5 { o.plan_held = b.m.held.intent == Some(plan); }
         if o.plan_dropped.is_none() { if let Some((t, n)) = b.m.held.dropped { if n == plan { o.plan_dropped = Some(t.saturating_sub(MEET)); } } }
@@ -152,7 +159,9 @@ pub fn encounter_cast(c: &Case, cast: &Cast, record: bool) -> (Outcome, Valley) 
     let me = &v.w.people[BRYN];
     o.gored = v.w.people[BRYN].gored;
     o.struck = q.struck; o.braced = q.braced;
-    o.boar_fled = dist(q.x, q.y, me.x, me.y) > boar_d0.max(8) + 4;
+    // (Review: this used to be a distance test, which a fleeing Bryn also passed.)
+    let _ = (me, boar_d0);
+    o.boar_fled = q.routed.is_some();
     let b = &v.folk[BRYN];
     o.ally_cai = (ally0, w(b, b.pnode[CAI], b.ids.ally));
     (o, v)
@@ -208,8 +217,11 @@ pub fn call_case(seed: u64, temper: Temperament, calls: i32, from_allies: i32, o
             let d = dist(a.x, a.y, b.x, b.y);
             let m = &v.folk[j].m;
             if m.held.alarm.is_some() { r.hearers[h].0 = true; }
-            if d <= 6 { r.hearers[h].1 = true; }
-            if d >= start[h] + 4 { r.hearers[h].2 = true; }
+            // (Review: count coming and running off only once Bryn has called.)
+            if r.first_call.is_some() {
+                if d <= 6 { r.hearers[h].1 = true; }
+                if d >= start[h] + 4 { r.hearers[h].2 = true; }
+            }
             match m.held.response { Some(crate::mind::R_AID) => r.hearers[h].3 += 1, Some(crate::mind::R_FLEE) => r.hearers[h].4 += 1, _ => {} }
         }
     }

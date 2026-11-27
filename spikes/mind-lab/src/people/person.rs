@@ -468,8 +468,10 @@ impl Person {
     /// from me counts less. (A rule, like the trust updates: listed in the stage note.)
     fn learn_allies(&mut self, s: &Sense) {
         let ids = self.ids;
-        let in_danger = self.m.act(ids.danger) >= crate::mind::OPTION_AT && self.m.last.percepts.iter().any(|p| p.kind == Kind::Boar.k());
-        let threat = self.m.last.percepts.iter().find(|p| p.kind == Kind::Boar.k()).map(|p| (p.x, p.y));
+        // The threat: a creature in sight that feels bad to this mind (its own valence, as in
+        // `Mind::respond`), not a kind named here.
+        let threat = self.m.last.percepts.iter().filter(|p| self.m.kinds[p.kind as usize].creature && self.m.store.val(p.node) < 0).map(|p| (p.x, p.y)).next();
+        let in_danger = self.m.act(ids.danger) >= crate::mind::OPTION_AT && threat.is_some();
         for j in (0..PEOPLE).filter(|&j| j != self.i) {
             let Some(p) = self.m.last.percepts.iter().find(|p| p.node == self.pnode[j]).cloned() else { self.seen_d[j] = -1; continue };
             let d = dist(p.x, p.y, s.body.x, s.body.y);

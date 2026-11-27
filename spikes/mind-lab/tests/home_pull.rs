@@ -31,7 +31,11 @@ fn a_thirsty_person_leaves_home_after_quiet_days() {
         }
     }
     let get = |nm: &str, d: u32| table.iter().find(|x| x.0 == nm && x.1 == d).unwrap().3;
-    assert!(get("stage 3 (all on)", 1) > get("stage 2 (all off)", 1) || get("stage 2 (all off)", 1) == 18, "gating comfort lets a thirsty person leave home");
+    // (Review: the old assertion could not fail.) Stage 2 already left home here, so this probe
+    // only checks stage 3 is no worse; the case stage 2 failed is the next test. The walking cost
+    // alone is worse (home is 0 cells away): printed, and it is why it ships with the comfort gate.
+    assert!(get("stage 3 (all on)", 1) >= get("stage 2 (all off)", 1) && get("stage 3 (all on)", 3) >= get("stage 2 (all off)", 3));
+    assert!(get("walking cost only", 3) < get("stage 3 (all on)", 3), "the walking cost alone keeps people home");
     assert!(get("stage 3 (all on)", 3) * 3 >= 18 * 2, "after three quiet days, most thirsty people still go for water");
 }
 

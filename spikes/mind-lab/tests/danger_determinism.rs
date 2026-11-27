@@ -9,8 +9,9 @@ use fv_mind_lab::hashes::{danger_order, danger_runs};
 use fv_mind_lab::store::Store;
 use fv_mind_lab::think::Form;
 
-/// Pinned when stage 3 was written.
-const PINNED: [u64; 3] = [0x3c66_7839_ac9e_0302, 0x19a2_4ce7_461d_051b, 0x1168_8470_37ad_bef8];
+/// Pinned when stage 3 was written; moved after review (meeting distance varies with the seed,
+/// a braced charge is no longer a goring).
+const PINNED: [u64; 3] = [0xa58e_5c86_5900_6817, 0xc3bd_3b02_7868_bfd7, 0xa4e2_dff5_6ce1_a2e3];
 
 #[test]
 fn danger_runs_give_identical_pinned_hashes() {
@@ -24,12 +25,15 @@ fn danger_runs_give_identical_pinned_hashes() {
 #[test]
 fn danger_same_hash_on_any_thread_count_and_any_order() {
     let orders: [(&str, Vec<usize>); 3] = [("in order", vec![0, 1, 2, 3]), ("reversed", vec![3, 2, 1, 0]), ("shuffled", vec![2, 0, 3, 1])];
-    let reference = danger_order(1, &orders[0].1);
-    for t in [1, 2, 4, 8] { for (name, o) in &orders {
-        let h = danger_order(t, o);
-        println!("{t} thread(s), people {name}: {h:#018x}");
-        assert_eq!(h, reference);
-    } }
+    for call in [false, true] {
+        let reference = fv_mind_lab::hashes::danger_order_case(1, &orders[0].1, call);
+        for t in [1, 2, 4, 8] { for (name, o) in &orders {
+            let h = fv_mind_lab::hashes::danger_order_case(t, o, call);
+            println!("{} {t} thread(s), people {name}: {h:#018x}", if call { "a cry for help:" } else { "allies and a boar:" });
+            assert_eq!(h, reference);
+        } }
+    }
+    let _ = danger_order;
 }
 
 #[test]

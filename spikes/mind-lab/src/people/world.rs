@@ -341,7 +341,9 @@ impl World {
                     let p = &mut self.people[j];
                     if (p.x - qx).abs().max((p.y - qy).abs()) <= 2 && !p.away && p.gored < DOWN_AFTER {
                         let braced = matches!(deeds.get(j).and_then(|d| d.action), Some(Action::Hold { entity: e }) if e == BOAR_ID + b as u32);
-                        p.gored += 1;
+                        // (After review: a braced charge no longer counts as a goring: bracing is
+                        // what protects the holder; it bruises, and hurts the boar.)
+                        if !braced { p.gored += 1; }
                         if braced { p.pain = (p.pain + BRACED_GORE).min(1000); q.pain = (q.pain + BRACE).min(1000); q.braced += 1; self.log.push((tick, format!("the boar charges {}, who holds braced", NAMES[j]))); }
                         else { p.pain = (p.pain + GORE).min(1000); q.gored += 1; self.log.push((tick, format!("the boar gores {}", NAMES[j]))); }
                     }

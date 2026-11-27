@@ -74,9 +74,12 @@ pub fn danger_runs(threads: usize) -> Vec<(&'static str, u64)> {
 }
 
 /// A danger valley (Bryn, two allies, the boar) on `threads` threads with people stepped in `order`.
-pub fn danger_order(threads: usize, order: &[usize]) -> u64 {
-    use crate::danger::runs::{build, meet, Case, TEMPERS, WATCH};
-    let mut v = build(&Case { seed: 5, temper: TEMPERS[0].1, allies: true, expected: true }, 700, 2).0;
+pub fn danger_order(threads: usize, order: &[usize]) -> u64 { danger_order_case(threads, order, false) }
+/// The same, or (`call`) Bryn alone crying out to Cai and Dee out of sight.
+pub fn danger_order_case(threads: usize, order: &[usize], call: bool) -> u64 {
+    use crate::danger::runs::{build, build_cast, meet, Case, Cast, TEMPERS, WATCH};
+    let mut v = if call { build_cast(&Case { seed: 6, temper: TEMPERS[2].1, allies: true, expected: false }, &Cast { ally_dist: 16, calls: 700, ..Cast::default() }).0 }
+        else { build(&Case { seed: 5, temper: TEMPERS[0].1, allies: true, expected: true }, 700, 2).0 };
     meet(&mut v, 5, 8);
     for _ in 0..WATCH { v.step(threads, order); }
     v.state_hash()

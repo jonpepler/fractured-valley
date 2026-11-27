@@ -51,6 +51,7 @@ fn t2_alone_against_with_allies() {
             a.iter().map(|o| o.stress_peak).sum::<i32>() / 6, w.iter().map(|o| o.stress_peak).sum::<i32>() / 6);
     } }
     println!("with allies: no more flight in {less_flight}/{n}, at least as much holding or fighting in {bolder}/{n}");
+    let _ = less_flight;
     let total = |allies: bool| -> u32 { TEMPERS.iter().flat_map(|&(_, t)| [false, true].map(|e| run(t, allies, e))).flatten().map(|o| o.counts[R_FLEE as usize]).sum() };
     let surprised = |allies: bool| -> u32 { TEMPERS.iter().flat_map(|&(_, t)| run(t, allies, false)).map(|o| o.counts[R_FLEE as usize]).sum() };
     println!("ticks fleeing in all runs, alone / with allies: {} / {}; taken by surprise only: {} / {}", total(false), total(true), surprised(false), surprised(true));
@@ -65,13 +66,17 @@ fn t2_alone_against_with_allies() {
             let (f, _) = encounter_with(&c, 700, 2, false);
             let (s, _) = encounter_with(&c, 0, 2, false);
             m += 1;
-            if f.counts[R_FLEE as usize] <= s.counts[R_FLEE as usize] { friends_bolder += 1; }
+            if f.counts[R_FLEE as usize] < s.counts[R_FLEE as usize] { friends_bolder += 1; }
             line.push(format!("{}/{}", f.counts[R_FLEE as usize], s.counts[R_FLEE as usize]));
         }
         println!("{tn:16}: ticks fleeing with friends / with strangers by seed: {}", line.join(" "));
     }
-    println!("friends embolden at least as much as strangers in {friends_bolder}/{m}");
-    assert!(friends_bolder * 3 >= m * 2);
+    let tot = |w: i32, allies: bool| -> u32 { TEMPERS.iter().flat_map(|&(_, t)| SEEDS.iter().map(move |&seed| encounter_with(&Case { seed, temper: t, allies, expected: false }, w, 2, false).0.counts[R_FLEE as usize])).sum() };
+    let (alone, strangers, friends) = (tot(700, false), tot(0, true), tot(700, true));
+    println!("friends embolden strictly more than strangers in {friends_bolder}/{m}; surprised, ticks fleeing alone / with strangers / with friends: {alone} / {strangers} / {friends}");
+    // After review, with a downed Bryn's choices no longer counted: the effect is small (about 5%),
+    // and mere presence does nothing; it is the learnt link that does it.
+    assert!(friends < strangers && friends < alone, "the learnt link, not mere presence, emboldens");
 }
 
 #[test]
@@ -160,8 +165,15 @@ fn t4_intent_as_a_modulator() {
         let th = |focus: bool| levels.iter().find(|&&s| focus_probe_with(1, t, Some(s), focus).plan_ticks < 20).copied();
         println!("  {tn:16}: the plan loses control at stress {:?} with focus, {:?} without", th(true), th(false));
     }
-    let (f, nf) = (focus_probe(1, TEMPERS[1].1, Some(500)), focus_probe_with(1, TEMPERS[1].1, Some(500), false));
-    assert!(f.plan_ticks > nf.plan_ticks, "focus is what lets the plan keep control as stress rises");
+    // Across seeds and temperaments: the point with focus is never lower than without.
+    let (mut higher, mut never_lower, mut k) = (0, 0, 0);
+    for &seed in &SEEDS { for (_, t) in TEMPERS {
+        let th = |focus: bool| levels.iter().find(|&&s| focus_probe_with(seed, t, Some(s), focus).plan_ticks < 20).copied().unwrap_or(1100);
+        let (a, b) = (th(true), th(false));
+        k += 1; if a > b { higher += 1; } if a >= b { never_lower += 1; }
+    } }
+    println!("focus raises the point in {higher}/{k} (seed × temperament), never lowers it in {never_lower}/{k}");
+    assert!(never_lower == k && higher * 2 >= k, "focus is what lets the plan keep control as stress rises");
 }
 
 fn counts(c: &[u32; 6]) -> String { c.iter().enumerate().filter(|x| *x.1 > 0).map(|(i, n)| format!("{} {n}", R_NAMES[i])).collect::<Vec<_>>().join(", ") }
