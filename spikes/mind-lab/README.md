@@ -113,3 +113,20 @@ felt_without_sources, habituate, prune_places}`; spent intents (`Mind::spent`); 
 (`think::EARLY_STOP`, exact, on by default). Bit-identical speed-ups: `learn_expectations`, place
 lookups once per perceive, the backlog read once per step. Findings: `research/mind-lab/05-village.md`
 in the private store.
+
+## Round 2, stage 1: foundations
+
+```bash
+cargo test --release --test round2 -- --nocapture                    # dormancy, feelings, gossip memory, sleep share, thinking rate
+cargo run --release --example village_long -- 4 30 180 1 long-180    # a long run; per-day CSV in out/village/
+python3 tools/round2_compare.py <round1 runs.csv> <round2 runs.csv>   # paired by seed, sign-tested
+```
+
+- **Needs only on spreading** (`Mind::felt_in`, `salience`): what answers a need counts by how strongly it (or its kind) is on the mind; a place lacking what an uppermost need wants is felt to lack it. `Config::needs_in_choice` is round 1's rule.
+- **Courage on spreading** (`Mods::courage`, `Config::courage_spread`).
+- **Thinking rate for every mind** (`Mind::every`, `phase`, `live`, `due`, `reflex`, `idle`; `Person::gate`): reflexes every tick, senses buffered, rates per tick (`dt`, `per_ticks`).
+- **Feelings by evidence** (`people::person::Rel`, `feel_evidence`, `set_base`; beta reputation with forgetting), left alone by consolidation (`Config::protect_social`). Write trust and warmth only through these.
+- **Gossip with memory** (`lt::TOLD`), sleep keeping more of a novel day (`Config::novelty_keep`), **dormancy** (`Mind::cold`, `go_dormant`, `revive`; `Config::dormancy`).
+- The village's fixes are default; joining, warning and crying out are graded (`mind::graded`). `Config::round1()` restores round 1's rules for ablations.
+
+Findings: `research/mind-lab/round-2/01-foundations.md` in the private store.
