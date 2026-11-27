@@ -22,7 +22,9 @@ const loads = []
 page.on('response', r => { if (r.request().isNavigationRequest()) loads.push({ fromServiceWorker: r.fromServiceWorker(), coep: r.headers()['cross-origin-embedder-policy'] ?? null }) })
 const t0 = Date.now()
 await page.goto(`${server.url}threads.html?threads=4`)
-const r = await result(page)
+// Each tick got heavier (flames above the bed, the air carrying its own motion):
+// the three 60-tick runs plus the 64×64×32 timing take several minutes in CI.
+const r = await result(page, 900_000)
 const secs = ((Date.now() - t0) / 1000).toFixed(1)
 
 console.log(`  navigations: ${JSON.stringify(loads)}`)
