@@ -317,7 +317,8 @@ pub fn s6_note(seed: u64, set: u32, medium: Medium, lose_on: Option<u32>, nights
     let mut v = su.build();
     v.at(4, Event::SetThirst { who: BRYN, v: 0 });
     if quiet { keep_quiet(&mut v, nights); } else { for d in 1..=nights { v.at(d * DAY, Event::SetThirst { who: BRYN, v: 0 }); } }
-    if let Some(d) = lose_on { v.at(d * DAY + 50, Event::LoseNotes { who: BRYN }); }
+    // Lost where Bryn won't come on it again (dropped, then carried off by the wind: staging).
+    if let Some(d) = lose_on { v.at(d * DAY + 50, Event::LoseNotes { who: BRYN }); v.at(d * DAY + 51, Event::MoveNote { id: 100, x: 62, y: 1 }); }
     let mut r = NoteRun::default();
     v.run_until(6);
     if let Some(t) = bryn_told(&v) {

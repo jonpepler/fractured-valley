@@ -25,7 +25,7 @@ fn prep(mut s: Sim, seed: u64, t: Temperament, st: Setting) -> Sim {
     let old = s.m.clone();
     s.m = if st == Setting::Original { s.fox.mind_exact(t, seed) } else { s.fox.mind(t, seed) };
     s.m.skip_sleep = old.skip_sleep; s.m.pin_arousal = old.pin_arousal; s.m.pin_mood = old.pin_mood; s.m.learn = old.learn; s.m.mods = old.mods;
-    if st == Setting::Original { s.m.params.exact = true; s.m.params.index_ties = true; }
+    if st == Setting::Original { s.m.params.exact = true; s.m.params.index_ties = true; s.m.cfg.stochastic_learning = false; }
     s
 }
 
