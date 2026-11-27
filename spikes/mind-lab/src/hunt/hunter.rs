@@ -245,11 +245,13 @@ impl Person {
         let name = if solo { format!("plan: hunt {tname} myself") } else if by == self.i { format!("plan #{rev} (mine): {tname}") } else { format!("plan #{rev} from {}: {tname}", NAMES[by]) };
         let who = self.m.who;
         let node = self.m.store.add_node(&name, 200, 0, None, who);
-        // A spot inside a place I know (right by the rock) expects what that place holds; otherwise
-        // the rock, filed under the new spot, would surprise me every tick (found in the viewer).
-        let known = self.m.place_index_at(me.2, me.3);
-        let pi = self.m.add_place(&format!("my spot ({}) in plan #{rev}", crate::people::talk::ROLE_WORDS[me.1.i()]), me.2, me.3, None);
-        if let Some(k) = known { self.m.expect[pi] = self.m.expect[k].clone(); }
+        // A spot inside a place I already know (right by the rock) is that place: a new place there
+        // would take the rock's sightings and surprise me every tick (found in the viewer), and a
+        // copy of its expectations would make one of the two miss the rock (found next).
+        let pi = match self.m.place_index_at(me.2, me.3) {
+            Some(k) => k,
+            None => self.m.add_place(&format!("my spot ({}) in plan #{rev}", crate::people::talk::ROLE_WORDS[me.1.i()]), me.2, me.3, None),
+        };
         let pn = self.m.place_nodes[pi];
         let tn = self.target_node(target);
         let role_c = match me.1 { Role::Drive => k.drive, Role::Wait => k.wait };

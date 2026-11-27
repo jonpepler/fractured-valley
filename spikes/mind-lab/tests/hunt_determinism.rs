@@ -11,7 +11,7 @@ use fv_mind_lab::store::Store;
 use fv_mind_lab::think::Form;
 
 /// Pinned when stage 4 was written.
-const PINNED: [u64; 3] = [0x2888360a4ece252d, 0x9c0c83a781d1e3c5, 0xb176b629016f6619];
+const PINNED: [u64; 3] = [0x86d38e0fc8623350, 0xfa0621d86f14cc10, 0xa4041dfaef4f6b53];
 
 #[test]
 fn hunt_runs_give_identical_pinned_hashes() {
@@ -41,7 +41,8 @@ fn hunt_hash_is_not_blind() {
         let mut v = build(&Case { seed, set, mode });
         match tweak {
             1 => { let m = &mut v.deer_minds[0]; let pn = m.place_nodes[0]; let x = m.store.val(pn); m.store.set_val(pn, (x + 1) as i16); }
-            2 => { let p = &mut v.folk[1]; let n = p.pnode[0]; let x = p.m.store.val(n); p.m.store.set_val(n, (x + 1) as i16); }
+            // (A unit of warmth can be absorbed: consolidation pulls feelings towards episodes, rounding.)
+            2 => { let p = &mut v.folk[1]; let t = p.trust(0); p.set_trust(0, t + 1); }
             _ => {}
         }
         for _ in 0..HUNT_TICKS / 2 { v.step(1, &[0, 1, 2, 3]); }
@@ -49,7 +50,7 @@ fn hunt_hash_is_not_blind() {
     };
     let base = h(2, 1, Mode::Planned, 0);
     for (what, x) in [("seed", h(3, 1, Mode::Planned, 0)), ("temperament set", h(2, 0, Mode::Planned, 0)), ("planned or alone", h(2, 1, Mode::Solo, 0)),
-        ("one unit of the deer's meadow", h(2, 1, Mode::Planned, 1)), ("one unit of Bryn's warmth to Ash", h(2, 1, Mode::Planned, 2))] {
+        ("one unit of the deer's meadow", h(2, 1, Mode::Planned, 1)), ("one unit of Bryn's trust in Ash", h(2, 1, Mode::Planned, 2))] {
         println!("{what}: {base:#018x} vs {x:#018x}");
         assert_ne!(base, x, "{what} must move the hash");
     }
