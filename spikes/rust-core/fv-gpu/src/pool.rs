@@ -490,6 +490,9 @@ impl PoolDiffusion {
         let map_at = self.slots * BRICK_CELLS / 32 + 1;
         let map: Vec<u32> = self.slot_of.iter().map(|&s| s as u32).collect();
         self.queue.write_buffer(&self.faces, 0, bytemuck::cast_slice(&vel));
+        // Last tick's pressure, where this tick's solve starts (Flow::step).
+        if flow.pressure.len() != nb { flow.pressure = vec![0; nb] }
+        self.queue.write_buffer(&self.faces, (21 * nb * 4) as u64, bytemuck::cast_slice(&flow.pressure));
         self.queue.write_buffer(&self.aux, (map_at * 4) as u64, bytemuck::cast_slice(&map));
         let p = self.params(w, cur, 1, false);
         self.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&p));
@@ -499,9 +502,11 @@ impl PoolDiffusion {
              w.seed as u32, (w.seed >> 32) as u32, tick3 as u32, (tick3 >> 32) as u32, map_at as u32, p_in, 0, 0]
         };
         t.upload = ms(t0);
-        // gather, carried, forced, div, 30 pressure rounds, project.
+        // gather, carried, forced, div, the pressure rounds, project.
+        let rounds = fv_core::flow::PRESSURE_ROUNDS as u32;
+        assert!(rounds % 2 == 0, "the pressure ping-pong must end in o_p(0)");
         let mut jobs: Vec<(usize, u32)> = vec![(11, 0), (12, 0), (13, 0), (14, 0)];
-        for r in 0..30u32 { jobs.push((15, r % 2)) }
+        for r in 0..rounds { jobs.push((15, r % 2)) }
         jobs.push((16, 0));
         let t0 = Instant::now();
         let groups = (nb as u32).div_ceil(64);
@@ -519,18 +524,24 @@ impl PoolDiffusion {
         self.wait();
         t.compute = ms(t0);
         self.kernel_ms.push(t.compute);
-        // The project step read the pressure from p_in = 0 (30 rounds end there) and wrote velocities B.
+        // The project step read the pressure from p_in = 0 (an even number of
+        // rounds ends there) and wrote velocities B; both come back.
         let t0 = Instant::now();
         let bytes = (3 * nb * 4) as u64;
+        let pbytes = (2 * nb * 4) as u64;
         let mut enc = self.device.create_command_encoder(&Default::default());
         enc.copy_buffer_to_buffer(&self.faces, bytes, &self.read, 0, bytes);
+        enc.copy_buffer_to_buffer(&self.faces, (21 * nb * 4) as u64, &self.read, bytes, pbytes);
         self.queue.submit([enc.finish()]);
-        let slice = self.read.slice(..bytes);
+        let slice = self.read.slice(..bytes + pbytes);
         slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
         self.device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU poll");
-        let data: Vec<i32> = bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped")).to_vec();
+        let raw = slice.get_mapped_range().expect("mapped").to_vec();
         self.read.unmap();
+        let data: Vec<i32> = bytemuck::cast_slice(&raw[..bytes as usize]).to_vec();
+        let pressure: Vec<i64> = bytemuck::pod_collect_to_vec(&raw[bytes as usize..]);
         for (i, v) in flow.vel.iter_mut().enumerate() { *v = [data[3 * i], data[3 * i + 1], data[3 * i + 2]] }
+        flow.pressure = pressure;
         t.readback = ms(t0);
         self.last = t;
     }

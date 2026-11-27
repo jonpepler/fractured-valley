@@ -26,7 +26,7 @@ const KEEP: i64 = 245;
 /// Rounds of the pressure solve each tick. It starts from the last tick's
 /// pressure (a plume's draw changes little from one tick to the next), so
 /// ten rounds go as far as thirty from nothing.
-const PRESSURE_ROUNDS: usize = 10;
+pub const PRESSURE_ROUNDS: usize = 10;
 /// The fastest the transport can carry: [`ADVECT_STEPS`] sub-steps of one
 /// cell each are 4 m/s at any cell size; a little under it.
 pub const MAX_SPEED: i64 = 3_800;

@@ -210,7 +210,7 @@ fn flow_forced(@builtin(global_invocation_id) id: vec3<u32>) {
 fn flow_div(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x + id.y * 65535u * 64u;
     if (i >= FP.nb) { return; }
-    fput(o_p(0u) + 2u * i, I(0u, 0u));
+    // (The pressure solve starts from last tick's pressure, uploaded into o_p(0).)
     if (faces[o_open() + i] == 0u) { fput(o_div() + 2u * i, I(0u, 0u)); return; }
     let p = vec3<i32>(bxyz(i));
     let base = o_vel_a();
