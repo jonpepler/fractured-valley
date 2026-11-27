@@ -109,6 +109,11 @@ const FLAME_FACE_G: i64 = FLAME_ON_FACE * FACE_MM2 / 1_000;
 /// 1 200 µW/mL × the tick.
 const FLAME_UJ_PER_ML: i64 = 1_200 * TICK.0 / 1_000;
 
+/// A buoyant plume's entrainment coefficient: air is drawn in sideways at
+/// α times its rising speed (Morton, Taylor & Turner 1956: α ≈ 0.09–0.12
+/// for round plumes), per mille.
+const ENTRAINMENT_PERMILLE: i64 = 100;
+
 /// Thermal conductivity of liquid water, mW/(m·K) (0.59 W/(m·K) at 20 °C:
 /// e.g. Incropera, Fundamentals of Heat and Mass Transfer, table A.6).
 const WATER_CONDUCTIVITY: i64 = 590;
@@ -272,7 +277,13 @@ pub fn diffuse_face(lo: &Cell, a: &Side, hi: &Cell, b: &Side, speed: i64, axis: 
     // √(g·l·ΔT/T) (buoyant turbulence, l = a cell), metres a second in a flame.
     let both_gas = a.gas_ml > 0 && b.gas_ml > 0;
     if both_gas {
+        // Hot gas churns at about √(g·l·ΔT/T), but buoyant eddies are
+        // stretched upward: a plume trades gas sideways with the air around
+        // it only at its entrainment velocity, α·w with α ≈ 0.1 (Morton,
+        // Taylor & Turner 1956). So the churn mixes fully across horizontal
+        // faces (up and down) and at a tenth of it across vertical ones.
         let churn = buoyant_churn(a.t.max(b.t), ambient_of(a, b));
+        let churn = if axis == 2 { churn } else { churn * ENTRAINMENT_PERMILLE / 1_000 };
         let q = MIX_QUANTUM_UL;
         let mut ul = (STILL_MIX_UL + (speed + churn) * TURBULENT_MIX_NL_PER_MM_S / 1_000) / q * q;
         if !(a.permeable && b.permeable) { ul = ul / SEEP_DIVISOR / q * q }

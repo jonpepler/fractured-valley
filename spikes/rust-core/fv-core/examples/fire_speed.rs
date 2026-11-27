@@ -82,7 +82,7 @@ fn main() {
     // contact, from 10 s on.
     let xi = std::env::var("XI").is_ok();
     let unburnt = |c: &Cell| c.substance == sub && c.solid[VOLATILE].0 >= full * (1_000 - lost_permille) / 1_000;
-    let (mut released, mut contact) = (0.0f64, 0.0f64); let (mut phase_solid, mut phase_gas) = ([0.0f64; 4], [0.0f64; 4]);
+    let (mut released, mut contact) = (0.0f64, 0.0f64); let (mut phase_solid, mut phase_gas) = ([0.0f64; 4], [0.0f64; 4]); let mut fuel_split = [0.0f64; 2];
     for tick in 0..ticks {
         let before = if xi && tick * TICK.0 >= 10_000 {
             let w = &sim.world;
@@ -104,6 +104,7 @@ fn main() {
             // Heat of the fuel still below ignition (its solid stores, and
             // its gas above ambient), before and after each phase.
             let pre = |w: &World| -> Vec<bool> { w.cells.iter().map(|c| c.substance == sub && c.surface_temperature(&w.subs) < fv_core::chem::IGNITION && unburnt(c)).collect() };
+            let fuel_in = |w: &World, m: &[bool]| -> f64 { w.cells.iter().enumerate().filter(|(i, _)| m[*i]).map(|(_, c)| c.gas[Gas::Fuel as usize].0 as f64 * 1e-6).sum() };
             let heat = |w: &World, m: &[bool]| -> (f64, f64) {
                 let (mut s, mut g) = (0.0, 0.0);
                 for (i, c) in w.cells.iter().enumerate() { if m[i] { s += (c.solid_energy.0 + c.skin.0 + c.water.0 / 1_000_000 * 0) as f64 * 1e-6; g += (c.energy.0 - (c.gas_capacity() * w.ambient).0) as f64 * 1e-6 } }
@@ -112,11 +113,15 @@ fn main() {
             let mask = pre(&sim.world);
             sim.step_before_diffuse();
             let h0 = heat(&sim.world, &mask);
+            let g0 = fuel_in(&sim.world, &mask);
             fv_core::transport::diffuse(&mut sim.world, &sim.flow);
+            let g1 = fuel_in(&sim.world, &mask);
             let h1 = heat(&sim.world, &mask);
             sim.flow.step(&sim.world);
             fv_core::transport::advect(&mut sim.world, &sim.flow, sim.advect_steps);
             let h2 = heat(&sim.world, &mask);
+            let g2 = fuel_in(&sim.world, &mask);
+            fuel_split[0] += g1 - g0; fuel_split[1] += g2 - g1;
             fv_core::chem::react(&mut sim.world);
             let h3 = heat(&sim.world, &mask);
             fv_core::rad::radiate_by(sim.radiation, &mut sim.world, &sim.sky, &mut sim.light);
@@ -196,7 +201,7 @@ fn main() {
         let den: f64 = pts.iter().map(|p| (p.0 - mx) * (p.0 - mx)).sum();
         num / den * 60.0 / 1_000.0
     } else { f64::NAN };
-    if xi { println!("XI released {released:.0} J, flame contact into unburnt fuel {contact:.0} J: {:.3} of the heat released", contact / released.max(1.0)); println!("PHASES into fuel below ignition, J (solid / gas above ambient): diffuse {:.0}/{:.0}, advect {:.0}/{:.0}, react {:.0}/{:.0}, radiate {:.0}/{:.0}", phase_solid[0], phase_gas[0], phase_solid[1], phase_gas[1], phase_solid[2], phase_gas[2], phase_solid[3], phase_gas[3]) }
+    if xi { println!("XI released {released:.0} J, flame contact into unburnt fuel {contact:.0} J: {:.3} of the heat released", contact / released.max(1.0)); println!("PHASES into fuel below ignition, J (solid / gas above ambient): diffuse {:.0}/{:.0}, advect {:.0}/{:.0}, react {:.0}/{:.0}, radiate {:.0}/{:.0}", phase_solid[0], phase_gas[0], phase_solid[1], phase_gas[1], phase_solid[2], phase_gas[2], phase_solid[3], phase_gas[3]); println!("FUEL GAS into fuel below ignition, g: by diffusion (mixing and pressure) {:.2}, by the flow {:.2}", fuel_split[0], fuel_split[1]) }
     let last = track.last().map(|p| p.1).unwrap_or(0.0);
     println!("RESULT fuel={fuel} cell_mm={CELL_MM} wind={wind} front_end_mm={last:.0} rate_m_per_min={rate:.3} points={} ms_per_tick={ms_per_tick:.1}", pts.len());
 }
