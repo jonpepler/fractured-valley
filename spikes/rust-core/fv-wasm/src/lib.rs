@@ -88,15 +88,15 @@ pub fn checked(w: &World, b: usize) -> bool { fv_core::rng::hash(w.seed, w.tick,
 // ---------------------------------------------------------------------------
 
 /// The wire format of a peer's share of one phase. Little-endian:
-/// `"FVB2"`, tick (u64), count (u32), then per brick: brick index (u32),
+/// `"FVB3"`, tick (u64), count (u32), then per brick: brick index (u32),
 /// its tally (energy in, each gas in, radiation in, radiation out: i64s),
-/// then its 512 cells (substance u8, bonds u8, then 15 i64s: solid, water,
+/// then its 512 cells (substance u8, bonds u8, lit u8, then 15 i64s: solid, water,
 /// gases, gas energy, core, surface, nuclear).
 pub mod wire {
     use super::*;
     use fv_core::substance::GASES;
 
-    const MAGIC: &[u8; 4] = b"FVB2";
+    const MAGIC: &[u8; 4] = b"FVB3";
 
     pub fn encode(tick: u64, parts: &[BrickResult]) -> Vec<u8> {
         let mut o = Vec::with_capacity(16 + parts.len() * (4 + 8 * (3 + GASES) + BRICK_CELLS * (2 + 8 * (8 + GASES))));
@@ -224,7 +224,7 @@ impl Engine {
         // fv-core's import trusts its input; check the obvious things first so
         // a bad message gives an error instead of a crashed page. (catch_unwind
         // only helps natively: on the web a panic aborts the module.)
-        if bytes.len() < 4 || &bytes[..4] != b"FVR2" { return Err(err("not a checkpoint")) }
+        if bytes.len() < 4 || &bytes[..4] != b"FVR3" { return Err(err("not a checkpoint")) }
         let sim = std::panic::catch_unwind(|| checkpoint::import(bytes)).map_err(|_| err("checkpoint is malformed"))?;
         Ok(Engine { sim, parts: None })
     }

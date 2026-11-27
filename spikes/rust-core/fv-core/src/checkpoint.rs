@@ -12,7 +12,7 @@ use crate::substance::GASES;
 use crate::units::*;
 use crate::world::World;
 
-const MAGIC: &[u8; 4] = b"FVR2";
+const MAGIC: &[u8; 4] = b"FVR3";
 
 struct W(Vec<u8>);
 impl W {
