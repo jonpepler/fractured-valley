@@ -6,7 +6,7 @@ use crate::structure;
 use crate::flow::Flow;
 use crate::ledger::{Books, Totals};
 use crate::rad::{self, Light, Radiation, Sky};
-use crate::transport::{advect, diffuse};
+use crate::transport::{advect, advect_steps, diffuse};
 use crate::units::*;
 use crate::world::World;
 
@@ -102,9 +102,11 @@ impl Sim {
         // heat, released into its gas at the end of the last tick, reaches
         // the fuel beside it before the plume carries that gas away.
         self.flow.step(w);
+        // As few carrying sub-steps as the flow allows this tick (CFL).
+        let steps = advect_steps(w, &self.flow, self.advect_steps);
         match self.advect_hook.as_mut() {
-            Some(h) => h(w, &self.flow, self.advect_steps),
-            None => advect(w, &self.flow, self.advect_steps),
+            Some(h) => h(w, &self.flow, steps),
+            None => advect(w, &self.flow, steps),
         }
         chem::react_in(w, &self.flow);
         if let Some(f) = self.flames.as_mut() {

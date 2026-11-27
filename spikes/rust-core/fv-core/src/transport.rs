@@ -613,8 +613,20 @@ struct Air { t: Temperature, permeable: bool }
 /// the air leaves by, scaled down if that would add up to more than all of it.
 pub fn advect(world: &mut World, vel: &dyn FaceVelocity, steps: i64) {
     let vel = CellVelocity::new(world, vel);
+    advect_with(world, &vel, steps)
+}
+
+/// How many sub-steps [`advect`] needs this tick, at most `max_steps` (see
+/// [`advect_steps_for`]). The simulation passes this to `advect`, or to
+/// whatever replaces it (the GPU's carrying), so both take the same steps.
+pub fn advect_steps(world: &World, vel: &dyn FaceVelocity, max_steps: i64) -> i64 {
+    let vel = CellVelocity::new(world, vel);
+    advect_steps_for(world, &vel, max_steps)
+}
+
+fn advect_with(world: &mut World, vel: &CellVelocity, steps: i64) {
     // Each cell's total outflow share: the flow is the same for every sub-step.
-    let total = world.map_cells(|x, y, z, _| outflow_share(&vel, steps, x, y, z));
+    let total = world.map_cells(|x, y, z, _| outflow_share(vel, steps, x, y, z));
     for _ in 0..steps {
         let air = { let w: &World = world; w.map_cells(|_, _, _, i| { let c = &w.cells[i]; Air { t: c.gas_temperature(), permeable: c.permeable(&w.subs) } }) };
         let outside_t = world.outside_air.gas_temperature();
@@ -632,7 +644,7 @@ pub fn advect(world: &mut World, vel: &dyn FaceVelocity, steps: i64) {
                 if my.permeable {
                     for axis in 0..3 {
                         for dir in [-1i64, 1] {
-                            let u = signed_face_velocity(w, &vel, x, y, z, axis, dir);
+                            let u = signed_face_velocity(w, vel, x, y, z, axis, dir);
                             if u == 0 { continue }
                             match w.neighbour(x, y, z, axis, dir) {
                                 Neighbour::Inside(n) => {
@@ -688,6 +700,19 @@ fn signed_face_velocity(_w: &World, vel: &dyn FaceVelocity, x: usize, y: usize, 
 #[inline]
 fn face_speed(w: &World, vel: &dyn FaceVelocity, x: usize, y: usize, z: usize, axis: usize, dir: i64) -> i64 {
     signed_face_velocity(w, vel, x, y, z, axis, dir).abs()
+}
+
+/// How many sub-steps carrying needs this tick (at most `max_steps`): the
+/// fewest that keep every cell's Courant number at or under one, so that in
+/// one sub-step no cell sends more than all its gas (Σ |u|·dt/dx over the
+/// faces air leaves by ≤ 1; the upwind scheme's stability limit). In still
+/// or slow air (everywhere under ~2 m/s along one axis) that is a single
+/// sub-step; a plume's fast core takes two. The largest Courant number is a
+/// maximum of integers, the same on any thread or machine.
+fn advect_steps_for(w: &World, vel: &dyn FaceVelocity, max_steps: i64) -> i64 {
+    let courant = w.map_cells(|x, y, z, i| if w.cells[i].permeable(&w.subs) { outflow_share(vel, 1, x, y, z) } else { 0 });
+    let worst = courant.into_iter().max().unwrap_or(0);
+    (worst.div_ceil(Fraction::ONE.0) as i64).clamp(1, max_steps.max(1))
 }
 
 /// Share (of 2³²) of a cell's gas that leaves through all its outflow faces
