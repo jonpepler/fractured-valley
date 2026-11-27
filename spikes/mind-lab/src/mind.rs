@@ -528,6 +528,14 @@ pub struct Report {
     pub backlog: i64,
     pub consolidated: i64,
     pub searching: bool,
+    /// Stage 3 of round 2: after a think that took in buffered ticks, the entities in sight now
+    /// (the percepts also hold things merged in from the buffer, where last seen). Empty: every
+    /// percept is in sight now.
+    pub in_sight: Vec<u32>,
+}
+impl Report {
+    /// Is this percept of something in sight now (not merged in from the ticks between thinks)?
+    pub fn now(&self, p: &Percept) -> bool { self.in_sight.is_empty() || self.in_sight.contains(&p.entity) }
 }
 
 #[derive(Clone, Debug)]
@@ -1042,6 +1050,16 @@ impl<S: Store> Mind<S> {
         if let Some(x) = self.held.pin_stress { self.mods.stress = x; }
     }
 
+    /// Stage 3 of round 2: the weight (per mille) a think now would give an input present
+    /// throughout the ticks since the last think (Σ persist^k over them; 1000 when thinking every
+    /// tick or with `Config::integrate_window` off), for layers that add sustained cues.
+    pub fn window_gain(&self, tick: u32) -> i64 {
+        if self.every <= 1 || !self.cfg.integrate_window { return 1000; }
+        let dt = self.last_think.map_or(1, |t| tick.saturating_sub(t)).clamp(1, MAX_DT);
+        let (mut x, mut g) = (1000i64, 0i64);
+        for _ in 0..dt { g += x; x = x * self.params.persist as i64 / 1000; }
+        g
+    }
     /// Round 2 (9.5): one tick of a mind at its thinking rate. If a think is due (`due`), it thinks
     /// (`step`) and the action is committed; otherwise the tick is idle (`idle`).
     pub fn live(&mut self, s: &Sense) -> Action {
@@ -1482,6 +1500,7 @@ impl<S: Store> Mind<S> {
             if units > 0 { self.consolidate(units, false); self.consol.idle_ticks += 1; }
         }
         rep.searching = why.starts_with("search");
+        if !buffered.is_empty() { rep.in_sight = s0.seen.iter().map(|e| e.id).collect(); if rep.in_sight.is_empty() { rep.in_sight.push(u32::MAX); } }
         rep.ws = ws; rep.hops = hops; rep.percepts = percepts; rep.inject = inject; rep.scores = scores;
         rep.action = Some(action); rep.why = why;
         rep.backlog = self.backlog(); rep.consolidated = self.consol.last_units;

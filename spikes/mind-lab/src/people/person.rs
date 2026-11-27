@@ -571,7 +571,8 @@ impl Person {
         // Checking what I was told against what I see, and my map against the landmarks.
         self.check(&s, w.tick);
         self.correct_map(&s);
-        if w.dusk { cues.push((self.ids.rest, 600)); cues.push((self.ids.fatigue, 300)); }
+        // (Stage 3 of round 2: dusk lasts, so its cue is integrated over a slow think's window.)
+        if w.dusk { let g = self.m.window_gain(w.tick); cues.push((self.ids.rest, (600 * g / 1000) as i32)); cues.push((self.ids.fatigue, (300 * g / 1000) as i32)); }
         if self.hunt.is_some() { self.hunt_hear(w, &s, &heard, &mut cues); }
         s.cues = cues;
         s.alarms = alarms;
@@ -625,7 +626,8 @@ impl Person {
         let threat = self.m.last.percepts.iter().filter(|p| self.m.kinds[p.kind as usize].creature && self.m.store.val(p.node) < 0).map(|p| (p.x, p.y)).next();
         let in_danger = self.m.act(ids.danger) >= crate::mind::OPTION_AT && threat.is_some();
         for j in (0..self.pnode.len()).filter(|&j| j != self.i) {
-            let Some(p) = self.m.last.percepts.iter().find(|p| p.node == self.pnode[j]).cloned() else { self.seen_d[j] = -1; continue };
+            // (Stage 3 of round 2: only someone in sight now; a merged percept is where it was.)
+            let Some(p) = self.m.last.percepts.iter().find(|p| p.node == self.pnode[j] && self.m.last.now(p)).cloned() else { self.seen_d[j] = -1; continue };
             let d = dist(p.x, p.y, s.body.x, s.body.y);
             if in_danger {
                 let with_me = p.approaching || threat.is_some_and(|(tx, ty)| dist(p.x, p.y, tx, ty) <= 4);

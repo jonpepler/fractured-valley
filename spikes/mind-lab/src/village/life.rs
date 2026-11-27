@@ -141,7 +141,8 @@ fn gossip(p: &mut Person, w: &World) -> Option<(Say, Option<usize>, i32)> {
     if w.dusk || p.village.as_ref().unwrap().no_gossip { return None; }
     let me = (w.people[p.i].x, w.people[p.i].y);
     // A companion in sight and in talking distance (my percepts), that I don't dislike.
-    let listener = p.m.last.percepts.iter().filter_map(|q| who(p, q.node).map(|j| (crate::mind::d2(q.x, q.y, me.0, me.1), j)))
+    // (Stage 3 of round 2: someone in sight now, not merged in from the ticks between thinks.)
+    let listener = p.m.last.percepts.iter().filter(|q| p.m.last.now(q)).filter_map(|q| who(p, q.node).map(|j| (crate::mind::d2(q.x, q.y, me.0, me.1), j)))
         .filter(|&(d, j)| d <= TALK * TALK && p.warmth(j) >= 0).min().map(|x| x.1)?;
     let about = p.m.last.ws.iter().filter_map(|&n| who(p, n)).filter(|&j| j != listener && p.warmth(j).abs() >= GOSSIP_AT)
         .max_by_key(|&j| (p.warmth(j).abs(), std::cmp::Reverse(j)))?;
@@ -176,7 +177,7 @@ fn hunt_life(p: &mut Person, w: &World) {
     let hungry = w.village.as_ref().map_or(0, |v| v.hunger[p.i]) >= HUNT_HUNGER;
     let deer_seen = p.m.last.percepts.iter().any(|q| q.kind == Kind::Deer.k());
     let on_mind = p.m.last.ws.contains(&k.deer) || p.m.last.ws.contains(&k.deer_kind);
-    let company = p.m.last.percepts.iter().any(|q| who(p, q.node).is_some() && crate::mind::dist(q.x, q.y, w.people[p.i].x, w.people[p.i].y) <= TALK + 4);
+    let company = p.m.last.percepts.iter().any(|q| p.m.last.now(q) && who(p, q.node).is_some() && crate::mind::dist(q.x, q.y, w.people[p.i].x, w.people[p.i].y) <= TALK + 4);
     if hungry && deer_seen && on_mind && company {
         let h = p.hunt.as_mut().unwrap();
         h.lead = Some(Target::Deer);

@@ -25,7 +25,9 @@ use fv_mind_lab::village::runs::{run, Setup};
 // integrated over a think's window, and per-think rates found in the audit are per tick. Thinking
 // every tick (seed 1) and pruning (seed 3) did not move. Added: a big brain every 4 ticks with a
 // small brain between, and shallow thinking. Native and wasm32 agree (`tools/wasm-hashes.sh`).
-const PINNED: [u64; 6] = [0x6a561c0d2a180a77, 0xde18e5c72fe441dd, 0x7ec23540a8b27b4c, 0xc6a964e2d2527214, 0x53fd85f70d03c31f, 0x93bf70c0fb987003];
+// (Then, for dusk: its cue lasts, so a slow think integrates it over its window; the three slow
+// pins moved again.)
+const PINNED: [u64; 6] = [0x169632d022be1bf2, 0xde18e5c72fe441dd, 0x7b7eeda0e9c9f0c2, 0xc6a964e2d2527214, 0x3f09912878bdfb96, 0x93bf70c0fb987003];
 
 #[test]
 fn village_runs_give_identical_pinned_hashes() {
