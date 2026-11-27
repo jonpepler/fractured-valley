@@ -73,10 +73,9 @@ impl Flow {
     /// `f(i, x, y, z)` for every block `i` at (x, y, z), in block order (on
     /// worker threads with the `parallel` feature: each block's value depends
     /// only on the arrays the loop reads, so any split gives the same bits).
-    fn per_block<T: Send>(&self, f: impl Fn(usize, usize, usize, usize) -> T + Sync) -> Vec<T> {
-        let (cx, cy) = (self.cx, self.cy);
-        let n = cx * cy * self.cz;
-        let at = |i: usize| f(i, i % cx, i / cx % cy, i / (cx * cy));
+    fn per_block<T: Send>(&self, at_xyz: &[[u16; 3]], f: impl Fn(usize, usize, usize, usize) -> T + Sync) -> Vec<T> {
+        let n = at_xyz.len();
+        let at = |i: usize| { let [x, y, z] = at_xyz[i]; f(i, x as usize, y as usize, z as usize) };
         #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
@@ -87,9 +86,18 @@ impl Flow {
         (0..n).map(at).collect()
     }
 
+    /// Every block's (x, y, z), in block order.
+    fn coordinates(&self) -> Vec<[u16; 3]> {
+        let mut out = Vec::with_capacity(self.cx * self.cy * self.cz);
+        for z in 0..self.cz { for y in 0..self.cy { for x in 0..self.cx { out.push([x as u16, y as u16, z as u16]) } } }
+        out
+    }
+
     /// One tick of air motion, from the cells' temperatures and solidity.
     pub fn step(&mut self, w: &World) {
         let (cx, cy, cz) = (self.cx, self.cy, self.cz);
+        // Each block's (x, y, z), so the loops below needn't divide for it.
+        let xyz = self.coordinates();
         // Wind: the scene's breeze, with slow gusts of ±40 %.
         let g = (hash(w.seed, w.tick / 40, 0, 0x91) % 801) as i64 - 400;
         self.wind = [self.wind_mean[0] + self.wind_mean[0] * g / 1000, self.wind_mean[1] + self.wind_mean[1] * g / 1000];
@@ -97,7 +105,7 @@ impl Flow {
         // and how much gas it holds beyond what fits (as a volume, mL), and
         // the drag of the fuel beds in it, 1/m × 1000 (see `bed_drag`).
         let fresh: i64 = crate::substance::FRESH_AIR.iter().map(|m| m.0).sum();
-        let gathered = self.per_block(|_, x, y, z| {
+        let gathered = self.per_block(&xyz, |_, x, y, z| {
             let (mut sum, mut cnt, mut over, mut dr) = (0i64, 0i64, 0i64, 0i64);
             for d in 0..8 {
                 let c = w.get(x * FR + (d & 1), y * FR + (d >> 1 & 1), z * FR + (d >> 2));
@@ -122,11 +130,11 @@ impl Flow {
         // velocity is what arrives there from upstream, so air near the
         // ground starts from rest and a plume speeds up as it rises, drawing
         // air in along its height rather than all at its foot.
-        self.vel = self.carried();
+        self.vel = self.carried(&xyz);
         // Forces: buoyancy on vertical faces, damping, and a little turbulence
         // in hot air so plumes flicker and break rather than stand still.
         // Also how freely each block's + faces let air through (permille).
-        let forced = self.per_block(|i, x, y, z| {
+        let forced = self.per_block(&xyz, |i, x, y, z| {
             let mut vel = self.vel[i];
             let mut give_face = [1_000i64; 3];
             for axis in 0..3 {
@@ -159,7 +167,7 @@ impl Flow {
         self.vel = forced.iter().map(|f| f.0).collect();
         let give_face: Vec<[i64; 3]> = forced.iter().map(|f| f.1).collect();
         // Pressure: make the flow divergence-free through open blocks.
-        let div = self.per_block(|i, x, y, z| {
+        let div = self.per_block(&xyz, |i, x, y, z| {
             if !open[i] { return 0 }
             let (xi, yi, zi) = (x as i64, y as i64, z as i64);
             let d = self.block_face(xi, yi, zi, 0) - self.block_face(xi - 1, yi, zi, 0)
@@ -173,7 +181,7 @@ impl Flow {
         });
         let mut p = vec![0i64; div.len()];
         for _ in 0..PRESSURE_ROUNDS {
-            p = self.per_block(|i, x, y, z| {
+            p = self.per_block(&xyz, |i, x, y, z| {
                 if !open[i] { return 0 }
                 // Σ k·(p_j − p_i) = div over the faces, each face weighted
                 // by how freely it lets air through (k, permille).
@@ -197,7 +205,7 @@ impl Flow {
             });
         }
         // Subtract the pressure gradient across interior open faces.
-        self.vel = self.per_block(|i, x, y, z| {
+        self.vel = self.per_block(&xyz, |i, x, y, z| {
             let mut vel = self.vel[i];
             for axis in 0..3 {
                 let mut r = [x, y, z];
@@ -221,7 +229,7 @@ impl Flow {
     /// there (semi-Lagrangian, Stam 1999, "Stable fluids"). In fixed point,
     /// 1/1024 of a block; a tick moves air at most a block (19 cm at the
     /// fastest), so a trace never leaves the block next door.
-    fn carried(&self) -> Vec<[i32; 3]> {
+    fn carried(&self, xyz: &[[u16; 3]]) -> Vec<[i32; 3]> {
         const Q: i64 = 1_024;
         let block_mm = FR as i64 * crate::substance::CELL_MM;
         let n = [self.cx as i64, self.cy as i64, self.cz as i64];
@@ -231,7 +239,7 @@ impl Flow {
             for k in 0..3 { q[k] = if k == a { q[k].clamp(-1, n[k] - 1) } else { q[k].clamp(0, n[k] - 1) } }
             self.block_face(q[0], q[1], q[2], a)
         };
-        self.per_block(|_, x, y, z| {
+        self.per_block(xyz, |_, x, y, z| {
             let mut out = [0i32; 3];
             for a in 0..3 {
                 let p = [x as i64, y as i64, z as i64];
