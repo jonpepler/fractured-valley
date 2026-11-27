@@ -44,6 +44,48 @@ pub enum Say {
     TellOther(u32, Content),
     /// Stage 3: "Help!", shouted. It carries no content: who cried and from where is in the sound.
     Help,
+    /// Stage 4: a proposed plan ("you and I wait right by the rock; Bryn drives from north of the
+    /// oak; when I whistle, drive").
+    Propose(Plan),
+    /// Stage 4: "I'm in" / "not me" to a plan (by its revision).
+    Agree(u8),
+    Decline(u8),
+    /// Stage 4: the plan's signal (a whistle).
+    Signal,
+    /// Stage 4: "Got it!" (the deer is caught).
+    Caught,
+    /// Stage 4: passing a plan on to its target, in private ("they mean to wait for you by …").
+    Warn(Plan),
+}
+
+/// Stage 4: a role in a plan.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum Role {
+    /// Go to the place, wait for the signal there, then drive the quarry ahead of you.
+    Drive,
+    /// Go to the place and wait there, hidden; strike the quarry when it comes close.
+    Wait,
+}
+pub const ROLE_WORDS: [&str; 2] = ["drive", "wait"];
+impl Role { pub fn i(self) -> usize { self as usize } }
+
+/// Stage 4: what a plan is after: the deer, or a person (by name).
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum Target { Deer, Person(u8) }
+
+/// Stage 4: a plan as words. Places are described by landmarks, as in teaching: the quarry's
+/// place (`at`), and each member's (`roles`: who, what, where). Nothing in it is a node id.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Plan { pub rev: u8, pub by: u8, pub target: Target, pub at: Vec<Ref>, pub roles: Vec<(u8, Role, Vec<Ref>)>,
+    /// A plan passed on: whose it is (the one who first proposed it).
+    pub via: Option<u8> }
+impl Plan {
+    pub fn render(&self) -> String {
+        let place = |r: &Vec<Ref>| r.iter().map(|r| format!("{} landmark {} (towards {})", BAND_WORDS[r.band as usize], r.landmark, DIR_WORDS[r.dir as usize])).collect::<Vec<_>>().join(", ");
+        let tgt = match self.target { Target::Deer => "the deer".to_string(), Target::Person(j) => super::world::NAMES[j as usize].to_string() };
+        let roles: Vec<String> = self.roles.iter().map(|(j, r, p)| format!("{} {} {}", super::world::NAMES[*j as usize], ROLE_WORDS[r.i()], place(p))).collect();
+        format!("{tgt} is {}; {}; drive on my whistle", place(&self.at), roles.join("; "))
+    }
 }
 
 /// Distance bands: (largest distance in the band, the distance a listener takes it to mean,
@@ -88,6 +130,12 @@ impl Say {
             Say::AskOther(w) => format!("Where is thing {w}?"),
             Say::TellOther(w, c) => format!("Thing {w} is {}.", c.render()),
             Say::Help => "Help!".into(),
+            Say::Propose(p) => format!("Here's the plan (#{}): {}.", p.rev, p.render()),
+            Say::Agree(r) => format!("I'm in (#{r})."),
+            Say::Decline(r) => format!("Not me (#{r})."),
+            Say::Signal => "(whistles)".into(),
+            Say::Caught => "Got it!".into(),
+            Say::Warn(p) => format!("(whispers) They have a plan: {}.", p.render()),
         }
     }
     /// The content of a claim, if this is one.

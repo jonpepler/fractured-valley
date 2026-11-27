@@ -144,11 +144,36 @@ pub struct Held {
     pub calling: bool,
 }
 
+/// Stage 4: **a plan is a prediction.** While the intent `intent` is held, the mind expects the
+/// thing it knows as `node` (a person, the deer) to be within `tol` cells of `(x, y)` from tick
+/// `from`, moving no faster than `pace` cells a tick, with confidence `w`. `hidden`: it is expected
+/// to be out of sight in hiding (so not seeing it is no surprise unless within `SPOT` cells).
+/// What breaks a prediction is a prediction error like any other (`Mind::perceive`, absences):
+/// it is injected, raises arousal, damps thought, and also activates the mind's own concept of a
+/// broken plan (`PlanState::broken`), which links to danger. A broken prediction is dropped (the
+/// mind falls back on ordinary expectation); a timed one that comes true is dropped too.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct Expect { pub intent: u32, pub node: u32, pub x: i32, pub y: i32, pub tol: i32, pub pace: i32, pub hidden: bool, pub from: u32,
+    /// A timed prediction ("it will pass here by then"): checked against what is seen from `from`
+    /// to `until`, and broken by absence only once `until` has passed. `u32::MAX`: open-ended.
+    pub until: u32, pub w: i32 }
+/// Stage 4: a person linked to danger at least this strongly (and disliked) is a threat.
+pub const HOSTILE_AT: i32 = 300;
+/// A prediction of something hidden is broken by its absence only this close.
+pub const SPOT: i32 = 3;
+/// Stage 4 state: the plan's predictions, the mind's "broken plan" node, and its record of the
+/// breaches it noticed: (tick, node, error, kind: 0 out of place, 1 too fast, 2 missing).
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub struct PlanState { pub expects: Vec<Expect>, pub broken: Option<u32>, pub breaches: Vec<(u32, u32, i32, u8)> }
+pub const BREACH_PLACE: u8 = 0;
+pub const BREACH_PACE: u8 = 1;
+pub const BREACH_MISSING: u8 = 2;
+
 /// The design question for brief 09, made a setting: consolidating plain fast weight (the day's
 /// routine strengthening) keeps 1/`sleep_keep` of it in the slow graph; the rest is downscaled
 /// away (synaptic homeostasis). Replayed episodes are kept in full either way. The stage-0
 /// spike used 8 (1/8); 3 (1/3) was the alternative it reported.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     pub sleep_keep: i64,
     /// Ablation: store the mind's own slow weights in steps of 4 too (as the base does), with
@@ -185,8 +210,20 @@ pub struct Config {
     /// Stage 3, ablation: a held intent biases spreading towards itself (focus). Off: the intent
     /// is still held and still predicts, but gives no focus.
     pub focus: bool,
+    /// Stage 4: flee from **every** threat in sight (their positions weighted by closeness,
+    /// 1/(1 + d²)) rather than the nearest alone. On for the deer; off (stage 3's rule) otherwise.
+    pub flee_from_all: bool,
 }
-impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true, focus: true } } }
+// Hashed field by field, as the derive did; stage 4's setting only when on (so minds that don't
+// use it keep their pinned hashes).
+impl std::hash::Hash for Config {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.sleep_keep.hash(h); self.overlay_steps_of_4.hash(h); self.stochastic_learning.hash(h); self.own_fade.hash(h); self.comfort_gate.hash(h);
+        self.walk_cost.hash(h); self.hold_goal.hash(h); self.focus.hash(h);
+        if self.flee_from_all { self.flee_from_all.hash(h); }
+    }
+}
+impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true, focus: true, flee_from_all: false } } }
 
 /// Default `Config::walk_cost`: a place this many cells away counts half.
 pub const WALK_COST: i32 = 120;
@@ -408,6 +445,8 @@ pub struct Mind<S: Store = Runtime> {
     pub held: Held,
     /// Stage 3: this species closes on what it fights (a boar charges); others only snap in reach.
     pub charges: bool,
+    /// Stage 4: a held plan's predictions of where others will be (hashed only when in use).
+    pub plan: PlanState,
 }
 
 impl<S: Store> Hash for Mind<S> {
@@ -418,6 +457,7 @@ impl<S: Store> Hash for Mind<S> {
         // Settings too: two minds that would behave differently next tick must not hash alike.
         self.cfg.hash(h); self.params.hash(h); self.learn.hash(h); self.skip_sleep.hash(h); self.pin_arousal.hash(h); self.pin_mood.hash(h); self.idle_consolidation.hash(h);
         self.place_nodes.hash(h); self.entity_nodes.hash(h); self.entity_kinds.hash(h); self.young_from.hash(h); self.nights.hash(h); self.held.hash(h); self.charges.hash(h);
+        if self.plan != PlanState::default() { self.plan.hash(h); }
     }
 }
 
@@ -456,7 +496,7 @@ impl<S: Store> Mind<S> {
             expect: vec![vec![0i16; nk * 2]; sp.place_nodes.len()], episodes: vec![], goal: None, flee_left: 0, flee_from: (0, 0), prev_pain: 0,
             trace: false, last: Report::default(), learn: true, pin_arousal: None, pin_mood: None, skip_sleep: false, temperament,
             idle_consolidation: true, consol: Consol::default(), puzzle: None, search_wp: None, search_n: 0, napping: false, volatility: vec![0; nk],
-            feelings: sp.feelings.clone(), young_from: 0, nights: 0, held: Held::default(), charges: false,
+            feelings: sp.feelings.clone(), young_from: 0, nights: 0, held: Held::default(), charges: false, plan: PlanState::default(),
         };
         m.young_from = m.store.len() as u32;
         for &(pi, k) in &sp.expect { m.expect[pi][key(k, false)] = 900; }
@@ -469,7 +509,7 @@ impl<S: Store> Mind<S> {
             entity_kinds: self.entity_kinds.clone(), expect: self.expect.clone(), episodes: self.episodes.clone(), goal: self.goal, flee_left: self.flee_left, flee_from: self.flee_from,
             prev_pain: self.prev_pain, trace: self.trace, last: self.last.clone(), learn: self.learn, pin_arousal: self.pin_arousal, pin_mood: self.pin_mood, skip_sleep: self.skip_sleep,
             temperament: self.temperament, idle_consolidation: self.idle_consolidation, consol: self.consol, puzzle: self.puzzle, search_wp: self.search_wp, search_n: self.search_n,
-            napping: self.napping, volatility: self.volatility.clone(), feelings: self.feelings.clone(), young_from: self.young_from, nights: self.nights, held: self.held.clone(), charges: self.charges }
+            napping: self.napping, volatility: self.volatility.clone(), feelings: self.feelings.clone(), young_from: self.young_from, nights: self.nights, held: self.held.clone(), charges: self.charges, plan: self.plan.clone() }
     }
 
     /// A hash of everything the mind holds (form-independent).
@@ -619,8 +659,34 @@ impl<S: Store> Mind<S> {
             if self.kinds[e.kind as usize].tracked {
                 if let Some(a) = self.store.anchor(node) { let (ax, ay) = a.xy(); if d2(e.x, e.y, ax, ay) <= TRACK_NEAR * TRACK_NEAR { expected = expected.max(900); } }
             }
+            // Stage 4: a held plan predicts where this one should be and how fast it should move;
+            // that prediction replaces the others (a friend seen where it shouldn't be surprises).
+            if let Some(x) = self.plan_expect(s.tick, node) {
+                let moved = self.store.anchor(node).map(|a| { let (ax, ay) = a.xy(); (ax - e.x).abs().max((ay - e.y).abs()) }).unwrap_or(0);
+                let off = (dist(e.x, e.y, x.x, x.y) - x.tol).max(0);
+                let mut ex = x.w * (1000 - (off * 150).min(1000)) / 1000;
+                if moved > x.pace { ex = ex.min(x.w / 3); }
+                expected = ex;
+            }
             Percept { entity: e.id, kind: e.kind, x: e.x, y: e.y, place, approaching: e.approaching, node, expected, error: 1000 - expected }
         }).collect()
+    }
+
+    /// Stage 4: the prediction a held plan makes about `node` now, if any.
+    pub fn plan_expect(&self, tick: u32, node: u32) -> Option<Expect> {
+        if self.plan.expects.is_empty() { return None; }
+        let i = self.held.intent?;
+        self.plan.expects.iter().find(|x| x.intent == i && x.node == node && tick >= x.from && tick <= x.until).copied()
+    }
+    /// Stage 4: which predictions are broken by absence: expected here, in clear view (within half
+    /// of sight; within `SPOT` if expected hidden), precise enough to check (`tol` at most half of
+    /// sight), and not seen. (node, x, y, confidence).
+    pub fn plan_absences(&self, s: &Sense, percepts: &[Percept]) -> Vec<(u32, i32, i32, i32)> {
+        let Some(i) = self.held.intent else { return vec![] };
+        let half = self.geo.sight / 2;
+        self.plan.expects.iter().filter(|x| x.intent == i && s.tick >= x.from && (x.until == u32::MAX || s.tick >= x.until) && !percepts.iter().any(|p| p.node == x.node))
+            .filter(|x| { let r = if x.hidden { SPOT } else { half }; d2(s.body.x, s.body.y, x.x, x.y) <= r * r && x.tol <= half })
+            .map(|x| (x.node, x.x, x.y, x.w)).collect()
     }
 
     /// Absence: an expected landmark missing from a place in clear view (within half of sight).
@@ -735,6 +801,31 @@ impl<S: Store> Mind<S> {
                 max_error = max_error.max(p.error);
                 if self.kinds[p.kind as usize].landmark && rep.learnt.iter().any(|&n| p.place.is_some_and(|pi| self.place_nodes[pi] == n)) { self.volatile_event(p.kind); }
             }
+        }
+        // Stage 4: a broken prediction of the plan's is felt as a broken plan too, and remembered;
+        // so is one broken by absence (someone not where the plan put them).
+        if !self.plan.expects.is_empty() {
+            let mut done: Vec<u32> = vec![];
+            for p in &percepts {
+                let Some(x) = self.plan_expect(s.tick, p.node) else { continue };
+                if p.error >= IGNORE_BELOW {
+                    let moved = self.store.anchor(p.node).map(|a| { let (ax, ay) = a.xy(); (ax - p.x).abs().max((ay - p.y).abs()) }).unwrap_or(0);
+                    if let Some(b) = self.plan.broken { inject.push((b, p.error / 2)); }
+                    self.plan.breaches.push((s.tick, p.node, p.error, if moved > x.pace { BREACH_PACE } else { BREACH_PLACE }));
+                    done.push(p.node);
+                } else if x.until != u32::MAX { done.push(p.node); }
+            }
+            for (n, x, y, e) in self.plan_absences(s, &percepts) {
+                inject.push((n, e));
+                if let Some(b) = self.plan.broken { inject.push((b, e / 2)); }
+                surprise += e / 2;
+                max_error = max_error.max(e);
+                surprised.push((n, x, y));
+                self.plan.breaches.push((s.tick, n, e, BREACH_MISSING));
+                done.push(n);
+            }
+            if let Some(i) = self.held.intent { self.plan.expects.retain(|x| !(x.intent == i && done.contains(&x.node))); }
+            if self.plan.breaches.len() > 64 { self.plan.breaches.remove(0); }
         }
         // A newly learnt place: the thing seen there is linked to it (a first, fast trace).
         for p in &percepts {
@@ -1133,13 +1224,18 @@ impl<S: Store> Mind<S> {
     pub fn respond(&self, rs: &Responses, st: &Activation, s: &Sense, ws: &[u32], percepts: &[Percept]) -> Option<(Action, String, u8, Vec<(u8, i32)>)> {
         let fx = s.body;
         let act = |n: u32| if n == u32::MAX { 0 } else { st.act[n as usize] };
-        let threat = percepts.iter().filter(|p| self.kinds[p.kind as usize].creature && self.store.val(p.node) < 0)
+        let threat = percepts.iter().filter(|p| self.threat(p))
             .min_by_key(|p| (d2(p.x, p.y, fx.x, fx.y), p.entity)).cloned();
         let alarm = self.held.alarm.filter(|a| s.tick <= a.3 + ALARM_KEEP);
         if threat.is_none() && alarm.is_none() { return None; }
         let stress = self.mods.stress;
         let speed = if stress >= 500 { 3 } else { 2 };
-        let from = threat.as_ref().map(|t| (t.x, t.y)).or(alarm.map(|a| (a.1, a.2))).unwrap();
+        let mut from = threat.as_ref().map(|t| (t.x, t.y)).or(alarm.map(|a| (a.1, a.2))).unwrap();
+        if self.cfg.flee_from_all && threat.is_some() {
+            let (mut sx, mut sy, mut sw) = (0i64, 0i64, 0i64);
+            for p in percepts.iter().filter(|p| self.threat(p)) { let wt = 1_000_000 / (1 + d2(p.x, p.y, fx.x, fx.y) as i64); sx += p.x as i64 * wt; sy += p.y as i64 * wt; sw += wt; }
+            if sw > 0 { from = ((sx / sw) as i32, (sy / sw) as i32); }
+        }
         let flee_at = FLEE_AT * (1000 - stress / 2) / 1000;
         let danger = act(self.roles.danger);
         // The reflex: once danger on the mind passes the bar, "run" is in play straight away (one
@@ -1171,6 +1267,15 @@ impl<S: Store> Mind<S> {
             _ => { let al = alarm.unwrap(); Action::WalkTo { x: al.1, y: al.2 } }
         };
         Some((a, why, best.0, sc))
+    }
+
+    /// Is this percept a threat to this mind: a creature that feels bad to it, or (stage 4) a
+    /// person it feels badly about and has learnt to link with danger (a rival: `HOSTILE_AT`).
+    pub fn threat(&self, p: &Percept) -> bool {
+        let k = &self.kinds[p.kind as usize];
+        if self.store.val(p.node) >= 0 { return false; }
+        if k.creature { return true; }
+        k.tracked && self.store.find(p.node, self.roles.danger, lt::ASSOC).is_some_and(|l| self.store.slow(l) as i32 >= HOSTILE_AT)
     }
 
     /// Stage 3: form an intent (a plan node of this mind's own): it is brought to mind now and held

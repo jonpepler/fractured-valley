@@ -48,10 +48,12 @@ pub struct Valley {
     pub snapshots: Vec<(u32, Vec<i16>, Vec<i16>)>,
     /// Stage 3: the boars' minds (boar `b` is `w.boars[b]`), stepped in the same tick as people.
     pub beasts: Vec<crate::mind::Mind<crate::store::Runtime>>,
+    /// Stage 4: the deer's minds (deer `k` is `w.deer[k]`), stepped in the same tick, after boars.
+    pub deer_minds: Vec<crate::mind::Mind<crate::store::Runtime>>,
 }
 
 impl Valley {
-    pub fn new(w: World, folk: Vec<Person>) -> Valley { Valley { w, folk, record: None, frames: vec![], snapshots: vec![], beasts: vec![] } }
+    pub fn new(w: World, folk: Vec<Person>) -> Valley { Valley { w, folk, record: None, frames: vec![], snapshots: vec![], beasts: vec![], deer_minds: vec![] } }
     pub fn at(&mut self, tick: u32, e: super::world::Event) { self.w.script.push((tick, e)); }
     pub fn recording(mut self, who: usize) -> Self {
         self.record = Some(who); self.folk[who].m.trace = true;
@@ -71,6 +73,9 @@ impl Valley {
             let bs: Vec<_> = (0..self.beasts.len()).map(|b| self.w.sense_boar(b)).collect();
             let border: Vec<usize> = (0..self.beasts.len()).collect();
             crate::fox::sim::run_minds(&mut self.beasts, threads, &border, |b, m| { m.night(&bs[b]); Action::Sleep });
+            let ds: Vec<_> = (0..self.deer_minds.len()).map(|k| self.w.sense_deer(k)).collect();
+            let dorder: Vec<usize> = (0..self.deer_minds.len()).collect();
+            crate::fox::sim::run_minds(&mut self.deer_minds, threads, &dorder, |k, m| { m.night(&ds[k]); Action::Sleep });
             if let Some(r) = self.record { let (w, v) = crate::fox::viewer::snapshot(&self.folk[r].m.store); self.snapshots.push((self.w.tick, w, v)); }
         }
         let w = &self.w;
@@ -78,6 +83,9 @@ impl Valley {
         // Boars read the same start-of-tick world (in reverse order, so order is exercised too).
         let border: Vec<usize> = (0..self.beasts.len()).rev().collect();
         let boar_acts = crate::fox::sim::run_minds(&mut self.beasts, threads, &border, |b, m| { let s = w.sense_boar(b); let a = m.step(&s); m.commit(&s, a); a });
+        // Deer read the same start-of-tick world (people hidden by cover are not seen).
+        let dorder: Vec<usize> = (0..self.deer_minds.len()).rev().collect();
+        let deer_acts = crate::fox::sim::run_minds(&mut self.deer_minds, threads, &dorder, |k, m| { let s = w.sense_deer(k); let a = m.step(&s); m.commit(&s, a); a });
         if let Some(r) = self.record {
             let m = &self.folk[r].m;
             let rep = &m.last;
@@ -86,14 +94,15 @@ impl Valley {
                 tick: self.w.tick, me: (me.x, me.y),
                 others: (0..PEOPLE).filter(|&j| j != r).map(|j| (self.w.people[j].x, self.w.people[j].y, super::world::NAMES[j].to_string())).collect(),
                 things: self.w.things.iter().filter(|t| t.alive && t.kind != Kind::Hut).map(|t| (t.x, t.y, t.name.clone()))
-                    .chain(self.w.notes.iter().filter(|n| n.holder.is_none()).map(|n| (n.x, n.y, "a note".to_string()))).collect(),
+                    .chain(self.w.notes.iter().filter(|n| n.holder.is_none()).map(|n| (n.x, n.y, "a note".to_string())))
+                    .chain(self.w.deer.iter().filter(|d| d.caught.is_none()).map(|d| (d.x, d.y, "DEER".to_string()))).collect(),
                 mods: m.mods, thirst: me.thirst, act: m.st.act.clone(), hops: rep.hops.clone(), ws: rep.ws.clone(), action: deeds[r].action.unwrap_or(Action::Stay), why: rep.why.clone(),
                 events: vec![], fast: m.store.fast_entries().into_iter().filter(|&(_, f)| f >= 20).collect(),
                 percepts: rep.percepts.iter().map(|p| (p.node, p.error)).collect(), slept, backlog: rep.backlog,
                 boar: self.w.boars.first().map(|q| (q.x, q.y)), focus: m.mods.focus, pain: me.pain,
             });
         }
-        self.w.post_step_with(&deeds, &boar_acts);
+        self.w.post_step_all(&deeds, &boar_acts, &deer_acts);
         if self.record.is_some() { if let Some(f) = self.frames.last_mut() { f.events = self.w.log[log0..].iter().map(|l| l.1.clone()).collect(); } }
     }
     pub fn run(&mut self, ticks: u32) { let order: Vec<usize> = (0..self.folk.len()).collect(); for _ in 0..ticks { self.step(1, &order); } }
@@ -104,6 +113,7 @@ impl Valley {
         self.w.hash_into(&mut h);
         for p in &self.folk { p.state_hash().hash(&mut h); }
         for m in &self.beasts { m.state_hash().hash(&mut h); }
+        for m in &self.deer_minds { m.state_hash().hash(&mut h); }
         h.finish()
     }
 }

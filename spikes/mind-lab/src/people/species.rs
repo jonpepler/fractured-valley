@@ -113,6 +113,8 @@ fn build() -> People {
     let concept = |k: Kind| match k {
         Kind::Ash | Kind::Bryn | Kind::Cai | Kind::Dee => person, Kind::Water => water, Kind::Rock | Kind::Windmill | Kind::Oak => landmark,
         Kind::Hut => rest, Kind::Note => note, Kind::DryFresh | Kind::DryOld => dry, Kind::Boar => boar,
+        // Stage 4: a person with no node of its own for a deer sees "a thing" (hunters have one).
+        Kind::Deer => landmark,
     };
     let kinds = Kind::ALL.iter().map(|&k| KindInfo { name: k.name(), concept: concept(k), landmark: k.landmark(), edible: k == Kind::Water, shelter: k == Kind::Hut,
         creature: k == Kind::Boar, tracked: matches!(k, Kind::Ash | Kind::Bryn | Kind::Cai | Kind::Dee) }).collect();

@@ -103,6 +103,8 @@ pub struct Person {
     pub away: bool,
     /// Stage 3: how far each other person was when last seen (for "came to me" or "left me").
     pub seen_d: [i32; PEOPLE],
+    /// Stage 4: the hunting layer (plans, roles, the betrayal), for those who hunt.
+    pub hunt: Option<Box<crate::hunt::hunter::Hunter>>,
 }
 
 pub const READ_AT: i32 = 60;
@@ -123,10 +125,11 @@ impl Hash for Person {
         // Element by element: std hashes a slice of `usize` as raw bytes (8 on native, 4 on wasm32),
         // which made native and wasm32 hashes part as soon as someone owed thanks (stage 3).
         self.owe_thanks.len().hash(h); for &a in &self.owe_thanks { (a as u64).hash(h); } self.corrected_to.hash(h); self.model_on.hash(h); self.offload.hash(h); self.last_ask.hash(h); self.said.hash(h); self.pending.hash(h); self.curious.hash(h); self.away.hash(h); self.seen_d.hash(h);
+        if let Some(x) = &self.hunt { x.hash(h); }
     }
 }
 
-fn strengthen(m: &mut Mind<Runtime>, u: u32, v: u32, ty: u8, rate: i32, lval: Option<i32>) {
+pub(crate) fn strengthen(m: &mut Mind<Runtime>, u: u32, v: u32, ty: u8, rate: i32, lval: Option<i32>) {
     // A delta rule toward a ceiling of 1000, with the claim's strength as the learning rate: a
     // first hearing at strength r gives r; each later one closes r per mille of what is left. So
     // a faded link relearns past where a fresh one starts (savings).
@@ -141,13 +144,13 @@ fn strengthen(m: &mut Mind<Runtime>, u: u32, v: u32, ty: u8, rate: i32, lval: Op
         None => { m.store.add_link(u, v, ty, rate, lval.unwrap_or(0)); }
     }
 }
-fn weight(m: &Mind<Runtime>, u: u32, v: u32, ty: u8) -> i32 { m.store.find(u, v, ty).map(|k| m.store.slow(k) as i32).unwrap_or(0) }
+pub(crate) fn weight(m: &Mind<Runtime>, u: u32, v: u32, ty: u8) -> i32 { m.store.find(u, v, ty).map(|k| m.store.slow(k) as i32).unwrap_or(0) }
 
 impl Person {
     pub fn new(w: &World, i: usize, t: Temperament, f: &Founding) -> Person {
         let (m, lex, pnode) = found(w, i, t, f);
         Person { i, m, ids: people().ids, traits: Traits::default(), medium: Medium::Speak, lex, pnode, told: vec![], notes: vec![], owe_thanks: vec![], corrected_to: vec![],
-            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: [-1; PEOPLE] }
+            model_on: true, offload: true, last_ask: None, said: [0; 6], reads: vec![], groundings_failed: 0, pending: vec![], curious: vec![], away: false, seen_d: [-1; PEOPLE], hunt: None }
     }
     pub fn state_hash(&self) -> u64 { let mut h = crate::rng::StateHasher::new(self.m.who); self.hash(&mut h); h.finish() }
 
@@ -410,6 +413,8 @@ impl Person {
                         self.reappraise(s);
                     }
                 }
+                // Stage 4: plans, answers, signals and warnings are heard by the hunting layer.
+                Say::Propose(_) | Say::Agree(_) | Say::Decline(_) | Say::Signal | Say::Caught | Say::Warn(_) => {}
                 Say::TellOther(wd, c) => {
                     // A landmark I asked about: a place of my own where my map puts it.
                     if *to_me && self.lex_place(*wd).is_none() {
@@ -441,13 +446,19 @@ impl Person {
         self.check(&s, w.tick);
         self.correct_map(&s);
         if w.dusk { cues.push((self.ids.rest, 600)); cues.push((self.ids.fatigue, 300)); }
+        if self.hunt.is_some() { self.hunt_hear(w, &s, &heard, &mut cues); }
         s.cues = cues;
         s.alarms = alarms;
         let a = self.m.step(&s);
+        let a = if self.hunt.is_some() { self.hunt_act(&s, a) } else { a };
         self.m.commit(&s, a);
         deed.action = Some(a);
         self.learn_allies(&s);
         if a == Action::Call || self.m.held.calling { deed.say = Some((Say::Help, None, super::world::SHOUT)); return deed; }
+        if self.hunt.is_some() {
+            if let Some(say) = self.hunt_speak(&s, w.tick) { self.hunt_after(&s, w.tick, Some(&say.0)); deed.say = Some(say); return deed; }
+            self.hunt_after(&s, w.tick, None);
+        }
         // Seeing someone at a water place I know: they know it too (Ash learns it was overheard).
         if self.model_on {
             for p in &self.m.last.percepts.clone() {

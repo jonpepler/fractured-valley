@@ -88,7 +88,7 @@ fn native_and_wasm32_builds_agree() {
     let out = std::process::Command::new("node").current_dir(dir).args(["--no-warnings", "tools/wasi.mjs", "target/wasm-test/wasm32-wasip1/release/hashes.wasm"]).output().unwrap();
     assert!(out.status.success(), "node run failed: {}", String::from_utf8_lossy(&out.stderr));
     let wasm: Vec<u64> = String::from_utf8_lossy(&out.stdout).lines().map(|l| u64::from_str_radix(l.split_whitespace().next().unwrap().trim_start_matches("0x"), 16).unwrap()).collect();
-    let native: Vec<u64> = runs(4).iter().chain(fv_mind_lab::hashes::people_runs(4).iter()).chain(fv_mind_lab::hashes::danger_runs(4).iter()).map(|x| x.1).collect();
+    let native: Vec<u64> = runs(4).iter().chain(fv_mind_lab::hashes::people_runs(4).iter()).chain(fv_mind_lab::hashes::danger_runs(4).iter()).chain(fv_mind_lab::hashes::hunt_runs(4).iter()).map(|x| x.1).collect();
     println!("native (4 threads for the pack) {native:x?}\nwasm32 under node (1 thread)    {wasm:x?}");
     assert_eq!(native, wasm);
 }

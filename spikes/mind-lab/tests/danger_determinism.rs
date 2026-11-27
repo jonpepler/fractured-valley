@@ -11,7 +11,9 @@ use fv_mind_lab::think::Form;
 
 /// Pinned when stage 3 was written; moved after review (meeting distance varies with the seed,
 /// a braced charge is no longer a goring).
-const PINNED: [u64; 3] = [0xa58e_5c86_5900_6817, 0xc3bd_3b02_7868_bfd7, 0xa4e2_dff5_6ce1_a2e3];
+/// Moved in stage 4, not by behaviour: a deer kind lengthens each mind's expectation table (and the
+/// boar's). The worlds' own hashes over these runs are unchanged (checked when stage 4 was written).
+const PINNED: [u64; 3] = [0xa1c4_603c_8219_7eaa, 0x8362_b41e_023d_628d, 0xa5bb_bb57_2059_b6c0];
 
 #[test]
 fn danger_runs_give_identical_pinned_hashes() {

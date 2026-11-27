@@ -13,7 +13,10 @@ use fv_mind_lab::store::Store;
 /// Moved in stage 3: comfort gated by need, a cost of distance, commitment (behaviour), and
 /// `owe_thanks` hashed item by item (it hashed differently on wasm32), evening drowsiness, and then
 /// stage 3's people: a boar kind, response nodes, companions drawing attention under alarm.
-const PINNED: [u64; 5] = [0x0949_1eb8_cd3f_0f0d, 0xa535_2a3f_ed0e_3117, 0x77e2_2aa0_4f10_581c, 0x2096_223f_f3a2_dba8, 0x521b_0a80_f9a8_10dd];
+/// Moved in stage 4, not by behaviour: people can now see a deer, so each mind's expectation table
+/// has one more kind (two more zero entries per place). The worlds' own hashes over these runs are
+/// unchanged (checked when stage 4 was written: every world hash and log length identical).
+const PINNED: [u64; 5] = [0x374d_af67_f511_7ee3, 0xbe46_5833_ef4b_35ed, 0x4e88_ff66_bec9_0ae4, 0x1abc_4295_4e55_1c97, 0xd198_f9b2_670a_2ec8];
 
 #[test]
 fn teaching_runs_give_identical_pinned_hashes() {

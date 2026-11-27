@@ -84,3 +84,25 @@ pub fn danger_order_case(threads: usize, order: &[usize], call: bool) -> u64 {
     for _ in 0..WATCH { v.step(threads, order); }
     v.state_hash()
 }
+
+/// The pinned hunt runs (stage 4): a planned hunt, the same people each hunting alone, and an
+/// ambush of a person that one of the group gives away. Stepped on `threads` threads.
+pub fn hunt_runs(threads: usize) -> Vec<(&'static str, u64)> {
+    use crate::hunt::runs::{build, build_betrayal, BCase, Case, Lean, Mode, BETRAY_TICKS, HUNT_TICKS};
+    let order: Vec<usize> = (0..4).collect();
+    let drive = |mut v: crate::people::sim::Valley, ticks: u32| { for _ in 0..ticks { v.step(threads, &order); } v.state_hash() };
+    vec![
+        ("hunt: a planned hunt (seed 2)", drive(build(&Case { seed: 2, set: 1, mode: Mode::Planned }), HUNT_TICKS)),
+        ("hunt: the same people, each alone (seed 2)", drive(build(&Case { seed: 2, set: 1, mode: Mode::Solo }), HUNT_TICKS)),
+        ("hunt: an ambush given away (seed 1, Cai leans to Dee)", drive(build_betrayal(&BCase { seed: 1, set: 1, lean: Lean::Cai, caution: 10, honest_teller: false }), BETRAY_TICKS)),
+    ]
+}
+
+/// A hunt valley stepped on `threads` threads in `order`: a planned hunt (`betray` false) or the
+/// betrayal (true). The hash of the world and every mind, the deer's included.
+pub fn hunt_order(threads: usize, order: &[usize], betray: bool) -> u64 {
+    use crate::hunt::runs::{build, build_betrayal, BCase, Case, Lean, Mode};
+    let mut v = if betray { build_betrayal(&BCase { seed: 9, set: 2, lean: Lean::Bryn, caution: 10, honest_teller: false }) } else { build(&Case { seed: 7, set: 1, mode: Mode::Planned }) };
+    for _ in 0..120 { v.step(threads, order); }
+    v.state_hash()
+}
