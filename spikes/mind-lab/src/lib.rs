@@ -26,4 +26,5 @@ pub mod rng;
 pub mod scale;
 pub mod store;
 pub mod think;
+pub mod tools;
 pub mod village;
