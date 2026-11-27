@@ -21,6 +21,9 @@ pub fn roll(seed: u64, tick: u32, id: u32, salt: u64) -> i32 {
 
 /// A `std::hash::Hasher` that gives the same bits on every machine: integers are fed as
 /// little-endian 64-bit values, so `usize`/`isize` (lengths, enum tags) don't depend on width.
+/// **Never hash a `Vec<usize>` or `[usize]` directly:** std hashes integer slices as their raw
+/// bytes through `write`, so they come out 8 bytes per item on native and 4 on wasm32. Hash the
+/// items one by one (as `u64`) instead. Stage 3 found this the hard way (`Person::owe_thanks`).
 pub struct StateHasher(u64);
 impl StateHasher {
     pub fn new(seed: u64) -> Self { StateHasher(mix(seed)) }

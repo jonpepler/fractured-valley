@@ -11,14 +11,16 @@ use fv_mind_lab::mind::Action;
 use fv_thought_graph as old;
 
 #[derive(Clone, Copy, Debug)]
-struct Choices { fixed: bool, key_ties: bool, quantised: bool, rounding: bool }
-const LEGACY: Choices = Choices { fixed: false, key_ties: false, quantised: false, rounding: false };
+struct Choices { fixed: bool, key_ties: bool, quantised: bool, rounding: bool, choosing: bool }
+const LEGACY: Choices = Choices { fixed: false, key_ties: false, quantised: false, rounding: false, choosing: false };
 
 fn apply(s: &mut Sim, c: Choices) {
     if !c.quantised { s.m.store = s.fox.mind_exact(s.m.temperament, s.m.who).store; }
     s.m.params.exact = !c.fixed;
     s.m.params.index_ties = !c.key_ties;
     s.m.cfg.stochastic_learning = c.rounding;
+    // Stage 3's choosing: comfort gated by need, a cost of distance, commitment to a goal.
+    if !c.choosing { s.m.cfg.comfort_gate = false; s.m.cfg.walk_cost = 0; s.m.cfg.hold_goal = false; }
 }
 
 fn act_old(a: old::world::Action) -> String {
@@ -86,8 +88,10 @@ fn each_new_choice_alone_how_far_it_moves_the_fox() {
         ("key ties only", Choices { key_ties: true, ..LEGACY }),
         ("u8 founding weights only", Choices { quantised: true, ..LEGACY }),
         ("stochastic learning only (stage 2)", Choices { rounding: true, ..LEGACY }),
-        ("stage 1's three (fixed, keys, u8), old rounding", Choices { fixed: true, key_ties: true, quantised: true, rounding: false }),
-        ("all four (the shared mind)", Choices { fixed: true, key_ties: true, quantised: true, rounding: true }),
+        ("stage 3's choosing only (comfort gated, distance cost, commitment)", Choices { choosing: true, ..LEGACY }),
+        ("stage 1's three (fixed, keys, u8), old rounding", Choices { fixed: true, key_ties: true, quantised: true, rounding: false, choosing: false }),
+        ("stage 1 and 2 (the shared mind before stage 3)", Choices { fixed: true, key_ties: true, quantised: true, rounding: true, choosing: false }),
+        ("all five (the shared mind)", Choices { fixed: true, key_ties: true, quantised: true, rounding: true, choosing: true }),
     ];
     for (vn, c) in variants {
         println!("{vn}:");

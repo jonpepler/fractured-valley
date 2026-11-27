@@ -46,7 +46,9 @@ pub struct Thing { pub id: u32, pub kind: Kind, pub name: String, pub x: i32, pu
 pub struct Note { pub id: u32, pub x: i32, pub y: i32, pub holder: Option<usize>, pub content: Content, pub writer: usize }
 
 #[derive(Clone, Debug, Hash)]
-pub struct Person { pub x: i32, pub y: i32, pub px: i32, pub py: i32, pub thirst: i32, pub asleep: bool, pub drinks: u32, pub first_drink: Option<(u32, u32)>,
+pub struct Person { pub x: i32, pub y: i32, pub px: i32, pub py: i32, pub thirst: i32, pub asleep: bool, pub drinks: u32,
+    /// Pain from a wound (stage 3), fading by a tenth a tick.
+    pub pain: i32, pub first_drink: Option<(u32, u32)>,
     /// Staging: gone away (out of the valley, out of sight and earshot; its mind isn't stepped).
     pub away: bool }
 
@@ -96,6 +98,7 @@ pub struct World {
     pub next_id: u32,
     pub night_now: bool,
     pub dusk: bool,
+    pub dusk_at: u32,
     pub leads: Vec<(usize, usize, u32)>,
     /// Every utterance ever made (for measures and the viewer).
     pub said: Vec<Utterance>,
@@ -140,9 +143,11 @@ impl World {
             t(OAK, Kind::Oak, "the old oak", 24 + j(7), 5 + j(8)),
             t(SPRING, Kind::Water, "the spring", 40 + j(9), 6 + j(10)),
         ];
-        let people = (0..PEOPLE).map(|_| Person { x: 10, y: 23, px: 10, py: 23, thirst: 200, asleep: false, drinks: 0, first_drink: None, away: false }).collect();
-        World { seed, tick: 0, things, notes: vec![], people, air: vec![], script: vec![], log: vec![], next_id: 100, night_now: false, dusk: false, leads: vec![], said: vec![] }
+        let people = (0..PEOPLE).map(|_| Person { x: 10, y: 23, px: 10, py: 23, thirst: 200, asleep: false, drinks: 0, pain: 0, first_drink: None, away: false }).collect();
+        World { seed, tick: 0, things, notes: vec![], people, air: vec![], script: vec![], log: vec![], next_id: 100, night_now: false, dusk: false, dusk_at: 0, leads: vec![], said: vec![] }
     }
+    /// Evening sleepiness (stage 3): from dusk it rises from 400 by 10 a tick, to 900.
+    pub fn drowsy(&self) -> i32 { if self.dusk { (400 + 10 * (self.tick - self.dusk_at) as i32).min(900) } else { 0 } }
     pub fn thing(&self, id: u32) -> &Thing { self.things.iter().find(|t| t.id == id).expect("thing") }
     pub fn spring(&self) -> (i32, i32) { let s = self.thing(SPRING); (s.x, s.y) }
 
@@ -164,7 +169,7 @@ impl World {
                 seen.push(Seen { id: n.id, kind: Kind::Note.k(), x: n.x, y: n.y, approaching: false, available: false });
             }
         }
-        Sense { tick: self.tick, seed: self.seed, body: Body { x: p.x, y: p.y, hunger: p.thirst, pain: 0, asleep: p.asleep && !awake }, seen, cues: vec![] }
+        Sense { tick: self.tick, seed: self.seed, body: Body { x: p.x, y: p.y, hunger: p.thirst, pain: p.pain, asleep: p.asleep && !awake, drowsy: self.drowsy() }, seen, cues: vec![] }
     }
 
     /// The utterances in the air that person `i` catches this tick: (utterance, loudness,
@@ -193,7 +198,7 @@ impl World {
         let evs: Vec<Event> = self.script.iter().filter(|(t, _)| *t == self.tick).map(|(_, e)| e.clone()).collect();
         for ev in evs {
             match ev {
-                Event::Dusk => { self.dusk = true; }
+                Event::Dusk => { self.dusk = true; self.dusk_at = self.tick; }
                 Event::Night => { self.dusk = false; self.night_now = true; for p in self.people.iter_mut() { p.asleep = true; } self.log.push((self.tick, "night: everyone sleeps where they are".into())); }
                 Event::SetThirst { who, v } => { self.people[who].thirst = v; }
                 Event::DrySpring => {
@@ -278,7 +283,7 @@ impl World {
     }
 
     pub fn hash_into<H: Hasher>(&self, h: &mut H) {
-        self.tick.hash(h); self.things.hash(h); self.notes.hash(h); self.people.hash(h); self.air.hash(h); self.leads.hash(h);
+        self.tick.hash(h); self.things.hash(h); self.notes.hash(h); self.people.hash(h); self.air.hash(h); self.leads.hash(h); self.dusk.hash(h); self.dusk_at.hash(h);
     }
     pub fn state_hash(&self) -> u64 { let mut h = StateHasher::new(self.seed); self.hash_into(&mut h); h.finish() }
 }

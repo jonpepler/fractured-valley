@@ -118,7 +118,9 @@ pub const SAID_THANKS: usize = 5;
 impl Hash for Person {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.m.state_hash().hash(h); self.traits.hash(h); self.medium.hash(h); self.lex.hash(h); self.pnode.hash(h); self.told.hash(h); self.notes.hash(h);
-        self.owe_thanks.hash(h); self.corrected_to.hash(h); self.model_on.hash(h); self.offload.hash(h); self.last_ask.hash(h); self.said.hash(h); self.pending.hash(h); self.curious.hash(h); self.away.hash(h);
+        // Element by element: std hashes a slice of `usize` as raw bytes (8 on native, 4 on wasm32),
+        // which made native and wasm32 hashes part as soon as someone owed thanks (stage 3).
+        self.owe_thanks.len().hash(h); for &a in &self.owe_thanks { (a as u64).hash(h); } self.corrected_to.hash(h); self.model_on.hash(h); self.offload.hash(h); self.last_ask.hash(h); self.said.hash(h); self.pending.hash(h); self.curious.hash(h); self.away.hash(h);
     }
 }
 

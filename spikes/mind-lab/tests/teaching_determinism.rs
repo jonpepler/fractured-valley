@@ -10,7 +10,9 @@ use fv_mind_lab::store::Store;
 
 /// Pinned when stage 2 was written. If behaviour changes these move, and the change must be
 /// explained.
-const PINNED: [u64; 5] = [0x0601_89bb_9f81_66b3, 0x8a9f_3f00_7638_2192, 0xdb3c_f778_de8c_d635, 0xd803_475e_d0d2_8144, 0xda42_b5e7_dab1_9c06];
+/// Moved in stage 3: comfort gated by need, a cost of distance, commitment (behaviour), and
+/// `owe_thanks` hashed item by item (it hashed differently on wasm32), and evening drowsiness.
+const PINNED: [u64; 5] = [0xe14e_1075_2c24_caf7, 0x0b60_a67a_3e2d_3b77, 0xf65d_4894_92cc_4099, 0x4bbc_da75_02b6_3cf1, 0x30f0_2d9f_7a42_326c];
 
 #[test]
 fn teaching_runs_give_identical_pinned_hashes() {

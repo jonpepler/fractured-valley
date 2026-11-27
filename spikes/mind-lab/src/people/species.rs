@@ -76,7 +76,7 @@ fn build() -> People {
     b.link(lie, anger, lt::ASSOC, 300);
     b.canonical();
     let ids = Ids { thirst, fatigue, pain, water, danger, rest, anger, loss, comfort, person, truth, lie, mistake, debt, note, landmark, dry };
-    let roles = Roles { hunger: thirst, fatigue, pain, food: water, danger, rest, anger, loss };
+    let roles = Roles { hunger: thirst, fatigue, pain, food: water, danger, rest, anger, loss, comfort };
     let concept = |k: Kind| match k {
         Kind::Ash | Kind::Bryn | Kind::Cai | Kind::Dee => person, Kind::Water => water, Kind::Rock | Kind::Windmill | Kind::Oak => landmark,
         Kind::Hut => rest, Kind::Note => note, Kind::DryFresh | Kind::DryOld => dry,

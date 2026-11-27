@@ -75,7 +75,10 @@ fn o1_same_slow_graph_different_modulators_different_thoughts_and_choices() {
     assert!(distinct.len() >= 3);
     assert_eq!(rows[0].1, "henhouse");
     assert_ne!(rows[2].1, "henhouse", "afraid should not choose the henhouse at hunger 700");
-    assert_eq!(rows[3].1, "berry bush", "low mood takes the path away from the dog");
+    // Restated in stage 3. Before, low mood took the path away from the dog (the berry bush). With
+    // comfort gated by need, a low mood is itself a need for comfort, so the low fox stays at its
+    // den (the comfort it was founded with). It still keeps away from the henhouse and the dog.
+    assert!(rows[3].1 == "stay" || rows[3].1 == "berry bush", "low mood keeps away from the henhouse");
     assert!(rows[2].3 > rows[0].3, "fear brings the dog to mind more");
     println!("PARTIAL (as before): low mood puts the dog on the mind at {} (neutral {}); its effect is dimming good paths", rows[3].3, rows[0].3);
     assert!(rows[2].6 < rows[0].6 && rows[3].6 < rows[0].6);

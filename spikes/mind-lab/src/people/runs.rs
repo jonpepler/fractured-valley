@@ -278,12 +278,16 @@ pub struct Fade { pub fact: Vec<i32>, pub source: Vec<i32>, pub uses: Vec<(u32, 
 
 /// Told once, never goes (not thirsty again), `nights` nights. The source link and the fact are
 /// tracked night by night; on probe nights a copy of Bryn is made thirsty to see if it would go.
-pub fn s5_fade(seed: u64, set: u32, trust: i32, warmth: i32, nights: u32, probes: &[u32], quiet: bool) -> Fade {
+pub fn s5_fade(seed: u64, set: u32, trust: i32, warmth: i32, nights: u32, probes: &[u32], quiet: bool) -> Fade { s5_fade_with(seed, set, trust, warmth, nights, probes, quiet, STAGE3) }
+/// `s5_fade` with stage 2's or stage 3's choosing (the home-pull regression).
+#[allow(clippy::too_many_arguments)]
+pub fn s5_fade_with(seed: u64, set: u32, trust: i32, warmth: i32, nights: u32, probes: &[u32], quiet: bool, c: Choosing) -> Fade {
     let mut su = setup(seed, set);
     su.days = nights + 1;
     su.trust[BRYN][ASH] = trust;
     su.warmth[BRYN][ASH] = warmth;
     let mut v = su.build();
+    set_choosing(&mut v, c);
     v.at(3, Event::SetThirst { who: BRYN, v: 0 });
     if quiet { keep_quiet(&mut v, nights); } else { for d in 1..=nights { v.at(d * DAY, Event::SetThirst { who: BRYN, v: 0 }); } }
     let mut r = Fade::default();
@@ -481,3 +485,49 @@ pub fn s8_teacher(seed: u64, set: u32, helped: bool, model_on: bool) -> Teacher 
 pub fn where_things(w: &World) -> String { let c = w.thing(CAMP); let s = w.spring(); format!("camp ({}, {}), spring ({}, {}), {} cells apart", c.x, c.y, s.0, s.1, dist(c.x, c.y, s.0, s.1)) }
 /// Unused here; keeps the told record type in the public interface of the runs.
 pub type TellRecord = Told;
+
+// ------------------------------------------------------------------------- stage 3: home's pull
+
+/// Stage 3's choosing settings, to compare against stage 2's: (comfort gated by need, walking cost,
+/// commitment). `STAGE2` is all off.
+pub type Choosing = (bool, i32, bool);
+pub const STAGE2: Choosing = (false, 0, false);
+pub const STAGE3: Choosing = (true, crate::mind::WALK_COST, true);
+pub fn set_choosing(v: &mut Valley, c: Choosing) {
+    for p in v.folk.iter_mut() { p.m.cfg.comfort_gate = c.0; p.m.cfg.walk_cost = c.1; p.m.cfg.hold_goal = c.2; }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct HomePull { pub camp_comfort: i32, pub camp_rest: i32, pub left_at: Option<u32>, pub drank_at: Option<u32>, pub dithers: u32 }
+
+/// Stage 2's finding, as a probe: Bryn spends `days` quiet days at the camp (never thirsty, nobody
+/// talks: Ash is away), then wakes thirsty (700) with nobody near. Does home hold it? Returns the
+/// camp's learnt links to comfort and rest, the tick (from waking) it first stands more than 3
+/// cells from the camp and first drinks, and how often its walk reversed (a step towards a place,
+/// then straight back: dithering).
+pub fn home_pull(seed: u64, set: u32, days: u32, c: Choosing) -> HomePull {
+    let mut su = setup(seed, set);
+    su.days = days + 1;
+    su.pos = [(10, 23), (10, 22), (55, 34), (54, 35)];
+    let mut v = su.build();
+    set_choosing(&mut v, c);
+    v.at(0, Event::Away { who: ASH }); v.at(0, Event::Away { who: CAI }); v.at(0, Event::Away { who: DEE });
+    for t in (0..days * DAY).step_by(25) { v.at(t, Event::SetThirst { who: BRYN, v: 0 }); }
+    v.run_until(days * DAY);
+    v.at(days * DAY, Event::SetThirst { who: BRYN, v: 700 });
+    let b = &v.folk[BRYN];
+    let cn = b.lex_place(CAMP).unwrap();
+    let mut r = HomePull { camp_comfort: w(b, cn, b.ids.comfort, lt::ASSOC), camp_rest: w(b, cn, b.ids.rest, lt::ASSOC), ..Default::default() };
+    let drinks0 = v.w.people[BRYN].drinks;
+    let mut path: Vec<(i32, i32)> = vec![];
+    for k in 0..120 {
+        v.run(1);
+        let p = &v.w.people[BRYN];
+        path.push((p.x, p.y));
+        if r.left_at.is_none() && dist(p.x, p.y, 10, 22) > 3 { r.left_at = Some(k); }
+        if r.drank_at.is_none() && p.drinks > drinks0 { r.drank_at = Some(k); break; }
+    }
+    // A reversal: three positions where the middle step is undone by the next.
+    r.dithers = path.windows(3).filter(|x| x[0] == x[2] && x[0] != x[1]).count() as u32;
+    r
+}

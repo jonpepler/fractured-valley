@@ -104,8 +104,26 @@ pub struct Config {
     /// consolidation. All zero (no forgetting) unless a species sets it; the fox adds no nodes,
     /// so it is untouched.
     pub own_fade: [u16; lt::COUNT],
+    /// Stage 3: **comfort is gated by need**, as food is by hunger and rest by fatigue. The pull of
+    /// a place's comfort (the species' `Roles::comfort`) counts `need` per mille, where need is
+    /// the largest of fatigue, stress and low mood. Off: the old rule, where comfort counted
+    /// `(300 + arousal)` per mille whatever the body needed (so a thirsty person could stay home,
+    /// stage 2's finding, and a surprise made home pull harder).
+    pub comfort_gate: bool,
+    /// Stage 3: **a cost of distance in choosing.** A place's score is discounted by
+    /// `walk_cost / (walk_cost + d)` for a place `d` cells away (the value of a place halves at
+    /// `walk_cost` cells: hyperbolic discounting of effort). 0: no cost (stage 2).
+    pub walk_cost: i32,
+    /// Stage 3: **commitment.** A goal being walked to is kept while nothing beats it by
+    /// `SWITCH_MARGIN`, even when the best place is the one the body stands at (stage 2 let the
+    /// place underfoot win outright, so a walk could stop one step out, which is the dithering
+    /// that made stage 2 remove its walking cost). Off: the old rule.
+    pub hold_goal: bool,
 }
-impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT] } } }
+impl Default for Config { fn default() -> Self { Config { sleep_keep: 8, overlay_steps_of_4: false, stochastic_learning: true, own_fade: [0; lt::COUNT], comfort_gate: true, walk_cost: WALK_COST, hold_goal: true } } }
+
+/// Default `Config::walk_cost`: a place this many cells away counts half.
+pub const WALK_COST: i32 = 120;
 
 /// An individual's temperament: seeded per individual, and expressed as brain structure and
 /// modulator parameters, never as a script.
@@ -136,7 +154,9 @@ pub fn stressed_params(base: &Params, stress: i32, t: &Temperament) -> Params {
 
 /// The concepts every mind's machinery refers to (each species names its own nodes for them).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct Roles { pub hunger: u32, pub fatigue: u32, pub pain: u32, pub food: u32, pub danger: u32, pub rest: u32, pub anger: u32, pub loss: u32 }
+pub struct Roles { pub hunger: u32, pub fatigue: u32, pub pain: u32, pub food: u32, pub danger: u32, pub rest: u32, pub anger: u32, pub loss: u32,
+    /// The comfort a place can give (gated by need, `Config::comfort_gate`); `u32::MAX` if none.
+    pub comfort: u32 }
 
 /// A kind of thing a species can tell apart by its senses.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -172,7 +192,10 @@ pub struct Sense {
     pub cues: Vec<(u32, i32)>,
 }
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct Body { pub x: i32, pub y: i32, pub hunger: i32, pub pain: i32, pub asleep: bool }
+pub struct Body { pub x: i32, pub y: i32, pub hunger: i32, pub pain: i32, pub asleep: bool,
+    /// Time-of-day sleepiness (0..1000), the circadian half of the two-process model of sleep
+    /// (Borbély 1982): fatigue is the larger of this and sleep pressure (the backlog). 0 for the fox.
+    pub drowsy: i32 }
 /// A thing in sight: its kind (an index into the species' kinds), where, whether it came closer.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct Seen { pub id: u32, pub kind: u8, pub x: i32, pub y: i32, pub approaching: bool, pub available: bool }
@@ -573,14 +596,14 @@ impl<S: Store> Mind<S> {
         let mut rep = Report::default();
         let b = self.backlog();
         self.consol.forced = if b > BACKLOG_CAP && self.learn { self.compact(b) } else { 0 };
-        self.mods.fatigue = self.pressure();
+        self.mods.fatigue = self.pressure().max(fx.drowsy);
         if fx.asleep { rep.action = Some(Action::Sleep); rep.why = "asleep".into(); rep.backlog = self.backlog(); self.last = rep; return Action::Sleep; }
         if self.napping {
             let woken = self.perceive(s).iter().any(|p| p.error >= IGNORE_BELOW) || fx.pain > self.prev_pain || fx.hunger >= WAKE_HUNGER;
             if woken || self.mods.fatigue < WAKE_AT { self.napping = false; } else {
                 self.consol.last_units = 0;
                 self.consolidate(SLEEP_BUDGET, true);
-                self.mods.fatigue = self.pressure();
+                self.mods.fatigue = self.pressure().max(fx.drowsy);
                 self.mods.arousal -= self.mods.arousal / 10; self.mods.stress -= self.mods.stress / 20;
                 st.damp(900);
                 rep.action = Some(Action::Sleep); rep.why = format!("napping (fatigue {})", self.mods.fatigue);
@@ -846,17 +869,20 @@ impl<S: Store> Mind<S> {
     pub fn felt_with<F: Form + ?Sized>(&self, f: &F, p: u32, m: &Mods) -> i32 {
         let neg_mood = (-m.mood).max(0) as i64;
         let (a, h, fa) = (m.arousal as i64, m.hunger as i64, m.fatigue as i64);
-        let good = |val: i64, tags: u8| -> i64 {
-            if tags & tag::FOOD != 0 { val * 2 * h / 1000 } else if tags & tag::REST != 0 { val * 2 * fa / 1000 } else { val * (300 + a) / 1000 }
+        // What comfort is worth now: tiredness, stress or a low mood (stage 3).
+        let need = fa.max(m.stress as i64).max(neg_mood).min(1000);
+        let comfort = if self.cfg.comfort_gate { self.roles.comfort } else { u32::MAX };
+        let good = |val: i64, tags: u8, n: u32| -> i64 {
+            if tags & tag::FOOD != 0 { val * 2 * h / 1000 } else if tags & tag::REST != 0 { val * 2 * fa / 1000 } else if n == comfort { val * need / 1000 } else { val * (300 + a) / 1000 }
         };
         let mut edges = vec![];
         f.edges(p, &mut edges);
         let own = f.val(p) as i64;
-        let mut v = if own < 0 { own * (1000 + 2 * a + neg_mood) / 1000 } else { good(own, f.tags(p)) };
+        let mut v = if own < 0 { own * (1000 + 2 * a + neg_mood) / 1000 } else { good(own, f.tags(p), p) };
         for e in edges {
             let val = (f.val(e.to) + e.val).clamp(-1000, 1000) as i64;
             if f.tags(e.to) & tag::PLACE != 0 { v += e.w as i64 * val / 2000; continue; }
-            v += if val < 0 { e.w as i64 * val / 1000 * (1000 + 2 * a + neg_mood) / 1000 } else { e.w as i64 * good(val, f.tags(e.to)) / 1000 };
+            v += if val < 0 { e.w as i64 * val / 1000 * (1000 + 2 * a + neg_mood) / 1000 } else { e.w as i64 * good(val, f.tags(e.to), e.to) / 1000 };
         }
         v as i32
     }
@@ -926,7 +952,10 @@ impl<S: Store> Mind<S> {
             scores.push((p, a, self.felt(f, p)));
         }
         let nov = |p: u32| novel_pull.iter().filter(|x| x.0 == p).map(|x| x.1).max().unwrap_or(0);
-        let total = |s: &(u32, i32, i32)| (s.1 as i64 * s.2.max(0) as i64 / 1000) as i32 + if s.2 >= 0 { nov(s.0) } else { 0 };
+        // The cost of distance (stage 3): a place's worth is discounted by how far it is to walk.
+        let wc = self.cfg.walk_cost as i64;
+        let far = |p: u32| -> i64 { if wc <= 0 { return 1000; } let (x, y) = f.anchor(p).map(|a| a.xy()).unwrap_or((fx.x, fx.y)); wc * 1000 / (wc + dist(x, y, fx.x, fx.y) as i64) };
+        let total = |s: &(u32, i32, i32)| (((s.1 as i64 * s.2.max(0) as i64 / 1000) as i32 + if s.2 >= 0 { nov(s.0) } else { 0 }) as i64 * far(s.0) / 1000) as i32;
         let best = scores.iter().max_by_key(|s| (total(s), std::cmp::Reverse(self.tk(s.0)))).copied();
         if let Some(pz) = self.puzzle {
             let pp = self.place_nodes[pz.place];
@@ -939,7 +968,12 @@ impl<S: Store> Mind<S> {
                 return (Action::WalkTo { x: wp.0, y: wp.1 }, format!("search for the missing {} (puzzle {})", self.kinds[pz.kind as usize].name, pz.strength), scores);
             }
         }
-        if let (Some(b), Some(h)) = (best, here) { if b.0 == h {
+        let goal = match self.goal { Some(g) if Some(g) == here => None, g => g };
+        let goal_score = goal.and_then(|g| scores.iter().find(|s| s.0 == g)).map(total);
+        // Commitment (stage 3): a goal on the way is kept while nothing beats it by the margin,
+        // the place underfoot included.
+        let keep_goal = self.cfg.hold_goal && matches!((best, goal, goal_score), (Some(b), Some(g), Some(gs)) if b.0 != g && total(&b) * 1000 < gs * (1000 + SWITCH_MARGIN) && gs >= WALK_AT);
+        if let (Some(b), Some(h), false) = (best, here, keep_goal) { if b.0 == h {
             let hi = self.place_nodes.iter().position(|&p| p == h);
             let rests_here = percepts.iter().any(|p| self.kinds[p.kind as usize].shelter && p.place.is_some() && p.place == hi);
             let calm = self.mods.arousal < 300 && self.mods.stress < 400;
@@ -949,8 +983,6 @@ impl<S: Store> Mind<S> {
             }
             return (Action::Stay, format!("stay at {} (score {})", name(h), total(&b)), scores);
         } }
-        let goal = match self.goal { Some(g) if Some(g) == here => None, g => g };
-        let goal_score = goal.and_then(|g| scores.iter().find(|s| s.0 == g)).map(total);
         let pick = match (best, goal, goal_score) {
             (Some(b), Some(g), Some(gs)) if b.0 != g && total(&b) * 1000 < gs * (1000 + SWITCH_MARGIN) && gs >= WALK_AT => Some((g, gs)),
             (Some(b), _, _) if total(&b) >= WALK_AT => Some((b.0, total(&b))),

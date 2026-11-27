@@ -12,7 +12,9 @@ use fv_mind_lab::rng::hash;
 /// Moved again in stage 2: day learning rounds stochastically instead of truncating (behaviour:
 /// calm, dim co-activation now learns), and the hash also covers the mind's place and entity
 /// lists, where its own learning starts, and the nights it has slept.
-const PINNED: [u64; 6] = [0x8a7f_810e_3ef0_f743, 0x26f3_bcca_37fe_10f7, 0x99fd_5454_5339_58d7, 0x520c_918c_0683_c145, 0x82ef_e976_ceec_32cd, 0xead9_e7a1_5398_bdfa];
+/// Moved again in stage 3: comfort gated by need, a cost of distance and commitment to a goal
+/// (behaviour), and the settings for them are hashed.
+const PINNED: [u64; 6] = [0x6799_fcb8_4ffa_9a37, 0x6104_4744_1ced_2f65, 0x8ef4_96eb_49a3_2845, 0x4bd3_164a_c837_399f, 0x956a_7956_f529_2881, 0x4d35_b9f8_09cf_21e5];
 
 #[test]
 fn identical_runs_give_identical_pinned_hashes() {
@@ -72,9 +74,12 @@ fn native_and_wasm32_builds_agree() {
     let have_target = std::process::Command::new("rustup").args(["target", "list", "--installed"]).output().ok()
         .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("wasm32-wasip1"));
     let have_node = std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success());
+    // Stage 3: a missing target or node is a failure, not a silent pass (stage 2's review found the
+    // old skip passed). Skipping needs an explicit FV_SKIP_WASM=1, and says so.
     if !have_target || !have_node {
-        println!("SKIPPED: missing {}{}", if have_target { "" } else { "the wasm32-wasip1 target (rustup target add wasm32-wasip1) " }, if have_node { "" } else { "node (22+, for its built-in WASI)" });
-        return;
+        let missing = format!("{}{}", if have_target { "" } else { "the wasm32-wasip1 target (rustup target add wasm32-wasip1) " }, if have_node { "" } else { "node (22+, for its built-in WASI)" });
+        if std::env::var("FV_SKIP_WASM").is_ok_and(|v| v == "1") { println!("SKIPPED ON REQUEST (FV_SKIP_WASM=1): missing {missing}"); return; }
+        panic!("cannot compare native and wasm32: missing {missing}. Install it, or set FV_SKIP_WASM=1 to skip on purpose.");
     }
     let dir = env!("CARGO_MANIFEST_DIR");
     let b = std::process::Command::new("cargo").current_dir(dir).args(["build", "--release", "--bin", "hashes", "--target", "wasm32-wasip1", "--target-dir", "target/wasm-test", "-q"]).status().unwrap();
