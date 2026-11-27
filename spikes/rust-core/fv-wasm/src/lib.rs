@@ -225,7 +225,7 @@ impl Engine {
         // fv-core's import trusts its input; check the obvious things first so
         // a bad message gives an error instead of a crashed page. (catch_unwind
         // only helps natively: on the web a panic aborts the module.)
-        if bytes.len() < 4 || &bytes[..4] != b"FVR4" { return Err(err("not a checkpoint")) }
+        if bytes.len() < 4 || &bytes[..4] != b"FVR5" { return Err(err("not a checkpoint")) }
         let sim = std::panic::catch_unwind(|| checkpoint::import(bytes)).map_err(|_| err("checkpoint is malformed"))?;
         Ok(Engine { sim, parts: None })
     }

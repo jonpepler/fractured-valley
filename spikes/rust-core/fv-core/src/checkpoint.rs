@@ -12,7 +12,7 @@ use crate::substance::GASES;
 use crate::units::*;
 use crate::world::World;
 
-const MAGIC: &[u8; 4] = b"FVR4";
+const MAGIC: &[u8; 4] = b"FVR5";
 
 struct W(Vec<u8>);
 impl W {
@@ -87,6 +87,23 @@ pub fn export(sim: &Sim) -> Vec<u8> {
         w.i64(c.skin.0);
         w.i64(c.nuclear.0);
     }
+    // The steady sources' light, as last traced (sparse: most cells get none).
+    match sim.light.steady.as_deref() {
+        None => w.u8(0),
+        Some(st) => {
+            w.u8(1);
+            w.u64(st.traced);
+            let lit: Vec<usize> = (0..st.to_solid.len()).filter(|&i| st.to_solid[i] != 0 || st.to_gas[i] != 0 || st.light[i] != [0; 3]).collect();
+            w.u64(lit.len() as u64);
+            for i in lit {
+                w.u64(i as u64);
+                w.i64(st.to_solid[i]);
+                w.i64(st.to_gas[i]);
+                for v in st.light[i] { w.i64(v) }
+            }
+            for &(a, b) in &st.edge { w.i64(a); w.i64(b) }
+        }
+    }
     w.0
 }
 
@@ -134,7 +151,19 @@ pub fn import(bytes: &[u8]) -> Sim {
         n.nuclear = Energy(r.i64());
         *c = n;
     }
-    let light = Light::new(world.cells.len());
+    let mut light = Light::new(world.cells.len());
+    if r.u8() != 0 {
+        let n = world.cells.len();
+        let mut st = crate::rad::Steady { traced: r.u64(), to_solid: vec![0; n], to_gas: vec![0; n], light: vec![[0; 3]; n], edge: Vec::new() };
+        for _ in 0..r.u64() {
+            let i = r.u64() as usize;
+            st.to_solid[i] = r.i64();
+            st.to_gas[i] = r.i64();
+            st.light[i] = [r.i64(), r.i64(), r.i64()];
+        }
+        st.edge = (0..world.bricks()).map(|_| (r.i64(), r.i64())).collect();
+        light.steady = Some(Box::new(st));
+    }
     let mut sim = Sim::new(world, sky);
     sim.flow = flow;
     sim.books = books;

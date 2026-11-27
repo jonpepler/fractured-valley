@@ -136,10 +136,44 @@ pub struct Light {
     pub dose: Vec<i64>,
     /// Working space for the field method, kept between ticks.
     pub(crate) field: Option<Box<crate::field::Scratch>>,
+    /// The light from steady sources, traced every [`STEADY_EVERY`] ticks
+    /// and applied on each of them (packet method). Part of the state.
+    pub steady: Option<Box<Steady>>,
+}
+
+/// Sunlight, moonlight, skylight, the sky's heat and the surroundings' heat
+/// through the box's sides change over minutes, not ticks. So they are
+/// traced once every this many ticks, and what they deposit then is
+/// deposited again, unchanged, on each tick until the next trace. Every tick
+/// books exactly what it deposits (what came in is what was absorbed plus
+/// what left), so the books stay exact. What it costs: their light follows
+/// changes in the world (a leaf burning away) up to 0.15 s late.
+pub const STEADY_EVERY: u64 = 4;
+
+/// A steady random source's energy for one tick, as [`STEADY_EVERY`]
+/// packets (the rest in the last): traced once and deposited on each of
+/// those ticks, they make the same total as one packet a tick would.
+fn split_steady(e: i64) -> [i64; STEADY_EVERY as usize] {
+    let n = STEADY_EVERY as i64;
+    core::array::from_fn(|k| if k as i64 == n - 1 { e - e / n * (n - 1) } else { e / n })
+}
+
+/// What the steady sources deposit each tick (see [`STEADY_EVERY`]).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Steady {
+    /// The tick it was traced on.
+    pub traced: u64,
+    /// Per cell, µJ: into its surface (or solid), into its gas, and the
+    /// visible light (red, green, blue) that reached it.
+    pub to_solid: Vec<i64>,
+    pub to_gas: Vec<i64>,
+    pub light: Vec<[i64; 3]>,
+    /// Per brick, µJ: what came in through the box's edge, what went out.
+    pub edge: Vec<(i64, i64)>,
 }
 
 impl Light {
-    pub fn new(n: usize) -> Light { Light { incident: vec![[0; 3]; n], glow: vec![[0; 3]; n], dose: vec![0; n], field: None } }
+    pub fn new(n: usize) -> Light { Light { incident: vec![[0; 3]; n], glow: vec![[0; 3]; n], dose: vec![0; n], field: None, steady: None } }
 }
 
 /// How radiation travels. Both keep the same books and give the same kind
@@ -805,10 +839,13 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>, 
     // Skylight: bluer, from a random direction across the sky.
     let sky_mj = (Power(sky.sky_w_m2 * FACE_MM2) * TICK).0;
     if sky_mj > 0 {
-        let r = stream.below(100);
-        let band = if r < 45 { IR } else if r < 60 { RED } else if r < 77 { GREEN } else { BLUE };
-        let d = lambert(&mut stream, 2, -1);
-        out.push(Packet { pos, dir: d, energy: sky_mj, band: band as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) });
+        for (k, e) in split_steady(sky_mj).into_iter().enumerate() {
+            let at = if k == 0 { pos } else { [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, top] };
+            let r = stream.below(100);
+            let band = if r < 45 { IR } else if r < 60 { RED } else if r < 77 { GREEN } else { BLUE };
+            let d = lambert(&mut stream, 2, -1);
+            if e > 0 { out.push(Packet { pos: at, dir: d, energy: e, band: band as u8, bounces: 0, kelvin: SUN_K, stream: Stream(stream.next()) }) }
+        }
         total += sky_mj;
     }
     // Moonlight: sunlight's bands × the moon's reflectance, a few µJ per
@@ -824,8 +861,11 @@ fn sky_packets(w: &World, sky: &Sky, x: usize, y: usize, out: &mut Vec<Packet>, 
     let t_sky = sky_temperature(sky, w.ambient);
     let ir = (Power(tables().sigma_t4[k_index(t_sky.0)] * FACE_MM2 / 1_000_000) * TICK).0;
     if ir > 0 {
-        let d = lambert(&mut stream, 2, -1);
-        out.push(Packet { pos, dir: d, energy: ir, band: IR as u8, bounces: 0, kelvin: kelvin(t_sky), stream: Stream(stream.next()) });
+        for (k, e) in split_steady(ir).into_iter().enumerate() {
+            let at = if k == 0 { pos } else { [x as i64 * ONE + stream.below(ONE as u64) as i64, y as i64 * ONE + stream.below(ONE as u64) as i64, top] };
+            let d = lambert(&mut stream, 2, -1);
+            if e > 0 { out.push(Packet { pos: at, dir: d, energy: e, band: IR as u8, bounces: 0, kelvin: kelvin(t_sky), stream: Stream(stream.next()) }) }
+        }
         total += ir;
     }
     total
@@ -853,15 +893,18 @@ fn surroundings(w: &World, sky: &Sky, i: usize, x: usize, y: usize, z: usize, ou
             let s = &w.subs[c.substance as usize];
             absorbed += Fraction(Fraction::ONE.0 - band_albedo(s, IR)).of(e_face);
         } else {
-            let mut pos = centre(x, y, z, &mut stream);
-            pos[axis] = if dir < 0 { [x, y][axis] as i64 * ONE } else { ([x, y][axis] as i64 + 1) * ONE - 1 };
-            // Through open air, what heads down came from the sky beyond
-            // and what heads up from the land beyond (at the air's
-            // temperature): the two halves of a side face's view.
-            let d = lambert(&mut stream, axis, -dir);
-            let (e, k) = if d[2] < 0 { (e_sky, kelvin(t_sky)) } else { (e_face, kelvin(w.ambient)) };
-            out.push(Packet { pos, dir: d, energy: e, band: IR as u8, bounces: 0, kelvin: k, stream: Stream(stream.next()) });
-            sent += e;
+            for part in 0..STEADY_EVERY as usize {
+                let mut pos = centre(x, y, z, &mut stream);
+                pos[axis] = if dir < 0 { [x, y][axis] as i64 * ONE } else { ([x, y][axis] as i64 + 1) * ONE - 1 };
+                // Through open air, what heads down came from the sky beyond
+                // and what heads up from the land beyond (at the air's
+                // temperature): the two halves of a side face's view.
+                let d = lambert(&mut stream, axis, -dir);
+                let (e, k) = if d[2] < 0 { (e_sky, kelvin(t_sky)) } else { (e_face, kelvin(w.ambient)) };
+                let e = split_steady(e)[part];
+                if e > 0 { out.push(Packet { pos, dir: d, energy: e, band: IR as u8, bounces: 0, kelvin: k, stream: Stream(stream.next()) }) }
+                sent += e;
+            }
         }
     }
     (sent, absorbed)
@@ -914,26 +957,34 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
     // 1. Every brick works out its cells' emission and packets.
     let mut packets: Vec<Vec<Packet>> = (0..bricks).map(|_| Vec::new()).collect();
     let mut beams: Vec<Vec<Beam>> = (0..bricks).map(|_| Vec::new()).collect();
+    let mut steady_packets: Vec<Vec<Packet>> = (0..bricks).map(|_| Vec::new()).collect();
+    let mut steady_absorbed = vec![0i64; n];
+    // Trace the steady sources afresh every STEADY_EVERY ticks (and when
+    // there is no field yet, or the world changed size).
+    let refresh = w.tick % STEADY_EVERY == 0 || light.steady.as_ref().map_or(true, |s| s.to_solid.len() != n);
     let mut emitted = vec![[0i64; 2]; n]; // [from solid, from gas]
     let mut decay_heat = vec![0i64; n];
     let mut sky_in = vec![0i64; bricks];
     {
         let wr: &World = w;
-        let work = |b: usize, list: &mut Vec<Packet>, bl: &mut Vec<Beam>, em: &mut [[i64; 2]], dh: &mut [i64], glow: &mut [[i64; 3]], skyin: &mut i64| {
+        let work = |b: usize, list: &mut Vec<Packet>, (sl, bl, sabs): (&mut Vec<Packet>, &mut Vec<Beam>, &mut [i64]), em: &mut [[i64; 2]], dh: &mut [i64], glow: &mut [[i64; 3]], skyin: &mut i64| {
             let (ox, oy, oz) = wr.brick_origin(b);
             for l in 0..BRICK_CELLS {
                 let (lx, ly, lz) = World::local_xyz(l);
                 let (x, y, z) = (ox + lx, oy + ly, oz + lz);
                 let i = b * BRICK_CELLS + l;
                 let (from_solid, from_gas, g, local) = emit(wr, i, x, y, z, list);
-                // The surroundings' heat radiation through the box's sides.
-                let (sent_in, absorbed) = if x == 0 || y == 0 || x == wr.nx - 1 || y == wr.ny - 1 { surroundings(wr, sky, i, x, y, z, list) } else { (0, 0) };
-                *skyin += sent_in + absorbed;
-                // Absorbed at the face: the surface gains it (emission less it).
-                em[l] = [from_solid - absorbed, from_gas];
+                em[l] = [from_solid, from_gas];
                 dh[l] = local;
                 glow[l] = g;
-                if z == wr.nz - 1 { *skyin += sky_packets(wr, sky, x, y, list, bl) }
+                // The steady sources, on the ticks they are traced.
+                if !refresh { continue }
+                // The surroundings' heat radiation through the box's sides.
+                let (sent_in, absorbed) = if x == 0 || y == 0 || x == wr.nx - 1 || y == wr.ny - 1 { surroundings(wr, sky, i, x, y, z, sl) } else { (0, 0) };
+                *skyin += sent_in + absorbed;
+                // Absorbed at the face: the surface gains it.
+                sabs[l] = absorbed;
+                if z == wr.nz - 1 { *skyin += sky_packets(wr, sky, x, y, sl, bl) }
                 // Low sun also crosses the box's sunward sides through open air.
                 if !wr.cells[i].opaque(&wr.subs) {
                     for axis in 0..2 {
@@ -950,21 +1001,22 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
         #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
-            packets.par_iter_mut().zip(beams.par_iter_mut()).zip(emitted.par_chunks_mut(BRICK_CELLS)).zip(decay_heat.par_chunks_mut(BRICK_CELLS))
+            packets.par_iter_mut().zip(steady_packets.par_iter_mut().zip(beams.par_iter_mut()).zip(steady_absorbed.par_chunks_mut(BRICK_CELLS))).zip(emitted.par_chunks_mut(BRICK_CELLS)).zip(decay_heat.par_chunks_mut(BRICK_CELLS))
                 .zip(light.glow.par_chunks_mut(BRICK_CELLS)).zip(sky_in.par_iter_mut()).enumerate()
-                .for_each(|(b, (((((list, bl), em), dh), g), s))| work(b, list, bl, em, dh, g, s));
+                .for_each(|(b, (((((list, ((sl, bl), sa)), em), dh), g), s))| work(b, list, (sl, bl, sa), em, dh, g, s));
         }
         #[cfg(not(feature = "parallel"))]
-        for (b, (((((list, bl), em), dh), g), s)) in packets.iter_mut().zip(beams.iter_mut()).zip(emitted.chunks_mut(BRICK_CELLS)).zip(decay_heat.chunks_mut(BRICK_CELLS))
-            .zip(light.glow.chunks_mut(BRICK_CELLS)).zip(sky_in.iter_mut()).enumerate() { work(b, list, bl, em, dh, g, s) }
+        for (b, (((((list, ((sl, bl), sa)), em), dh), g), s)) in packets.iter_mut().zip(steady_packets.iter_mut().zip(beams.iter_mut()).zip(steady_absorbed.chunks_mut(BRICK_CELLS))).zip(emitted.chunks_mut(BRICK_CELLS)).zip(decay_heat.chunks_mut(BRICK_CELLS))
+            .zip(light.glow.chunks_mut(BRICK_CELLS)).zip(sky_in.iter_mut()).enumerate() { work(b, list, (sl, bl, sa), em, dh, g, s) }
     }
     // 2. Trace every packet; deposits are integer sums, so any order gives the same totals.
-    let dep = Deposits {
+    let deposits = || Deposits {
         gas: (0..n).map(|_| AtomicI64::new(0)).collect(),
         solid: (0..n).map(|_| AtomicI64::new(0)).collect(),
         light: (0..n).map(|_| [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)]).collect(),
         dose: (0..n).map(|_| AtomicI64::new(0)).collect(),
     };
+    let dep = deposits();
     let mut traced = vec![Tally::default(); bricks];
     let optic = optics(w);
     {
@@ -972,25 +1024,49 @@ pub fn radiate(w: &mut World, sky: &Sky, light: &mut Light) {
         #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
-            packets.par_iter().zip(beams.par_iter()).zip(traced.par_iter_mut()).for_each(|((list, bl), t)| {
-                for p in list { trace(wr, &optic, *p, &dep, t) }
-                for b in bl { trace_beam(wr, &optic, b, &dep, t) }
-            });
+            packets.par_iter().zip(traced.par_iter_mut()).for_each(|(list, t)| for p in list { trace(wr, &optic, *p, &dep, t) });
         }
         #[cfg(not(feature = "parallel"))]
-        for ((list, bl), t) in packets.iter().zip(beams.iter()).zip(traced.iter_mut()) {
-            for p in list { trace(wr, &optic, *p, &dep, t) }
-            for b in bl { trace_beam(wr, &optic, b, &dep, t) }
-        }
+        for (list, t) in packets.iter().zip(traced.iter_mut()) { for p in list { trace(wr, &optic, *p, &dep, t) } }
     }
+    // The steady sources: traced afresh on their ticks, else as last traced.
+    if refresh {
+        let sdep = deposits();
+        let mut straced = vec![Tally::default(); bricks];
+        {
+            let wr: &World = w;
+            #[cfg(feature = "parallel")]
+            {
+                use rayon::prelude::*;
+                steady_packets.par_iter().zip(beams.par_iter()).zip(straced.par_iter_mut()).for_each(|((list, bl), t)| {
+                    for p in list { trace(wr, &optic, *p, &sdep, t) }
+                    for b in bl { trace_beam(wr, &optic, b, &sdep, t) }
+                });
+            }
+            #[cfg(not(feature = "parallel"))]
+            for ((list, bl), t) in steady_packets.iter().zip(beams.iter()).zip(straced.iter_mut()) {
+                for p in list { trace(wr, &optic, *p, &sdep, t) }
+                for b in bl { trace_beam(wr, &optic, b, &sdep, t) }
+            }
+        }
+        light.steady = Some(Box::new(Steady {
+            traced: w.tick,
+            to_solid: (0..n).map(|i| sdep.solid[i].load(Relaxed) + steady_absorbed[i]).collect(),
+            to_gas: sdep.gas.iter().map(|a| a.load(Relaxed)).collect(),
+            light: sdep.light.iter().map(|l| [l[0].load(Relaxed), l[1].load(Relaxed), l[2].load(Relaxed)]).collect(),
+            edge: (0..bricks).map(|b| (sky_in[b], straced[b].radiation_out)).collect(),
+        }));
+    }
+    let st = light.steady.as_deref().expect("traced above");
     // 3. Each cell gives up what it emitted and keeps what it absorbed.
     for i in 0..n {
-        light.incident[i] = [dep.light[i][0].load(Relaxed), dep.light[i][1].load(Relaxed), dep.light[i][2].load(Relaxed)];
+        let l = &st.light[i];
+        light.incident[i] = [dep.light[i][0].load(Relaxed) + l[0], dep.light[i][1].load(Relaxed) + l[1], dep.light[i][2].load(Relaxed) + l[2]];
         light.dose[i] = dep.dose[i].load(Relaxed);
     }
-    let to_gas: Vec<i64> = dep.gas.iter().map(|a| a.load(Relaxed)).collect();
-    let to_solid: Vec<i64> = dep.solid.iter().map(|a| a.load(Relaxed)).collect();
-    let edge: Vec<(i64, i64)> = (0..bricks).map(|b| (sky_in[b], traced[b].radiation_out)).collect();
+    let to_gas: Vec<i64> = (0..n).map(|i| dep.gas[i].load(Relaxed) + st.to_gas[i]).collect();
+    let to_solid: Vec<i64> = (0..n).map(|i| dep.solid[i].load(Relaxed) + st.to_solid[i]).collect();
+    let edge: Vec<(i64, i64)> = (0..bricks).map(|b| (st.edge[b].0, traced[b].radiation_out + st.edge[b].1)).collect();
     settle(w, &to_solid, &to_gas, &emitted, &decay_heat, &edge);
 }
 

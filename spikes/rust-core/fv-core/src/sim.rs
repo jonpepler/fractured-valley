@@ -133,6 +133,17 @@ impl Sim {
             for v in pos.iter().chain(rot.iter()) { h.u64(v.to_bits() as u64) }
             h.cell(c);
         }
+        // The steady sources' light is state too: it is deposited again
+        // on the ticks until it is next traced.
+        if let Some(st) = self.light.steady.as_deref() {
+            h.u64(st.traced);
+            for i in 0..st.to_solid.len() {
+                if st.to_solid[i] == 0 && st.to_gas[i] == 0 { continue }
+                h.u64(i as u64);
+                h.u64(st.to_solid[i] as u64);
+                h.u64(st.to_gas[i] as u64);
+            }
+        }
         h.finish()
     }
 }
