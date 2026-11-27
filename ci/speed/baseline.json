@@ -1,0 +1,13 @@
+{
+  "linux-x64-4cores": {
+    "recorded": "2026-11-27",
+    "msPerTick": {
+      "native dead-tree": 77.9,
+      "native living-tree": 76.85,
+      "native night-fire": 31.07,
+      "native valley": 29.63,
+      "wasm dead-tree single-threaded": 790.1,
+      "wasm dead-tree 4 workers": 233.2
+    }
+  }
+}
