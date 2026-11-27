@@ -16,6 +16,8 @@ pub struct Delta {
     pub base_n: u32,
     /// Per patched source (in node order; found through `rank`): its denominator.
     pub den: Vec<i32>,
+    /// Per patched source: gain classes of its positive-weight edges (as `Shared::cmask`).
+    pub pmask: Vec<u32>,
     /// Per patched source: overrides ovr[ostart[i]..ostart[i+1]] and extras extra[xstart[i]..xstart[i+1]].
     pub ostart: Vec<u32>,
     pub xstart: Vec<u32>,
@@ -43,7 +45,7 @@ impl Delta {
         let tags = |v: u32| -> u8 { if v >= n { new_tags[(v - n) as usize] } else { sh.tags[v as usize] } };
         // Current (weight, edge value) of every touched shared edge.
         let mut cur: std::collections::BTreeMap<u32, (i16, i16)> = Default::default();
-        for &(l, w) in &ov.reweight { cur.insert(l, (w, sh.ev[l as usize])); }
+        for &(l, w) in &ov.reweight { let l = sh.pos(l); cur.insert(l, (w, sh.ev[l as usize])); }
         for &(v, _) in &reval { if v < n { for &l in &sh.rin[sh.rin_off[v as usize] as usize..sh.rin_off[v as usize + 1] as usize] { cur.entry(l).or_insert((sh.edges[l as usize].w, sh.ev[l as usize])); } } }
         // Added edges, deduplicated as Builder::build does: max weight, then min value.
         let mut add = ov.added.clone();
@@ -81,6 +83,9 @@ impl Delta {
             while oi < ovr.len() && ovr[oi].0 == s { let o = ovr[oi]; sum += o.2.max(0) as i32 - sh.edges[o.1 as usize].w.max(0) as i32; d.ovr.push(((o.1 - sh.off[s as usize]) as u16, o.2, o.3)); oi += 1; }
             while xi < extras.len() && extras[xi].0 == s { sum += extras[xi].1.w.max(0) as i32; d.extra.push(extras[xi].1); xi += 1; }
             d.den.push(sum.max(1000));
+            let mut mk = 0u32;
+            d.for_edges_at(sh, s, d.den.len() - 1, |_, _, w, k| if w > 0 { mk |= 1 << crate::shared::kclass(k); });
+            d.pmask.push(mk);
         }
         d.ostart.push(d.ovr.len() as u32); d.xstart.push(d.extra.len() as u32);
         let total = n as usize + d.new_val.len();
@@ -94,7 +99,7 @@ impl Delta {
     }
 
     /// Bytes the kernels read per instance.
-    pub fn bytes(&self) -> usize { self.den.len() * 12 + self.ovr.len() * 6 + self.extra.len() * 8 + self.rank.len() * 12 + 8 }
+    pub fn bytes(&self) -> usize { self.den.len() * 16 + self.ovr.len() * 6 + self.extra.len() * 8 + self.rank.len() * 12 + 8 }
     /// Bytes of the `Form` view's extra tables (values of revalued and new nodes).
     pub fn view_bytes(&self) -> usize { self.reval.len() * 6 + self.new_val.len() * 3 }
     pub fn len(&self) -> usize { self.base_n as usize + self.new_val.len() }
@@ -116,25 +121,28 @@ impl Delta {
         match self.find(u) {
             None if u >= self.base_n => 0,
             None => { let es = &sh.edges[sh.range(u)]; let den = sh.den[u as usize]; for e in es { f(den, e.to, e.w, e.key); } es.len() }
-            Some(i) => {
-                let den = self.den[i];
-                let mut f = |to, w, k| f(den, to, w, k);
-                let mut c = 0;
-                let ov = &self.ovr[self.ostart[i] as usize..self.ostart[i + 1] as usize];
-                if u < self.base_n {
-                    let r = sh.range(u);
-                    let mut j = 0;
-                    let start = r.start;
-                    for l in r {
-                        let e = &sh.edges[l];
-                        if j < ov.len() && ov[j].0 as usize == l - start { f(e.to, ov[j].1, ov[j].2); j += 1; } else { f(e.to, e.w, e.key); }
-                        c += 1;
-                    }
-                }
-                for e in &self.extra[self.xstart[i] as usize..self.xstart[i + 1] as usize] { f(e.to, e.w, e.key); c += 1; }
-                c
+            Some(i) => self.for_edges_at(sh, u, i, f),
+        }
+    }
+
+    /// As `for_edges` for the `i`-th patched source `u` (its ovr/extra ranges must be built).
+    pub fn for_edges_at(&self, sh: &Shared, u: u32, i: usize, mut f: impl FnMut(i32, u32, i16, u16)) -> usize {
+        let den = self.den[i];
+        let mut f = |to, w, k| f(den, to, w, k);
+        let mut c = 0;
+        let ov = &self.ovr[self.ostart[i] as usize..self.ostart.get(i + 1).map_or(self.ovr.len(), |&x| x as usize)];
+        if u < self.base_n {
+            let r = sh.range(u);
+            let mut j = 0;
+            let start = r.start;
+            for l in r {
+                let e = &sh.edges[l];
+                if j < ov.len() && ov[j].0 as usize == l - start { f(e.to, ov[j].1, ov[j].2); j += 1; } else { f(e.to, e.w, e.key); }
+                c += 1;
             }
         }
+        for e in &self.extra[self.xstart[i] as usize..self.xstart.get(i + 1).map_or(self.extra.len(), |&x| x as usize)] { f(e.to, e.w, e.key); c += 1; }
+        c
     }
 
     pub fn val(&self, sh: &Shared, v: u32) -> i32 {

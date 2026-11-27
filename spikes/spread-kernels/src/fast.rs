@@ -15,18 +15,18 @@ use mc::spread::{Mods, Params};
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-struct Slot { node: u32, gen: u32, act: i32, inc: i32, seed: i32, mult: u32, seeded: u32 }
+pub(crate) struct Slot { pub(crate) node: u32, gen: u32, pub(crate) act: i32, pub(crate) inc: i32, pub(crate) seed: i32, pub(crate) mult: u32, pub(crate) seeded: u32 }
 
-pub struct Table { slots: Vec<Slot>, mask: usize, gen: u32, used: Vec<u32> }
+pub struct Table { pub(crate) slots: Vec<Slot>, mask: usize, gen: u32, pub(crate) used: Vec<u32> }
 impl Table {
-    fn new(cap: usize) -> Table { let c = cap.next_power_of_two(); Table { slots: vec![Slot::default(); c], mask: c - 1, gen: 1, used: Vec::new() } }
-    fn reset(&mut self) {
+    pub fn new(cap: usize) -> Table { let c = cap.next_power_of_two(); Table { slots: vec![Slot::default(); c], mask: c - 1, gen: 1, used: Vec::new() } }
+    pub fn reset(&mut self) {
         self.gen = self.gen.wrapping_add(1);
         if self.gen == 0 { for s in self.slots.iter_mut() { s.gen = 0; } self.gen = 1; }
         self.used.clear();
     }
     #[inline(always)]
-    fn slot(&mut self, n: u32) -> usize {
+    pub fn slot(&mut self, n: u32) -> usize {
         let mut i = (n.wrapping_mul(0x9e37_79b1) >> 10) as usize & self.mask;
         loop {
             let s = self.slots[i];
@@ -53,8 +53,25 @@ impl Table {
     }
 }
 
-pub struct Scratch { t: Table, pub g: GainCache, cand: Vec<(u32, i32)>, touched: Vec<u32>, c: Vec<(u32, i32)>, pub log: Option<Vec<(u8, u32)>> }
-impl Scratch { pub fn new() -> Self { Scratch { t: Table::new(4096), g: GainCache::new(), cand: vec![], touched: vec![], c: vec![], log: None } } }
+pub struct Scratch { t: Table, pub g: GainCache, cand: Vec<(u32, i32)>, touched: Vec<u32>, c: Vec<(u32, i32)>, pub log: Option<Vec<(u8, u32)>>, b: Bounds, pub visits: u64, pub expanded: u64 }
+impl Scratch { pub fn new() -> Self { Scratch { t: Table::new(4096), g: GainCache::new(), cand: vec![], touched: vec![], c: vec![], log: None, b: Bounds::default(), visits: 0, expanded: 0 } } }
+
+/// Per-step upper bounds of gain per gain class, filled lazily. Relies on property P: for a
+/// fixed modifier set and class, the largest gain over all values is reached at value -1000,
+/// 0 or 1000 (checked exhaustively over values in `tests/bounds.rs`).
+#[derive(Default)]
+struct Bounds { hi: [i32; 32], gen: [u32; 32], cur: u32, t: i64 }
+impl Bounds {
+    #[inline]
+    fn hi(&mut self, g: &mut GainCache, m: &Mods, c: u32) -> i32 {
+        if self.gen[c as usize] != self.cur {
+            let k = (c << 11) as u16;
+            self.hi[c as usize] = g.get(m, k).max(g.get(m, k + 1000)).max(g.get(m, k + 2000));
+            self.gen[c as usize] = self.cur;
+        }
+        self.hi[c as usize]
+    }
+}
 impl Default for Scratch { fn default() -> Self { Self::new() } }
 
 /// Keep the `k` largest by (amount desc, id asc); order unspecified.
@@ -88,37 +105,78 @@ fn edge(t: &mut Table, touched: &mut Vec<u32>, g: &mut GainCache, m: &Mods, a: i
 }
 
 #[inline(always)]
-fn expand(sh: &Shared, d: &Delta, u: u32, a: i32, t: &mut Table, touched: &mut Vec<u32>, g: &mut GainCache, m: &Mods, p: &Params) {
+fn expand<const PRUNE: bool>(sh: &Shared, d: &Delta, u: u32, a: i32, t: &mut Table, touched: &mut Vec<u32>, g: &mut GainCache, m: &Mods, p: &Params, b: &mut Bounds, visits: &mut u64) {
     if a == 0 { return; } // every flow is 0 < min_act
     let (au, hd, min) = (a as i64, p.hop_decay as i64, p.min_act);
     match d.find(u) {
         None => {
             if u >= d.base_n { return; }
             let den = sh.den[u as usize] as i64;
-            for e in &sh.edges[sh.range(u)] { edge(t, touched, g, m, au, den, hd, min, e.to, e.w, e.key); }
+            let es = &sh.edges[sh.range(u)];
+            if PRUNE && a > 0 && b.t > 0 {
+                // Upper bound of gain over this node's classes, then the lightest edge that
+                // could still pass: q * gmax >= 1000 T  <=>  w >= ceil(ceil(1000 T / gmax) * den / a).
+                let mut mask = sh.cmask[u as usize];
+                let mut gmax = i32::MIN;
+                while mask != 0 { let c = mask.trailing_zeros(); mask &= mask - 1; gmax = gmax.max(b.hi(g, m, c)); }
+                if gmax <= 0 { return; }
+                let qmin = (1000 * b.t + gmax as i64 - 1) / gmax as i64;
+                let wmin = (qmin * den + au - 1) / au;
+                for e in es {
+                    if (e.w as i64) < wmin { break; } // sorted heaviest first
+                    *visits += 1;
+                    edge(t, touched, g, m, au, den, hd, min, e.to, e.w, e.key);
+                }
+                return;
+            }
+            *visits += es.len() as u64;
+            for e in es { edge(t, touched, g, m, au, den, hd, min, e.to, e.w, e.key); }
         }
         Some(i) => {
             let den = d.den[i] as i64;
+            if u < d.base_n { *visits += sh.range(u).len() as u64; }
+            *visits += (d.xstart[i + 1] - d.xstart[i]) as u64;
+            // Patched lists are not sorted by weight: prune edge by edge instead of stopping.
+            let mut wmin = i64::MIN;
+            if PRUNE && a > 0 && b.t > 0 {
+                let mut mask = d.pmask[i];
+                let mut gmax = i32::MIN;
+                while mask != 0 { let c = mask.trailing_zeros(); mask &= mask - 1; gmax = gmax.max(b.hi(g, m, c)); }
+                if gmax <= 0 { return; }
+                let qmin = (1000 * b.t + gmax as i64 - 1) / gmax as i64;
+                wmin = (qmin * den + au - 1) / au;
+            }
             if u < d.base_n {
                 let ov = &d.ovr[d.ostart[i] as usize..d.ostart[i + 1] as usize];
                 let r = sh.range(u);
                 let es: &[PEdge] = &sh.edges[r];
                 let mut j = 0;
                 for (l, e) in es.iter().enumerate() {
-                    if j < ov.len() && ov[j].0 as usize == l { edge(t, touched, g, m, au, den, hd, min, e.to, ov[j].1, ov[j].2); j += 1; }
-                    else { edge(t, touched, g, m, au, den, hd, min, e.to, e.w, e.key); }
+                    let (w, k) = if j < ov.len() && ov[j].0 as usize == l { j += 1; (ov[j - 1].1, ov[j - 1].2) } else { (e.w, e.key) };
+                    if (w as i64) < wmin { continue; }
+                    edge(t, touched, g, m, au, den, hd, min, e.to, w, k);
                 }
             }
-            for e in &d.extra[d.xstart[i] as usize..d.xstart[i + 1] as usize] { edge(t, touched, g, m, au, den, hd, min, e.to, e.w, e.key); }
+            for e in &d.extra[d.xstart[i] as usize..d.xstart[i + 1] as usize] { if (e.w as i64) >= wmin { edge(t, touched, g, m, au, den, hd, min, e.to, e.w, e.key); } }
         }
     }
 }
 
 /// One step. Returns (top `ws_k` nodes in order, hash of (state, output)) — the same hash as
 /// `model::hash(&state, &out)`.
-pub fn step(sh: &Shared, d: &Delta, inst: &mut Inst, m: &Mods, inject: &[(u32, i32)], p: &Params, sc: &mut Scratch) -> (Vec<u32>, u64) {
+pub fn step(sh: &Shared, d: &Delta, inst: &mut Inst, m: &Mods, inject: &[(u32, i32)], p: &Params, sc: &mut Scratch) -> (Vec<u32>, u64) { step_g::<false>(sh, d, inst, m, inject, p, sc) }
+
+/// As `step`, but skips edges that cannot pass `min_act` under the per-class gain bound
+/// (property P). Same results whenever P holds.
+pub fn step_pruned(sh: &Shared, d: &Delta, inst: &mut Inst, m: &Mods, inject: &[(u32, i32)], p: &Params, sc: &mut Scratch) -> (Vec<u32>, u64) { step_g::<true>(sh, d, inst, m, inject, p, sc) }
+
+fn step_g<const PRUNE: bool>(sh: &Shared, d: &Delta, inst: &mut Inst, m: &Mods, inject: &[(u32, i32)], p: &Params, sc: &mut Scratch) -> (Vec<u32>, u64) {
     assert!(p.min_act > 0 && p.frontier > 0 && p.active_cap > 0);
-    let Scratch { t, g, cand, touched, c, log } = sc;
+    let Scratch { t, g, cand, touched, c, log, b, visits, expanded } = sc;
+    b.cur = b.cur.wrapping_add(1);
+    if b.cur == 0 { b.gen = [0; 32]; b.cur = 1; }
+    // T: the smallest t >= 0 with t * hop_decay / 1000 >= min_act (0: no pruning).
+    b.t = if p.hop_decay > 0 { (p.min_act as i64 * 1000 + p.hop_decay as i64 - 1) / p.hop_decay as i64 } else { 0 };
     t.reset(); g.reset(); cand.clear();
     // load + decay (once per occurrence in the active list) + seeds
     for &n in &inst.dups { let i = t.slot(n); t.slots[i].mult += 1; }
@@ -142,7 +200,8 @@ pub fn step(sh: &Shared, d: &Delta, inst: &mut Inst, m: &Mods, inject: &[(u32, i
     for r in 0..p.hops {
         if cand.is_empty() { break; }
         if let Some(l) = log { l.extend(cand.iter().map(|x| (r as u8, x.0))); }
-        for &(u, a) in cand.iter() { expand(sh, d, u, a, t, touched, g, m, p); }
+        *expanded += cand.len() as u64;
+        for &(u, a) in cand.iter() { expand::<PRUNE>(sh, d, u, a, t, touched, g, m, p, b, visits); }
         cand.clear();
         for &n in touched.iter() {
             let i = t.slot(n);

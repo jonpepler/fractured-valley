@@ -123,3 +123,8 @@ pub fn overflowing(seed: u64) -> (Graph, Vec<Tick>) {
     }).collect();
     (g, ticks)
 }
+
+pub fn run_pruned(sh: &crate::shared::Shared, d: &crate::delta::Delta, ticks: &[Tick], p: &Params) -> Vec<u64> {
+    let mut sc = crate::fast::Scratch::new();
+    run_with(sh, d, ticks, p, |sh, d, inst, t, p| crate::fast::step_pruned(sh, d, inst, &t.mods, &t.inject, p, &mut sc).1)
+}

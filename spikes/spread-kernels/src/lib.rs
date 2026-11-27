@@ -4,6 +4,8 @@ pub mod delta;
 pub mod exact;
 pub mod fast;
 pub mod harness;
+pub mod metrics;
 pub mod model;
 pub mod rand;
+pub mod redef;
 pub mod shared;
